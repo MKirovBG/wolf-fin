@@ -1,0 +1,30 @@
+// Wolf-Fin Adapter Interface — shared contract for all market adapters
+
+import type {
+  MarketSnapshot,
+  OrderBook,
+  Trade,
+  Balance,
+  Order,
+  Fill,
+  OrderParams,
+  OrderResult,
+  RiskState,
+} from './types.js'
+
+export interface IMarketAdapter {
+  readonly market: 'crypto' | 'forex'
+
+  getSnapshot(symbol: string, riskState: RiskState): Promise<MarketSnapshot>
+  getOrderBook(symbol: string, depth?: number): Promise<OrderBook>
+  getRecentTrades(symbol: string, limit?: number): Promise<Trade[]>
+  getBalances(): Promise<Balance[]>
+  getOpenOrders(symbol?: string): Promise<Order[]>
+  getTradeHistory(symbol: string, limit?: number): Promise<Fill[]>
+  placeOrder(params: OrderParams): Promise<OrderResult>
+  cancelOrder(symbol: string, orderId: string | number): Promise<void>
+
+  // Forex-only — returns null for crypto adapters
+  getSpread?(symbol: string): Promise<number | null>
+  isMarketOpen?(symbol: string): Promise<boolean>
+}

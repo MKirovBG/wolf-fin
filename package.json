@@ -1,0 +1,32 @@
+{
+  "name": "wolf-fin",
+  "version": "1.0.0",
+  "description": "Autonomous crypto trading agent powered by Claude",
+  "type": "module",
+  "main": "dist/agent/index.js",
+  "scripts": {
+    "dev": "tsx src/agent/index.ts",
+    "build": "tsc",
+    "start": "node dist/agent/index.js",
+    "test": "vitest"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.32.1",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
+    "binance": "^3.5.1",
+    "dotenv": "^17.3.1",
+    "fastify": "^5.8.2",
+    "node-cron": "^4.2.1",
+    "pino": "^10.3.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

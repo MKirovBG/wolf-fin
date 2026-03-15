@@ -4,20 +4,24 @@ import Anthropic from '@anthropic-ai/sdk'
 
 // ── Tool input schemas ────────────────────────────────────────────────────────
 
+const MARKET_FIELD = {
+  type: 'string',
+  enum: ['crypto', 'forex'],
+  description: 'Market type. "crypto" routes to Binance, "forex" routes to OANDA.',
+} as const
+
 export const TOOLS: Anthropic.Tool[] = [
   {
     name: 'get_snapshot',
     description:
-      'Fetch the current market snapshot for a symbol. Returns price, 24h stats, multi-timeframe candles, pre-computed technical indicators (RSI, EMA, ATR, VWAP, BB width), account balances, open orders, and risk state.',
+      'Fetch the current market snapshot for a symbol. Returns price, 24h stats, multi-timeframe candles, pre-computed technical indicators (RSI, EMA, ATR, VWAP, BB width), account balances, open orders, risk state, and market context enrichment.',
     input_schema: {
       type: 'object' as const,
       properties: {
-        symbol: {
-          type: 'string',
-          description: 'Trading pair symbol, e.g. "BTCUSDT"',
-        },
+        symbol: { type: 'string', description: 'Trading pair symbol, e.g. "BTCUSDT" or "EUR_USD"' },
+        market: MARKET_FIELD,
       },
-      required: ['symbol'],
+      required: ['symbol', 'market'],
     },
   },
   {
@@ -27,16 +31,11 @@ export const TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: 'object' as const,
       properties: {
-        symbol: {
-          type: 'string',
-          description: 'Trading pair symbol, e.g. "BTCUSDT"',
-        },
-        depth: {
-          type: 'number',
-          description: 'Number of bid/ask levels to return (default 20, max 100)',
-        },
+        symbol: { type: 'string', description: 'Trading pair symbol' },
+        market: MARKET_FIELD,
+        depth: { type: 'number', description: 'Number of bid/ask levels to return (default 20, max 100)' },
       },
-      required: ['symbol'],
+      required: ['symbol', 'market'],
     },
   },
   {
@@ -46,16 +45,11 @@ export const TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: 'object' as const,
       properties: {
-        symbol: {
-          type: 'string',
-          description: 'Trading pair symbol, e.g. "BTCUSDT"',
-        },
-        limit: {
-          type: 'number',
-          description: 'Number of trades to return (default 50, max 1000)',
-        },
+        symbol: { type: 'string', description: 'Trading pair symbol' },
+        market: MARKET_FIELD,
+        limit: { type: 'number', description: 'Number of trades to return (default 50, max 1000)' },
       },
-      required: ['symbol'],
+      required: ['symbol', 'market'],
     },
   },
   {
@@ -65,50 +59,29 @@ export const TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: 'object' as const,
       properties: {
-        symbol: {
-          type: 'string',
-          description: 'Optional trading pair symbol filter, e.g. "BTCUSDT"',
-        },
+        symbol: { type: 'string', description: 'Optional trading pair symbol filter' },
+        market: MARKET_FIELD,
       },
-      required: [],
+      required: ['market'],
     },
   },
   {
     name: 'place_order',
     description:
-      'Place a new spot order. Guardrails will validate the order against position limits and the daily loss budget before execution. Prefer LIMIT orders to control slippage.',
+      'Place a new order. Guardrails will validate the order against position limits and the daily loss budget before execution. Prefer LIMIT orders to control slippage. For forex, always specify stopPips.',
     input_schema: {
       type: 'object' as const,
       properties: {
-        symbol: {
-          type: 'string',
-          description: 'Trading pair symbol, e.g. "BTCUSDT"',
-        },
-        side: {
-          type: 'string',
-          enum: ['BUY', 'SELL'],
-          description: 'Order direction',
-        },
-        type: {
-          type: 'string',
-          enum: ['LIMIT', 'MARKET'],
-          description: 'Order type. Use LIMIT unless speed is critical.',
-        },
-        quantity: {
-          type: 'number',
-          description: 'Base asset quantity to buy or sell',
-        },
-        price: {
-          type: 'number',
-          description: 'Limit price (required for LIMIT orders)',
-        },
-        timeInForce: {
-          type: 'string',
-          enum: ['GTC', 'IOC', 'FOK'],
-          description: 'Time in force for LIMIT orders (default GTC)',
-        },
+        symbol: { type: 'string', description: 'Trading pair symbol, e.g. "BTCUSDT" or "EUR_USD"' },
+        market: MARKET_FIELD,
+        side: { type: 'string', enum: ['BUY', 'SELL'], description: 'Order direction' },
+        type: { type: 'string', enum: ['LIMIT', 'MARKET'], description: 'Order type. Use LIMIT unless speed is critical.' },
+        quantity: { type: 'number', description: 'Base asset quantity (units for forex, e.g. 1000 = micro-lot)' },
+        price: { type: 'number', description: 'Limit price (required for LIMIT orders)' },
+        timeInForce: { type: 'string', enum: ['GTC', 'IOC', 'FOK'], description: 'Time in force for LIMIT orders (default GTC)' },
+        stopPips: { type: 'number', description: 'Forex only: stop-loss distance in pips. Required for forex orders.' },
       },
-      required: ['symbol', 'side', 'type', 'quantity'],
+      required: ['symbol', 'market', 'side', 'type', 'quantity'],
     },
   },
   {
@@ -117,51 +90,52 @@ export const TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: 'object' as const,
       properties: {
-        symbol: {
-          type: 'string',
-          description: 'Trading pair symbol, e.g. "BTCUSDT"',
-        },
-        orderId: {
-          type: 'number',
-          description: 'The numeric order ID to cancel',
-        },
+        symbol: { type: 'string', description: 'Trading pair symbol' },
+        market: MARKET_FIELD,
+        orderId: { type: 'number', description: 'The numeric order ID to cancel' },
       },
-      required: ['symbol', 'orderId'],
+      required: ['symbol', 'market', 'orderId'],
     },
   },
 ]
 
 // ── Tool input types ──────────────────────────────────────────────────────────
-// These mirror the input_schema shapes above for use in the tool handler.
 
 export interface GetSnapshotInput {
   symbol: string
+  market: 'crypto' | 'forex'
 }
 
 export interface GetOrderBookInput {
   symbol: string
+  market: 'crypto' | 'forex'
   depth?: number
 }
 
 export interface GetRecentTradesInput {
   symbol: string
+  market: 'crypto' | 'forex'
   limit?: number
 }
 
 export interface GetOpenOrdersInput {
   symbol?: string
+  market: 'crypto' | 'forex'
 }
 
 export interface PlaceOrderInput {
   symbol: string
+  market: 'crypto' | 'forex'
   side: 'BUY' | 'SELL'
   type: 'LIMIT' | 'MARKET'
   quantity: number
   price?: number
   timeInForce?: 'GTC' | 'IOC' | 'FOK'
+  stopPips?: number
 }
 
 export interface CancelOrderInput {
   symbol: string
+  market: 'crypto' | 'forex'
   orderId: number
 }

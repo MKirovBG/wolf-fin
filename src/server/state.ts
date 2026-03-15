@@ -1,48 +1,56 @@
-// Wolf-Fin — shared in-memory state for the HTTP dashboard
+// Wolf-Fin — shared in-memory state
 
-import type { AgentConfig } from '../agent/index.js'
+import type { AgentState, AgentStatus, CycleResult } from '../types.js'
 
-export interface CycleResult {
-  symbol: string
-  market: 'crypto' | 'forex'
-  paper: boolean
-  decision: string
-  reason: string
-  time: string
-  error?: string
-}
+// Re-export for modules that used to import CycleResult from here
+export type { CycleResult } from '../types.js'
 
 interface AppState {
-  status: 'idle' | 'running' | 'paused'
-  paused: boolean
-  paperMode: boolean
-  configs: AgentConfig[]
-  lastCycleByKey: Record<string, CycleResult>
+  agents: Record<string, AgentState>   // key = "market:symbol"
   recentEvents: CycleResult[]
-  startedAt: string | null
 }
 
 const state: AppState = {
-  status: 'idle',
-  paused: false,
-  paperMode: true,
-  configs: [],
-  lastCycleByKey: {},
+  agents: {},
   recentEvents: [],
-  startedAt: null,
-}
-
-export function setState(patch: Partial<AppState>): void {
-  Object.assign(state, patch)
-}
-
-export function recordCycle(result: CycleResult): void {
-  const key = `${result.market}:${result.symbol}`
-  state.lastCycleByKey[key] = result
-  state.recentEvents.unshift(result)
-  if (state.recentEvents.length > 50) state.recentEvents.length = 50
 }
 
 export function getState(): Readonly<AppState> {
   return state
+}
+
+export function getAgent(key: string): AgentState | undefined {
+  return state.agents[key]
+}
+
+export function upsertAgent(agent: AgentState): void {
+  const key = `${agent.config.market}:${agent.config.symbol}`
+  state.agents[key] = agent
+}
+
+export function removeAgent(key: string): void {
+  delete state.agents[key]
+}
+
+export function setAgentStatus(key: string, status: AgentStatus): void {
+  const agent = state.agents[key]
+  if (agent) {
+    agent.status = status
+    if (status === 'running' && !agent.startedAt) {
+      agent.startedAt = new Date().toISOString()
+    }
+    if (status === 'idle') {
+      agent.startedAt = null
+    }
+  }
+}
+
+export function recordCycle(key: string, result: CycleResult): void {
+  const agent = state.agents[key]
+  if (agent) {
+    agent.lastCycle = result
+    agent.cycleCount++
+  }
+  state.recentEvents.unshift(result)
+  if (state.recentEvents.length > 100) state.recentEvents.length = 100
 }

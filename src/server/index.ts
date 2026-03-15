@@ -6,12 +6,13 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { existsSync, appendFileSync, readFileSync, writeFileSync } from 'fs'
 import pino from 'pino'
-import { getState, setState } from './state.js'
+import { getState, getAgent, upsertAgent, removeAgent, setAgentStatus } from './state.js'
 import { getRiskState, MAX_DAILY_LOSS_USD } from '../guardrails/riskState.js'
 import { getRiskStateFor } from '../guardrails/riskStateStore.js'
-import { pauseScheduler, resumeScheduler, startScheduler } from '../scheduler/index.js'
+import { startAgentSchedule, pauseAgentSchedule, stopAgentSchedule } from '../scheduler/index.js'
 import { runAgentCycle } from '../agent/index.js'
-import type { AgentConfig } from '../agent/index.js'
+import { getAdapter } from '../adapters/registry.js'
+import type { AgentConfig, AgentState } from '../types.js'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
 const PORT = parseInt(process.env.PORT ?? '3000', 10)
@@ -21,7 +22,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const ENV_KEYS = [
   'ANTHROPIC_API_KEY', 'CLAUDE_MODEL',
-  'OANDA_API_KEY', 'OANDA_ACCOUNT_ID',
+  'ALPACA_API_KEY', 'ALPACA_API_SECRET', 'ALPACA_PAPER_KEY', 'ALPACA_PAPER_SECRET',
   'BINANCE_API_KEY', 'BINANCE_API_SECRET',
   'FINNHUB_KEY', 'TWELVE_DATA_KEY', 'COINGECKO_KEY',
 ] as const
@@ -52,16 +53,21 @@ async function testConnection(service: string): Promise<{ ok: boolean; message: 
         })
         return r.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `HTTP ${r.status}` }
       }
-      case 'oanda': {
-        const base = process.env.OANDA_PAPER !== 'false' ? 'https://api-fxpractice.oanda.com' : 'https://api-fxtrade.oanda.com'
-        const r = await fetch(`${base}/v3/accounts`, {
-          headers: { Authorization: `Bearer ${process.env.OANDA_API_KEY ?? ''}` },
+      case 'alpaca': {
+        const paper = process.env.ALPACA_PAPER !== 'false'
+        const base = paper ? 'https://paper-api.alpaca.markets' : 'https://api.alpaca.markets'
+        const key = paper ? process.env.ALPACA_PAPER_KEY : process.env.ALPACA_API_KEY
+        const secret = paper ? process.env.ALPACA_PAPER_SECRET : process.env.ALPACA_API_SECRET
+        const r = await fetch(`${base}/v2/account`, {
+          headers: { 'APCA-API-KEY-ID': key ?? '', 'APCA-API-SECRET-KEY': secret ?? '' },
         })
-        return r.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `HTTP ${r.status}` }
+        return r.ok ? { ok: true, message: paper ? 'Paper account OK' : 'Live account OK' } : { ok: false, message: `HTTP ${r.status}` }
       }
       case 'binance': {
-        const r = await fetch('https://testnet.binance.vision/api/v3/ping')
-        return r.ok ? { ok: true, message: 'Ping OK' } : { ok: false, message: `HTTP ${r.status}` }
+        const testnet = process.env.BINANCE_TESTNET !== 'false'
+        const base = testnet ? 'https://testnet.binance.vision' : 'https://api.binance.com'
+        const r = await fetch(`${base}/api/v3/ping`)
+        return r.ok ? { ok: true, message: testnet ? 'Testnet ping OK' : 'Ping OK' } : { ok: false, message: `HTTP ${r.status}` }
       }
       case 'finnhub': {
         const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=AAPL&token=${process.env.FINNHUB_KEY ?? ''}`)
@@ -83,6 +89,10 @@ async function testConnection(service: string): Promise<{ ok: boolean; message: 
   }
 }
 
+function defaultAgentState(config: AgentConfig): AgentState {
+  return { config, status: 'idle', lastCycle: null, startedAt: null, cycleCount: 0 }
+}
+
 // ── Server ─────────────────────────────────────────────────────────────────────
 
 export async function startServer(): Promise<void> {
@@ -90,55 +100,96 @@ export async function startServer(): Promise<void> {
 
   // ── Status ──────────────────────────────────────────────────────────────────
   app.get('/api/status', async () => {
-    return { ...getState(), risk: getRiskState(), maxDailyLossUsd: MAX_DAILY_LOSS_USD }
-  })
-
-  app.post('/api/pause', async () => {
-    pauseScheduler()
-    return { ok: true }
-  })
-
-  app.post('/api/resume', async () => {
-    resumeScheduler()
-    return { ok: true }
+    const { agents, recentEvents } = getState()
+    return {
+      agents: Object.values(agents),
+      recentEvents,
+      risk: getRiskState(),
+      maxDailyLossUsd: MAX_DAILY_LOSS_USD,
+    }
   })
 
   // ── Agents ──────────────────────────────────────────────────────────────────
+
   app.get('/api/agents', async () => {
-    return getState().configs
+    return Object.values(getState().agents)
   })
 
   app.post('/api/agents', async (req) => {
     const body = req.body as AgentConfig
-    const current = getState().configs
     const key = `${body.market}:${body.symbol}`
-    if (current.some(c => `${c.market}:${c.symbol}` === key)) {
-      return { ok: false, message: 'Agent already exists' }
-    }
-    const updated = [...current, body]
-    setState({ configs: updated })
-    pauseScheduler()
-    startScheduler(updated)
-    return { ok: true }
+    if (getAgent(key)) return { ok: false, message: 'Agent already exists' }
+    upsertAgent(defaultAgentState(body))
+    return { ok: true, key }
   })
 
   app.delete('/api/agents/:key', async (req) => {
     const { key } = req.params as { key: string }
-    const [market, symbol] = key.split(':')
-    const updated = getState().configs.filter(c => !(c.market === market && c.symbol === symbol))
-    setState({ configs: updated })
-    pauseScheduler()
-    if (updated.length > 0) startScheduler(updated)
+    stopAgentSchedule(key)
+    removeAgent(key)
+    return { ok: true }
+  })
+
+  app.patch('/api/agents/:key/config', async (req) => {
+    const { key } = req.params as { key: string }
+    const patch = req.body as Partial<AgentConfig>
+    const agent = getAgent(key)
+    if (!agent) return { ok: false, message: 'Agent not found' }
+
+    const wasRunning = agent.status === 'running'
+    if (wasRunning) stopAgentSchedule(key)
+
+    const updated: AgentState = { ...agent, config: { ...agent.config, ...patch } }
+    upsertAgent(updated)
+
+    if (wasRunning) startAgentSchedule(updated.config)
+    return { ok: true }
+  })
+
+  app.post('/api/agents/:key/start', async (req) => {
+    const { key } = req.params as { key: string }
+    const agent = getAgent(key)
+    if (!agent) return { ok: false, message: 'Agent not found' }
+    startAgentSchedule(agent.config)
+    return { ok: true }
+  })
+
+  app.post('/api/agents/:key/pause', async (req) => {
+    const { key } = req.params as { key: string }
+    if (!getAgent(key)) return { ok: false, message: 'Agent not found' }
+    pauseAgentSchedule(key)
+    return { ok: true }
+  })
+
+  app.post('/api/agents/:key/stop', async (req) => {
+    const { key } = req.params as { key: string }
+    if (!getAgent(key)) return { ok: false, message: 'Agent not found' }
+    stopAgentSchedule(key)
     return { ok: true }
   })
 
   app.post('/api/agents/:key/trigger', async (req) => {
     const { key } = req.params as { key: string }
-    const [market, symbol] = key.split(':')
-    const config = getState().configs.find(c => c.market === market && c.symbol === symbol)
-    if (!config) return { ok: false, message: 'Agent not found' }
-    runAgentCycle(config).catch(err => log.error({ err }, 'manual trigger error'))
+    const agent = getAgent(key)
+    if (!agent) return { ok: false, message: 'Agent not found' }
+    runAgentCycle(agent.config).catch(err => log.error({ err, key }, 'manual trigger error'))
     return { ok: true }
+  })
+
+  // ── Market Data (read-only snapshot, no agent/Claude involved) ───────────────
+  app.get('/api/market/:market/:symbol', async (req, reply) => {
+    const { market, symbol } = req.params as { market: string; symbol: string }
+    if (market !== 'crypto' && market !== 'forex') {
+      return reply.status(400).send({ error: 'market must be crypto or forex' })
+    }
+    try {
+      const adapter = getAdapter(market as 'crypto' | 'forex')
+      const snapshot = await adapter.getSnapshot(symbol, getRiskState())
+      return snapshot
+    } catch (e) {
+      log.error({ market, symbol, err: e }, 'market data fetch error')
+      return reply.status(502).send({ error: e instanceof Error ? e.message : 'Fetch failed' })
+    }
   })
 
   // ── Keys ────────────────────────────────────────────────────────────────────
@@ -187,18 +238,14 @@ export async function startServer(): Promise<void> {
   const frontendDist = join(__dirname, '../../frontend-dist')
   if (existsSync(frontendDist)) {
     await app.register(fastifyStatic, { root: frontendDist, prefix: '/' })
-    // SPA fallback — all non-API routes return index.html
-    app.setNotFoundHandler((_req, reply) => {
-      reply.sendFile('index.html')
-    })
+    app.setNotFoundHandler((_req, reply) => { reply.sendFile('index.html') })
   } else {
-    // Dev mode — redirect to Vite dev server hint
     app.get('/', async (_req, reply) => {
       reply.type('text/html').send(`
         <html><body style="background:#0d0d0d;color:#e0e0e0;font-family:monospace;padding:40px">
           <h2 style="color:#00e676">Wolf-Fin API running</h2>
-          <p>Frontend not built. Run <code>cd frontend && pnpm dev</code> then open <a style="color:#00e676" href="http://localhost:5173">localhost:5173</a></p>
-          <p>API available at <a style="color:#00e676" href="/api/status">/api/status</a></p>
+          <p>Frontend: run <code>cd frontend && pnpm dev</code> then open <a style="color:#00e676" href="http://localhost:5173">localhost:5173</a></p>
+          <p>API: <a style="color:#00e676" href="/api/status">/api/status</a></p>
         </body></html>
       `)
     })

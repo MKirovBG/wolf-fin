@@ -1,65 +1,94 @@
-// Wolf-Fin Scheduler — cron-based cycle runner for each market
+// Wolf-Fin Scheduler — per-agent cron task management
 
 import cron from 'node-cron'
 import pino from 'pino'
-import { runAgentCycle, type AgentConfig } from '../agent/index.js'
+import { runAgentCycle } from '../agent/index.js'
 import { isForexSessionOpen } from '../adapters/session.js'
-import { setState } from '../server/state.js'
+import { setAgentStatus } from '../server/state.js'
+import type { AgentConfig } from '../types.js'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
 
-// Crypto: every 15 minutes on the clock
-const CRYPTO_SCHEDULE = '*/15 * * * *'
+// Map of "market:symbol" → active cron task
+const tasks = new Map<string, cron.ScheduledTask>()
 
-// Forex: every 15 minutes — session guard runs inside the task
-const FOREX_SCHEDULE = '*/15 * * * *'
+function agentKey(config: AgentConfig): string {
+  return `${config.market}:${config.symbol}`
+}
 
-const activeTasks: cron.ScheduledTask[] = []
-let savedConfigs: AgentConfig[] = []
+function toSchedule(minutes: number): string {
+  if (minutes < 60) return `*/${minutes} * * * *`
+  const hours = Math.floor(minutes / 60)
+  return `0 */${hours} * * *`
+}
 
-export function startScheduler(configs: AgentConfig[]): void {
-  savedConfigs = configs
+export function startAgentSchedule(config: AgentConfig): void {
+  const key = agentKey(config)
 
-  for (const config of configs) {
-    const schedule = config.market === 'crypto' ? CRYPTO_SCHEDULE : FOREX_SCHEDULE
-
-    const task = cron.schedule(schedule, async () => {
-      if (config.market === 'forex' && !isForexSessionOpen()) {
-        log.debug({ symbol: config.symbol }, 'forex market closed — skipping cycle')
-        return
-      }
-
-      try {
-        await runAgentCycle(config)
-      } catch (err) {
-        log.error({ symbol: config.symbol, market: config.market, err }, 'agent cycle error')
-      }
-    })
-
-    activeTasks.push(task)
-    log.info({ symbol: config.symbol, market: config.market, schedule }, 'scheduler registered')
+  // Stop any existing task first (idempotent)
+  const existing = tasks.get(key)
+  if (existing) {
+    existing.stop()
+    tasks.delete(key)
   }
 
-  setState({ status: 'running', paused: false })
-  log.info({ count: configs.length }, 'scheduler started')
+  // In manual mode just mark running — user triggers cycles via button
+  if (config.fetchMode === 'manual') {
+    setAgentStatus(key, 'running')
+    log.info({ key }, 'agent registered in manual mode')
+    return
+  }
+
+  const schedule = toSchedule(config.scheduleIntervalMinutes)
+
+  const task = cron.schedule(schedule, async () => {
+    // Autonomous mode: skip if forex market is closed
+    if (config.fetchMode === 'autonomous' && config.market === 'forex' && !isForexSessionOpen()) {
+      log.debug({ key }, 'autonomous — forex market closed, skipping')
+      return
+    }
+
+    try {
+      await runAgentCycle(config)
+    } catch (err) {
+      log.error({ key, err }, 'agent cycle error')
+    }
+  })
+
+  tasks.set(key, task)
+  setAgentStatus(key, 'running')
+  log.info({ key, schedule, mode: config.fetchMode }, 'agent schedule started')
 }
 
-export function pauseScheduler(): void {
-  for (const task of activeTasks) task.stop()
-  activeTasks.length = 0
-  setState({ status: 'paused', paused: true })
-  log.info('scheduler paused')
+export function pauseAgentSchedule(key: string): void {
+  const task = tasks.get(key)
+  if (task) {
+    task.stop()
+    tasks.delete(key)
+  }
+  setAgentStatus(key, 'paused')
+  log.info({ key }, 'agent schedule paused')
 }
 
-export function resumeScheduler(): void {
-  if (savedConfigs.length === 0) return
-  startScheduler(savedConfigs)
-  log.info('scheduler resumed')
+export function stopAgentSchedule(key: string): void {
+  const task = tasks.get(key)
+  if (task) {
+    task.stop()
+    tasks.delete(key)
+  }
+  setAgentStatus(key, 'idle')
+  log.info({ key }, 'agent schedule stopped')
 }
 
-export function stopScheduler(): void {
-  for (const task of activeTasks) task.stop()
-  activeTasks.length = 0
-  setState({ status: 'idle', paused: false })
-  log.info('scheduler stopped')
+export function resumeAgentSchedule(config: AgentConfig): void {
+  startAgentSchedule(config)
+}
+
+export function stopAllSchedules(): void {
+  for (const [key, task] of tasks) {
+    task.stop()
+    setAgentStatus(key, 'idle')
+  }
+  tasks.clear()
+  log.info('all agent schedules stopped')
 }

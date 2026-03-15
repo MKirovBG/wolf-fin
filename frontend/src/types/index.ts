@@ -1,3 +1,25 @@
+export type AgentStatus = 'idle' | 'running' | 'paused'
+
+export interface AgentConfig {
+  symbol: string
+  market: 'crypto' | 'forex'
+  paper: boolean
+  maxIterations: number
+  fetchMode: 'manual' | 'scheduled' | 'autonomous'
+  scheduleIntervalMinutes: number
+  maxLossUsd: number
+  maxPositionUsd: number
+  customPrompt?: string
+}
+
+export interface AgentState {
+  config: AgentConfig
+  status: AgentStatus
+  lastCycle: CycleResult | null
+  startedAt: string | null
+  cycleCount: number
+}
+
 export interface CycleResult {
   symbol: string
   market: 'crypto' | 'forex'
@@ -8,13 +30,6 @@ export interface CycleResult {
   error?: string
 }
 
-export interface AgentConfig {
-  symbol: string
-  market: 'crypto' | 'forex'
-  paper?: boolean
-  maxIterations?: number
-}
-
 export interface RiskState {
   dailyPnlUsd: number
   remainingBudgetUsd: number
@@ -22,27 +37,73 @@ export interface RiskState {
 }
 
 export interface StatusResponse {
-  status: 'idle' | 'running' | 'paused'
-  paused: boolean
-  paperMode: boolean
-  configs: AgentConfig[]
-  lastCycleByKey: Record<string, CycleResult>
+  agents: AgentState[]
   recentEvents: CycleResult[]
-  startedAt: string | null
   risk: RiskState
   maxDailyLossUsd: number
 }
 
+export interface Indicators {
+  rsi14: number
+  ema20: number
+  ema50: number
+  atr14: number
+  vwap: number
+  bbWidth: number
+}
+
+export interface Candle {
+  openTime: number
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+  closeTime: number
+}
+
+export interface Balance {
+  asset: string
+  free: number
+  locked: number
+}
+
+export interface Order {
+  orderId: number
+  clientOrderId: string
+  symbol: string
+  side: 'BUY' | 'SELL'
+  type: string
+  price: number
+  origQty: number
+  executedQty: number
+  status: string
+  timeInForce: string
+  time: number
+  updateTime: number
+}
+
+export interface MarketSnapshot {
+  symbol: string
+  timestamp: number
+  market: 'crypto' | 'forex'
+  price: { bid: number; ask: number; last: number }
+  stats24h: { volume: number; changePercent: number; high: number; low: number }
+  candles: { m1: Candle[]; m15: Candle[]; h1: Candle[]; h4: Candle[] }
+  indicators: Indicators
+  account: { balances: Balance[]; openOrders: Order[] }
+  risk: RiskState
+  forex?: {
+    spread: number
+    pipValue: number
+    sessionOpen: boolean
+    swapLong: number
+    swapShort: number
+  }
+}
+
 export interface KeysResponse {
-  ANTHROPIC_API_KEY: boolean
-  CLAUDE_MODEL: boolean
-  OANDA_API_KEY: boolean
-  OANDA_ACCOUNT_ID: boolean
-  BINANCE_API_KEY: boolean
-  BINANCE_API_SECRET: boolean
-  FINNHUB_KEY: boolean
-  TWELVE_DATA_KEY: boolean
-  COINGECKO_KEY: boolean
+  [key: string]: boolean
 }
 
 export interface ReportSummary {

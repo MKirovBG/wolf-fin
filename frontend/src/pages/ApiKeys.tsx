@@ -5,7 +5,7 @@ import { Card } from '../components/Card.tsx'
 
 interface ServiceRow {
   label: string
-  envKey: keyof KeysResponse
+  envKey: string
   service: string
   description: string
   required: boolean
@@ -15,8 +15,10 @@ interface ServiceRow {
 const SERVICES: ServiceRow[] = [
   { label: 'Anthropic', envKey: 'ANTHROPIC_API_KEY', service: 'anthropic', description: 'Claude AI — required for all trading decisions', required: true, placeholder: 'sk-ant-api03-...' },
   { label: 'Claude Model', envKey: 'CLAUDE_MODEL', service: '', description: 'Leave blank to use default (claude-opus-4-6)', required: false, placeholder: 'claude-haiku-4-5-20251001' },
-  { label: 'OANDA API Key', envKey: 'OANDA_API_KEY', service: 'oanda', description: 'Forex broker — required for forex trading', required: false, placeholder: 'Your OANDA token' },
-  { label: 'OANDA Account ID', envKey: 'OANDA_ACCOUNT_ID', service: '', description: 'Format: XXX-XXX-XXXXXXX-XXX', required: false, placeholder: '001-001-1234567-001' },
+  { label: 'Alpaca API Key', envKey: 'ALPACA_API_KEY', service: 'alpaca', description: 'Forex/stock broker — live trading', required: false, placeholder: 'AK...' },
+  { label: 'Alpaca Secret', envKey: 'ALPACA_API_SECRET', service: '', description: 'Live account secret', required: false, placeholder: 'Your Alpaca live secret' },
+  { label: 'Alpaca Paper Key', envKey: 'ALPACA_PAPER_KEY', service: '', description: 'Paper trading key (recommended for testing)', required: false, placeholder: 'PK...' },
+  { label: 'Alpaca Paper Secret', envKey: 'ALPACA_PAPER_SECRET', service: '', description: 'Paper trading secret', required: false, placeholder: 'Your Alpaca paper secret' },
   { label: 'Binance API Key', envKey: 'BINANCE_API_KEY', service: 'binance', description: 'Crypto exchange — required for crypto trading', required: true, placeholder: 'Your Binance key' },
   { label: 'Binance Secret', envKey: 'BINANCE_API_SECRET', service: '', description: 'Shown only once at creation', required: true, placeholder: 'Your Binance secret' },
   { label: 'Finnhub', envKey: 'FINNHUB_KEY', service: 'finnhub', description: 'Economic calendar — optional enrichment', required: false, placeholder: 'Your Finnhub key' },

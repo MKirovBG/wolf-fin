@@ -12,38 +12,27 @@ import { buildMarketContext } from './context.js'
 import { sessionLabel } from '../adapters/session.js'
 import { TOOLS } from '../tools/definitions.js'
 import { recordCycle } from '../server/state.js'
+import type { AgentConfig } from '../types.js'
 import type { OrderParams } from '../adapters/types.js'
+
+// Re-export so existing imports of AgentConfig from this module still work
+export type { AgentConfig } from '../types.js'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
 
 const anthropic = new Anthropic()
 
-// ── Config ────────────────────────────────────────────────────────────────────
-
-export interface AgentConfig {
-  symbol: string
-  market: 'crypto' | 'forex'
-  /** Override paper-trading mode. Defaults to env PAPER_TRADING !== 'false'. */
-  paper?: boolean
-  /** Maximum tool-call iterations before the cycle is aborted. Default: 10. */
-  maxIterations?: number
-}
-
-function isPaperMode(config: AgentConfig): boolean {
-  if (config.paper !== undefined) return config.paper
-  return process.env.PAPER_TRADING !== 'false'
-}
-
 // ── System Prompt ─────────────────────────────────────────────────────────────
 
-function buildSystemPrompt(market: 'crypto' | 'forex', paper: boolean): string {
+function buildSystemPrompt(config: AgentConfig): string {
+  const { market, paper, customPrompt } = config
   const mode = paper ? '[PAPER TRADING — no real orders will be sent]' : '[LIVE TRADING]'
   const sessionNote =
     market === 'forex'
       ? `\nCURRENT SESSION: ${sessionLabel()}\nFOREX SESSION RULES: Only trade during Tokyo, London, or New York sessions. Avoid Sydney-only hours. Reject entries when spread > 3 pips or sessionOpen is false.`
       : ''
 
-  return `You are Wolf-Fin, an autonomous trading agent. ${mode}
+  const base = `You are Wolf-Fin, an autonomous trading agent. ${mode}
 
 ROLE: Disciplined, risk-first algorithmic trader. Make exactly one trading decision per cycle — HOLD, BUY, SELL, or CANCEL — based on technical evidence and market context.
 
@@ -64,6 +53,8 @@ ${sessionNote}
 DECISION FORMAT (append after tool calls):
   DECISION: [HOLD | BUY <qty> @ <price> | SELL <qty> @ <price> | CANCEL <orderId>]
   REASON: <1-2 sentences of evidence>`
+
+  return customPrompt ? `${base}\n\nADDITIONAL INSTRUCTIONS:\n${customPrompt}` : base
 }
 
 // ── Tool Dispatcher ───────────────────────────────────────────────────────────
@@ -82,13 +73,11 @@ async function dispatchTool(
       const riskState = getRiskState()
       const snap = await adapter.getSnapshot(input.symbol as string, riskState)
       snap.context = await buildMarketContext(input.symbol as string, market)
-      // Keep per-market position notional in sync for risk calculations
       const openNotional = snap.account.openOrders.reduce(
         (sum, o) => sum + o.price * o.origQty,
         0,
       )
       updatePositionNotionalFor(market, openNotional)
-      // Cache forex context so place_order validation can use it
       if (market === 'forex' && snap.forex) {
         setForexContext({
           spread: snap.forex.spread,
@@ -167,8 +156,9 @@ async function dispatchTool(
 // ── Agent Cycle ───────────────────────────────────────────────────────────────
 
 export async function runAgentCycle(config: AgentConfig): Promise<void> {
-  const paper = isPaperMode(config)
-  const maxIterations = config.maxIterations ?? 10
+  const paper = config.paper
+  const maxIterations = config.maxIterations
+  const agentKey = `${config.market}:${config.symbol}`
 
   log.info({ symbol: config.symbol, market: config.market, paper }, 'agent cycle start')
 
@@ -184,7 +174,7 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
     },
   ]
 
-  const systemPrompt = buildSystemPrompt(config.market, paper)
+  const systemPrompt = buildSystemPrompt(config)
   let iterations = 0
 
   while (iterations < maxIterations) {
@@ -200,7 +190,6 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
 
     log.debug({ stop_reason: response.stop_reason, usage: response.usage }, 'claude response')
 
-    // Append assistant turn to conversation
     messages.push({ role: 'assistant', content: response.content })
 
     if (response.stop_reason === 'end_turn') {
@@ -211,7 +200,7 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
       log.info({ decision: text }, 'cycle complete')
       const decMatch = text.match(/DECISION:\s*(.+)/i)
       const reasonMatch = text.match(/REASON:\s*(.+)/i)
-      recordCycle({
+      recordCycle(agentKey, {
         symbol: config.symbol,
         market: config.market,
         paper,
@@ -255,14 +244,13 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
       continue
     }
 
-    // Unexpected stop reason (max_tokens, etc.)
     log.warn({ stop_reason: response.stop_reason }, 'unexpected stop reason — aborting cycle')
     break
   }
 
   if (iterations >= maxIterations) {
     log.warn({ maxIterations }, 'agent cycle hit iteration limit')
-    recordCycle({
+    recordCycle(agentKey, {
       symbol: config.symbol,
       market: config.market,
       paper,

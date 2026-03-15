@@ -3,6 +3,7 @@ import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, 
 import { getStatus } from '../api/client.ts'
 import type { StatusResponse, CycleResult } from '../types/index.ts'
 import { Card } from '../components/Card.tsx'
+import { LogsTerminal } from '../components/LogsTerminal.tsx'
 import { Badge, decisionVariant } from '../components/Badge.tsx'
 import { AgentStatusBadge } from '../components/AgentStatusBadge.tsx'
 import { RiskBar } from '../components/RiskBar.tsx'
@@ -216,6 +217,11 @@ export function Dashboard() {
           </div>
         </Card>
       )}
+
+      {/* Live log terminal */}
+      <div className="mb-4">
+        <LogsTerminal maxHeight={400} />
+      </div>
 
       {/* Recent events */}
       <Card title="Recent Cycles">

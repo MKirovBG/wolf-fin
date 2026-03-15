@@ -3,6 +3,7 @@ import { useForm } from 'react-hook-form'
 import { Badge, decisionVariant } from './Badge.tsx'
 import { AgentStatusBadge } from './AgentStatusBadge.tsx'
 import { MarketDataModal } from './MarketDataModal.tsx'
+import { LogsTerminal } from './LogsTerminal.tsx'
 import { startAgent, pauseAgent, stopAgent, triggerAgent, updateAgentConfig, deleteAgent } from '../api/client.ts'
 import type { AgentState, AgentConfig } from '../types/index.ts'
 
@@ -157,6 +158,7 @@ function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
 export function AgentCard({ agent, onRefresh }: Props) {
   const [showSettings, setShowSettings] = useState(false)
   const [showMarket, setShowMarket] = useState(false)
+  const [showLogs, setShowLogs] = useState(false)
   const [loading, setLoading] = useState<string | null>(null)
 
   const key = `${agent.config.market}:${agent.config.symbol}`
@@ -258,6 +260,12 @@ export function AgentCard({ agent, onRefresh }: Props) {
         >
           📊 Market Data
         </button>
+        <button
+          onClick={() => setShowLogs(s => !s)}
+          className={`px-2.5 py-1 text-[11px] border rounded transition-colors ${showLogs ? 'border-green text-green bg-green-dim' : 'border-border text-muted hover:border-muted hover:text-white'}`}
+        >
+          📋 Logs
+        </button>
       </div>
 
       {/* Settings panel */}
@@ -268,6 +276,13 @@ export function AgentCard({ agent, onRefresh }: Props) {
           onSave={() => { setShowSettings(false); onRefresh() }}
           onDelete={() => onRefresh()}
         />
+      )}
+
+      {/* Per-agent log terminal */}
+      {showLogs && (
+        <div className="mt-2">
+          <LogsTerminal agentKey={key} maxHeight={320} />
+        </div>
       )}
 
       {/* Market data modal */}

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { existsSync, appendFileSync, readFileSync, writeFileSync } from 'fs'
 import pino from 'pino'
-import { getState, getAgent, upsertAgent, removeAgent, setAgentStatus } from './state.js'
+import { getState, getAgent, upsertAgent, removeAgent, setAgentStatus, getLogs } from './state.js'
 import { getRiskState, MAX_DAILY_LOSS_USD } from '../guardrails/riskState.js'
 import { getRiskStateFor } from '../guardrails/riskStateStore.js'
 import { startAgentSchedule, pauseAgentSchedule, stopAgentSchedule } from '../scheduler/index.js'
@@ -174,6 +174,14 @@ export async function startServer(): Promise<void> {
     if (!agent) return { ok: false, message: 'Agent not found' }
     runAgentCycle(agent.config).catch(err => log.error({ err, key }, 'manual trigger error'))
     return { ok: true }
+  })
+
+  // ── Logs ────────────────────────────────────────────────────────────────────
+  app.get('/api/logs', async (req) => {
+    const { since, agent } = req.query as { since?: string; agent?: string }
+    let entries = getLogs(since ? parseInt(since) : undefined)
+    if (agent) entries = entries.filter(l => l.agentKey === agent)
+    return entries
   })
 
   // ── Market Data (read-only snapshot, no agent/Claude involved) ───────────────

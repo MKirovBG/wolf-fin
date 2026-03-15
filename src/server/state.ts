@@ -4,6 +4,28 @@ import type { AgentState, AgentStatus, CycleResult } from '../types.js'
 
 // Re-export for modules that used to import CycleResult from here
 export type { CycleResult } from '../types.js'
+import type { LogEntry, LogLevel, LogEvent } from '../types.js'
+
+// ── Log buffer ────────────────────────────────────────────────────────────────
+
+let logSeq = 0
+const logBuffer: LogEntry[] = []
+
+export function logEvent(
+  agentKey: string,
+  level: LogLevel,
+  event: LogEvent,
+  message: string,
+  data?: Record<string, unknown>,
+): void {
+  logBuffer.unshift({ id: ++logSeq, time: new Date().toISOString(), agentKey, level, event, message, data })
+  if (logBuffer.length > 500) logBuffer.length = 500
+}
+
+export function getLogs(sinceId?: number): LogEntry[] {
+  if (!sinceId) return logBuffer.slice(0, 200)
+  return logBuffer.filter(l => l.id > sinceId)
+}
 
 interface AppState {
   agents: Record<string, AgentState>   // key = "market:symbol"

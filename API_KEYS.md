@@ -10,7 +10,7 @@
   - My Account → Manage API Access → Generate Token
   - `.env`: `OANDA_API_KEY`, `OANDA_ACCOUNT_ID`
 
-- [ ] **Binance** — https://testnet.binance.vision *(testnet, free — no real money)*
+- [ ] **Binance** — https://testnet.binance.vision _(testnet, free — no real money)_
   - Account → API Management → Create API → Enable Spot Trading
   - `.env`: `BINANCE_API_KEY`, `BINANCE_API_SECRET`
 
@@ -29,3 +29,8 @@
 - [ ] **CoinGecko** — https://www.coingecko.com/en/api
   - Free tier works without a key (just rate-limited)
   - `.env`: `COINGECKO_KEY`
+
+https://api.alpaca.markets: AKP66ZZ2ISSRC5L7OYCQ7DYCSO - KEY C8sH2YvhD9DJc2ZQZmtZhjDM8qFmmhEsULtCLZHUX9VZ - SECRET
+https://paper-api.alpaca.markets/v2: PKMWZHCRKFHLYDFFTOHFGTR5Q6 - KEY Cfjs43tLPkotNvZPZPGC8Rhrtffh1tjPYChxDaSRKY3c - SECRET
+
+

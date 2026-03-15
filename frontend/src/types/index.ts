@@ -102,6 +102,23 @@ export interface MarketSnapshot {
   }
 }
 
+export type LogLevel = 'info' | 'warn' | 'error' | 'debug'
+export type LogEvent =
+  | 'cycle_start' | 'cycle_end' | 'cycle_error'
+  | 'tool_call' | 'tool_result' | 'tool_error'
+  | 'claude_thinking' | 'decision'
+  | 'guardrail_block' | 'session_skip'
+
+export interface LogEntry {
+  id: number
+  time: string
+  agentKey: string
+  level: LogLevel
+  event: LogEvent
+  message: string
+  data?: Record<string, unknown>
+}
+
 export interface KeysResponse {
   [key: string]: boolean
 }

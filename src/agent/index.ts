@@ -11,15 +11,13 @@ import { getForexContext } from '../guardrails/riskStateStore.js'
 import { buildMarketContext } from './context.js'
 import { sessionLabel } from '../adapters/session.js'
 import { TOOLS } from '../tools/definitions.js'
-import { recordCycle } from '../server/state.js'
+import { recordCycle, logEvent } from '../server/state.js'
 import type { AgentConfig } from '../types.js'
 import type { OrderParams } from '../adapters/types.js'
 
-// Re-export so existing imports of AgentConfig from this module still work
 export type { AgentConfig } from '../types.js'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
-
 const anthropic = new Anthropic()
 
 // ── System Prompt ─────────────────────────────────────────────────────────────
@@ -57,6 +55,28 @@ DECISION FORMAT (append after tool calls):
   return customPrompt ? `${base}\n\nADDITIONAL INSTRUCTIONS:\n${customPrompt}` : base
 }
 
+// ── Tool result summariser (keeps logs readable) ──────────────────────────────
+
+function summariseToolResult(name: string, result: unknown): string {
+  try {
+    if (name === 'get_snapshot') {
+      const s = result as { price?: { last?: number }; indicators?: { rsi14?: number; ema20?: number }; stats24h?: { changePercent?: number } }
+      return `price=${s.price?.last?.toFixed(4)} rsi=${s.indicators?.rsi14?.toFixed(1)} ema20=${s.indicators?.ema20?.toFixed(4)} 24hChg=${s.stats24h?.changePercent?.toFixed(2)}%`
+    }
+    if (name === 'get_order_book') {
+      const b = result as { bids?: [number, number][]; asks?: [number, number][] }
+      return `best bid=${b.bids?.[0]?.[0]} ask=${b.asks?.[0]?.[0]}`
+    }
+    if (name === 'place_order') {
+      const o = result as { status?: string; orderId?: number; blocked?: boolean; reason?: string }
+      if (o.blocked) return `BLOCKED — ${o.reason}`
+      return `status=${o.status} orderId=${o.orderId}`
+    }
+    if (name === 'cancel_order') return 'cancelled'
+    return JSON.stringify(result).slice(0, 120)
+  } catch { return '(unparseable)' }
+}
+
 // ── Tool Dispatcher ───────────────────────────────────────────────────────────
 
 async function dispatchTool(
@@ -74,29 +94,20 @@ async function dispatchTool(
       const snap = await adapter.getSnapshot(input.symbol as string, riskState)
       snap.context = await buildMarketContext(input.symbol as string, market)
       const openNotional = snap.account.openOrders.reduce(
-        (sum, o) => sum + o.price * o.origQty,
-        0,
+        (sum, o) => sum + o.price * o.origQty, 0,
       )
       updatePositionNotionalFor(market, openNotional)
       if (market === 'forex' && snap.forex) {
-        setForexContext({
-          spread: snap.forex.spread,
-          sessionOpen: snap.forex.sessionOpen,
-          pipValue: snap.forex.pipValue,
-        })
+        setForexContext({ spread: snap.forex.spread, sessionOpen: snap.forex.sessionOpen, pipValue: snap.forex.pipValue })
       }
       return snap
     }
-
     case 'get_order_book':
       return adapter.getOrderBook(input.symbol as string, input.depth as number | undefined)
-
     case 'get_recent_trades':
       return adapter.getRecentTrades(input.symbol as string, input.limit as number | undefined)
-
     case 'get_open_orders':
       return adapter.getOpenOrders(input.symbol as string | undefined)
-
     case 'place_order': {
       const params: OrderParams = {
         symbol: input.symbol as string,
@@ -107,47 +118,25 @@ async function dispatchTool(
         timeInForce: input.timeInForce as 'GTC' | 'IOC' | 'FOK' | undefined,
         stopPips: input.stopPips as number | undefined,
       }
-
       const validation =
         market === 'forex'
-          ? (() => {
-              const fx = getForexContext()
-              return validateForexOrder(params, fx.spread, fx.sessionOpen, fx.pipValue)
-            })()
+          ? (() => { const fx = getForexContext(); return validateForexOrder(params, fx.spread, fx.sessionOpen, fx.pipValue) })()
           : validateOrder(params, params.price ?? 0)
-
       if (!validation.ok) {
         log.warn({ reason: validation.reason }, 'order blocked by guardrails')
         return { blocked: true, reason: validation.reason }
       }
-
       if (paper) {
         log.info({ params }, '[PAPER] order simulated')
-        return {
-          orderId: Date.now(),
-          clientOrderId: `paper-${Date.now()}`,
-          symbol: params.symbol,
-          side: params.side,
-          type: params.type,
-          price: params.price ?? 0,
-          origQty: params.quantity,
-          status: 'PAPER_FILLED',
-          transactTime: Date.now(),
-        }
+        return { orderId: Date.now(), clientOrderId: `paper-${Date.now()}`, symbol: params.symbol, side: params.side, type: params.type, price: params.price ?? 0, origQty: params.quantity, status: 'PAPER_FILLED', transactTime: Date.now() }
       }
-
       return adapter.placeOrder(params)
     }
-
     case 'cancel_order': {
-      if (paper) {
-        log.info({ orderId: input.orderId }, '[PAPER] cancel simulated')
-        return { cancelled: true }
-      }
+      if (paper) { log.info({ orderId: input.orderId }, '[PAPER] cancel simulated'); return { cancelled: true } }
       await adapter.cancelOrder(input.symbol as string, input.orderId as number)
       return { cancelled: true }
     }
-
     default:
       throw new Error(`Unknown tool: ${name}`)
   }
@@ -160,103 +149,110 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
   const maxIterations = config.maxIterations
   const agentKey = `${config.market}:${config.symbol}`
 
+  logEvent(agentKey, 'info', 'cycle_start', `Starting cycle for ${config.symbol} (${config.market}) [${paper ? 'PAPER' : 'LIVE'}]`)
   log.info({ symbol: config.symbol, market: config.market, paper }, 'agent cycle start')
 
   if (isDailyLimitHitFor(config.market)) {
+    logEvent(agentKey, 'warn', 'session_skip', 'Daily loss limit hit — skipping cycle')
     log.warn({ market: config.market }, 'daily loss limit hit — skipping cycle')
     return
   }
 
   const messages: Anthropic.MessageParam[] = [
-    {
-      role: 'user',
-      content: `Run a trading cycle for ${config.symbol} (${config.market}). Analyse the market and make your decision now.`,
-    },
+    { role: 'user', content: `Run a trading cycle for ${config.symbol} (${config.market}). Analyse the market and make your decision now.` },
   ]
 
   const systemPrompt = buildSystemPrompt(config)
   let iterations = 0
 
-  while (iterations < maxIterations) {
-    iterations++
+  try {
+    while (iterations < maxIterations) {
+      iterations++
+      logEvent(agentKey, 'debug', 'claude_thinking', `Sending to Claude (iteration ${iterations}/${maxIterations})`)
 
-    const response = await anthropic.messages.create({
-      model: process.env.CLAUDE_MODEL ?? 'claude-opus-4-6',
-      max_tokens: 4096,
-      system: systemPrompt,
-      tools: TOOLS,
-      messages,
-    })
-
-    log.debug({ stop_reason: response.stop_reason, usage: response.usage }, 'claude response')
-
-    messages.push({ role: 'assistant', content: response.content })
-
-    if (response.stop_reason === 'end_turn') {
-      const text = response.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map(b => b.text)
-        .join('\n')
-      log.info({ decision: text }, 'cycle complete')
-      const decMatch = text.match(/DECISION:\s*(.+)/i)
-      const reasonMatch = text.match(/REASON:\s*(.+)/i)
-      recordCycle(agentKey, {
-        symbol: config.symbol,
-        market: config.market,
-        paper,
-        decision: decMatch?.[1]?.trim() ?? 'UNKNOWN',
-        reason: reasonMatch?.[1]?.trim() ?? '',
-        time: new Date().toISOString(),
+      const response = await anthropic.messages.create({
+        model: process.env.CLAUDE_MODEL ?? 'claude-opus-4-6',
+        max_tokens: 4096,
+        system: systemPrompt,
+        tools: TOOLS,
+        messages,
       })
+
+      log.debug({ stop_reason: response.stop_reason, usage: response.usage }, 'claude response')
+      messages.push({ role: 'assistant', content: response.content })
+
+      if (response.stop_reason === 'end_turn') {
+        const text = response.content
+          .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+          .map(b => b.text)
+          .join('\n')
+
+        // Log Claude's full reasoning
+        if (text.trim()) {
+          logEvent(agentKey, 'info', 'claude_thinking', text.trim())
+        }
+
+        const decMatch   = text.match(/DECISION:\s*(.+)/i)
+        const reasonMatch = text.match(/REASON:\s*(.+)/i)
+        const decision   = decMatch?.[1]?.trim() ?? 'UNKNOWN'
+        const reason     = reasonMatch?.[1]?.trim() ?? ''
+
+        logEvent(agentKey, 'info', 'decision', `DECISION: ${decision}${reason ? ` — ${reason}` : ''}`)
+        log.info({ decision }, 'cycle complete')
+
+        recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper, decision, reason, time: new Date().toISOString() })
+        break
+      }
+
+      if (response.stop_reason === 'tool_use') {
+        const toolResults: Anthropic.ToolResultBlockParam[] = []
+
+        for (const block of response.content) {
+          if (block.type !== 'tool_use') continue
+
+          const inputSummary = Object.entries(block.input as Record<string, unknown>)
+            .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+            .join(' ')
+
+          logEvent(agentKey, 'info', 'tool_call', `→ ${block.name}(${inputSummary})`)
+          log.info({ tool: block.name, input: block.input }, 'tool call')
+
+          let result: unknown
+          try {
+            result = await dispatchTool(block.name, block.input as Record<string, unknown>, config.market, paper)
+            const summary = summariseToolResult(block.name, result)
+            logEvent(agentKey, 'info', 'tool_result', `← ${block.name}: ${summary}`)
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            logEvent(agentKey, 'error', 'tool_error', `← ${block.name} ERROR: ${msg}`)
+            log.error({ tool: block.name, err: msg }, 'tool error')
+            result = { error: msg }
+          }
+
+          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) })
+        }
+
+        messages.push({ role: 'user', content: toolResults })
+        continue
+      }
+
+      logEvent(agentKey, 'warn', 'cycle_end', `Unexpected stop reason: ${response.stop_reason}`)
+      log.warn({ stop_reason: response.stop_reason }, 'unexpected stop reason — aborting cycle')
       break
     }
 
-    if (response.stop_reason === 'tool_use') {
-      const toolResults: Anthropic.ToolResultBlockParam[] = []
-
-      for (const block of response.content) {
-        if (block.type !== 'tool_use') continue
-
-        log.info({ tool: block.name, input: block.input }, 'tool call')
-
-        let result: unknown
-        try {
-          result = await dispatchTool(
-            block.name,
-            block.input as Record<string, unknown>,
-            config.market,
-            paper,
-          )
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          log.error({ tool: block.name, err: msg }, 'tool error')
-          result = { error: msg }
-        }
-
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: block.id,
-          content: JSON.stringify(result),
-        })
-      }
-
-      messages.push({ role: 'user', content: toolResults })
-      continue
+    if (iterations >= maxIterations) {
+      logEvent(agentKey, 'warn', 'cycle_end', `Hit iteration limit (${maxIterations}) — cycle aborted`)
+      log.warn({ maxIterations }, 'agent cycle hit iteration limit')
+      recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper, decision: 'ABORTED', reason: `Hit iteration limit (${maxIterations})`, time: new Date().toISOString() })
     }
 
-    log.warn({ stop_reason: response.stop_reason }, 'unexpected stop reason — aborting cycle')
-    break
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    logEvent(agentKey, 'error', 'cycle_error', `Cycle failed: ${msg}`)
+    log.error({ err: msg }, 'agent cycle crashed')
+    recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper, decision: 'ERROR', reason: msg, time: new Date().toISOString(), error: msg })
   }
 
-  if (iterations >= maxIterations) {
-    log.warn({ maxIterations }, 'agent cycle hit iteration limit')
-    recordCycle(agentKey, {
-      symbol: config.symbol,
-      market: config.market,
-      paper,
-      decision: 'ABORTED',
-      reason: `Hit iteration limit (${maxIterations})`,
-      time: new Date().toISOString(),
-    })
-  }
+  logEvent(agentKey, 'info', 'cycle_end', `Cycle complete after ${iterations} iteration(s)`)
 }

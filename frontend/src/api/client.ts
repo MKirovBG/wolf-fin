@@ -1,4 +1,4 @@
-import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult } from '../types/index.ts'
+import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, LogEntry } from '../types/index.ts'
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, options)
@@ -49,6 +49,15 @@ export const setKey = (key: string, value: string) =>
 
 export const testKey = (service: string) =>
   api<{ ok: boolean; message: string }>(`/api/keys/test/${service}`, { method: 'POST' })
+
+// ── Logs ─────────────────────────────────────────────────────────────────────
+export const getLogs = (sinceId?: number, agent?: string) => {
+  const params = new URLSearchParams()
+  if (sinceId) params.set('since', String(sinceId))
+  if (agent)   params.set('agent', agent)
+  const qs = params.toString()
+  return api<LogEntry[]>(`/api/logs${qs ? `?${qs}` : ''}`)
+}
 
 // ── Reports ───────────────────────────────────────────────────────────────────
 export const getReportSummary = () => api<ReportSummary>('/api/reports/summary')

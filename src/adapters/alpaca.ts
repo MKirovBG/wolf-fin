@@ -1,7 +1,8 @@
 // Wolf-Fin Alpaca Adapter — REST wrapper implementing IMarketAdapter for forex
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const Alpaca = require('@alpacahq/alpaca-trade-api') as new (config: {
+import { createRequire } from 'module'
+const _require = createRequire(import.meta.url)
+const Alpaca = _require('@alpacahq/alpaca-trade-api') as new (config: {
   keyId: string
   secretKey: string
   paper: boolean

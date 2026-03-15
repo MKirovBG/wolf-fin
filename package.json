@@ -22,6 +22,7 @@
     "@alpacahq/alpaca-trade-api": "^3.1.3",
     "@anthropic-ai/sdk": "^0.78.0",
     "@fastify/static": "^8.3.0",
+    "better-sqlite3": "^12.8.0",
     "binance": "^3.5.1",
     "dotenv": "^17.3.1",
     "fastify": "^5.8.2",
@@ -30,10 +31,14 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.5.0",
     "concurrently": "^9.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["better-sqlite3", "esbuild"]
   }
 }

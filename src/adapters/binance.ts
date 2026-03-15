@@ -2,6 +2,7 @@
 
 import { MainClient } from 'binance'
 import type { Kline } from 'binance'
+import { createHmac } from 'crypto'
 import type {
   Candle,
   Balance,
@@ -30,6 +31,27 @@ let _client: MainClient | null = null
 function client(): MainClient {
   if (!_client) _client = createClient()
   return _client
+}
+
+// ── Direct signed REST helper (bypasses SDK signing issues) ───────────────────
+
+function binanceBase(): string {
+  return process.env.BINANCE_TESTNET === 'true'
+    ? 'https://testnet.binance.vision'
+    : 'https://api.binance.com'
+}
+
+async function signedGet<T>(path: string, params: Record<string, string | number> = {}): Promise<T> {
+  const key    = process.env.BINANCE_API_KEY    ?? ''
+  const secret = process.env.BINANCE_API_SECRET ?? ''
+  const ts     = Date.now()
+  const qs     = new URLSearchParams({ ...Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])), timestamp: String(ts) }).toString()
+  const sig    = createHmac('sha256', secret).update(qs).digest('hex')
+  const res    = await fetch(`${binanceBase()}${path}?${qs}&signature=${sig}`, {
+    headers: { 'X-MBX-APIKEY': key },
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json() as Promise<T>
 }
 
 // ── Type coercion helpers ─────────────────────────────────────────────────────
@@ -66,8 +88,8 @@ export class BinanceAdapter implements IMarketAdapter {
         c.getKlines({ symbol, interval: '1h', limit: 100 }),
         c.getKlines({ symbol, interval: '4h', limit: 100 }),
         c.getOrderBook({ symbol, limit: 5 }),
-        c.getAccountInformation(),
-        c.getOpenOrders({ symbol }),
+        signedGet<{ balances: Array<{ asset: string; free: string; locked: string }> }>('/api/v3/account'),
+        signedGet<Array<{ orderId: number; clientOrderId: string; symbol: string; side: string; type: string; price: string; origQty: string; executedQty: string; status: string; timeInForce: string; time: number; updateTime: number }>>('/api/v3/openOrders', { symbol }),
       ])
 
     const m1 = mapKlines(m1raw)
@@ -83,7 +105,7 @@ export class BinanceAdapter implements IMarketAdapter {
       .filter(b => num(b.free) > 0 || num(b.locked) > 0)
       .map(b => ({ asset: b.asset, free: num(b.free), locked: num(b.locked) }))
 
-    const orders: Order[] = openOrders.map(o => ({
+    const orders: Order[] = (openOrders as Array<{ orderId: number; clientOrderId: string; symbol: string; side: string; type: string; price: string; origQty: string; executedQty: string; status: string; timeInForce: string; time: number; updateTime: number }>).map(o => ({
       orderId: o.orderId,
       clientOrderId: o.clientOrderId,
       symbol: o.symbol,
@@ -138,14 +160,15 @@ export class BinanceAdapter implements IMarketAdapter {
   }
 
   async getBalances(): Promise<Balance[]> {
-    const info = await client().getAccountInformation()
+    const info = await signedGet<{ balances: Array<{ asset: string; free: string; locked: string }> }>('/api/v3/account')
     return info.balances
       .filter(b => num(b.free) > 0 || num(b.locked) > 0)
       .map(b => ({ asset: b.asset, free: num(b.free), locked: num(b.locked) }))
   }
 
   async getOpenOrders(symbol?: string): Promise<Order[]> {
-    const raw = await client().getOpenOrders(symbol ? { symbol } : {})
+    type RawOrder = { orderId: number; clientOrderId: string; symbol: string; side: string; type: string; price: string; origQty: string; executedQty: string; status: string; timeInForce: string; time: number; updateTime: number }
+    const raw = await signedGet<RawOrder[]>('/api/v3/openOrders', symbol ? { symbol } : {})
     return raw.map(o => ({
       orderId: o.orderId,
       clientOrderId: o.clientOrderId,
@@ -163,7 +186,8 @@ export class BinanceAdapter implements IMarketAdapter {
   }
 
   async getTradeHistory(symbol: string, limit = 50): Promise<Fill[]> {
-    const raw = await client().getAccountTradeList({ symbol, limit })
+    type RawFill = { symbol: string; id: number; orderId: number; price: string; qty: string; quoteQty: string; commission: string; commissionAsset: string; time: number; isBuyer: boolean; isMaker: boolean }
+    const raw = await signedGet<RawFill[]>('/api/v3/myTrades', { symbol, limit })
     return raw.map(t => ({
       symbol: t.symbol,
       id: t.id,

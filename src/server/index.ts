@@ -7,11 +7,13 @@ import { dirname, join } from 'path'
 import { existsSync, appendFileSync, readFileSync, writeFileSync } from 'fs'
 import pino from 'pino'
 import { getState, getAgent, upsertAgent, removeAgent, setAgentStatus, getLogs } from './state.js'
+import { dbGetCycleResults, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor } from '../db/index.js'
 import { getRiskState, MAX_DAILY_LOSS_USD } from '../guardrails/riskState.js'
 import { getRiskStateFor } from '../guardrails/riskStateStore.js'
 import { startAgentSchedule, pauseAgentSchedule, stopAgentSchedule } from '../scheduler/index.js'
 import { runAgentCycle } from '../agent/index.js'
 import { getAdapter } from '../adapters/registry.js'
+import { binanceAdapter } from '../adapters/binance.js'
 import type { AgentConfig, AgentState } from '../types.js'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
@@ -54,20 +56,60 @@ async function testConnection(service: string): Promise<{ ok: boolean; message: 
         return r.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `HTTP ${r.status}` }
       }
       case 'alpaca': {
+        const messages: string[] = []
+        // Test data API with live keys
+        if (process.env.ALPACA_API_KEY && process.env.ALPACA_API_SECRET) {
+          // Use a US stock snapshot — available on all account tiers, no subscription needed
+          const dr = await fetch('https://data.alpaca.markets/v2/stocks/AAPL/snapshot', {
+            headers: { 'APCA-API-KEY-ID': process.env.ALPACA_API_KEY, 'APCA-API-SECRET-KEY': process.env.ALPACA_API_SECRET },
+          })
+          if (dr.ok) {
+            const snap = await dr.json() as { latestTrade?: { p?: number } }
+            const price = snap?.latestTrade?.p
+            messages.push(price ? `Data API OK — AAPL $${price}` : 'Data API OK')
+          } else {
+            messages.push(`Data API HTTP ${dr.status}`)
+          }
+        }
+        // Test trading API (paper or live)
         const paper = process.env.ALPACA_PAPER !== 'false'
-        const base = paper ? 'https://paper-api.alpaca.markets' : 'https://api.alpaca.markets'
+        const tradingBase = paper ? 'https://paper-api.alpaca.markets' : 'https://api.alpaca.markets'
         const key = paper ? process.env.ALPACA_PAPER_KEY : process.env.ALPACA_API_KEY
         const secret = paper ? process.env.ALPACA_PAPER_SECRET : process.env.ALPACA_API_SECRET
-        const r = await fetch(`${base}/v2/account`, {
-          headers: { 'APCA-API-KEY-ID': key ?? '', 'APCA-API-SECRET-KEY': secret ?? '' },
-        })
-        return r.ok ? { ok: true, message: paper ? 'Paper account OK' : 'Live account OK' } : { ok: false, message: `HTTP ${r.status}` }
+        if (key && secret) {
+          const tr = await fetch(`${tradingBase}/v2/account`, {
+            headers: { 'APCA-API-KEY-ID': key, 'APCA-API-SECRET-KEY': secret },
+          })
+          messages.push(tr.ok ? (paper ? 'Paper trading OK' : 'Live trading OK') : `Trading API HTTP ${tr.status}`)
+        }
+        if (messages.length === 0) return { ok: false, message: 'No Alpaca keys set' }
+        const allOk = messages.every(m => m.includes('OK'))
+        return { ok: allOk, message: messages.join(' | ') }
       }
       case 'binance': {
-        const testnet = process.env.BINANCE_TESTNET !== 'false'
-        const base = testnet ? 'https://testnet.binance.vision' : 'https://api.binance.com'
+        const binKey    = process.env.BINANCE_API_KEY?.trim()
+        const binSecret = process.env.BINANCE_API_SECRET?.trim()
+        if (binKey && binSecret) {
+          const { createHmac } = await import('crypto')
+          const testnet = process.env.BINANCE_TESTNET === 'true'
+          const base = testnet ? 'https://testnet.binance.vision' : 'https://api.binance.com'
+          const ts = Date.now()
+          const qs = `timestamp=${ts}`
+          const sig = createHmac('sha256', binSecret).update(qs).digest('hex')
+          const r = await fetch(`${base}/api/v3/account?${qs}&signature=${sig}`, {
+            headers: { 'X-MBX-APIKEY': binKey },
+          })
+          if (r.ok) {
+            const data = await r.json() as { balances?: Array<{ free: string; locked: string }> }
+            const nonZero = (data.balances ?? []).filter(b => parseFloat(b.free) > 0 || parseFloat(b.locked) > 0).length
+            return { ok: true, message: `Account OK — ${nonZero} non-zero balance${nonZero !== 1 ? 's' : ''}` }
+          }
+          const errText = await r.text()
+          return { ok: false, message: `HTTP ${r.status}: ${errText}` }
+        }
+        const base = 'https://api.binance.com'
         const r = await fetch(`${base}/api/v3/ping`)
-        return r.ok ? { ok: true, message: testnet ? 'Testnet ping OK' : 'Ping OK' } : { ok: false, message: `HTTP ${r.status}` }
+        return r.ok ? { ok: true, message: 'Ping OK (no keys set — auth not verified)' } : { ok: false, message: `HTTP ${r.status}` }
       }
       case 'finnhub': {
         const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=AAPL&token=${process.env.FINNHUB_KEY ?? ''}`)
@@ -78,14 +120,27 @@ async function testConnection(service: string): Promise<{ ok: boolean; message: 
         return r.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `HTTP ${r.status}` }
       }
       case 'coingecko': {
-        const r = await fetch('https://api.coingecko.com/api/v3/ping')
-        return r.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `HTTP ${r.status}` }
+        const cgKey = process.env.COINGECKO_KEY?.trim()
+        const isDemo = cgKey?.startsWith('CG-')
+        const base = (cgKey && !isDemo) ? 'https://pro-api.coingecko.com' : 'https://api.coingecko.com'
+        const headers: Record<string, string> = {}
+        if (cgKey && isDemo)  headers['x-cg-demo-api-key'] = cgKey
+        if (cgKey && !isDemo) headers['x-cg-pro-api-key']  = cgKey
+        const r = await fetch(`${base}/api/v3/simple/price?ids=bitcoin&vs_currencies=usd`, { headers })
+        if (!r.ok) return { ok: false, message: `HTTP ${r.status}` }
+        const data = await r.json() as { bitcoin?: { usd?: number } }
+        const price = data?.bitcoin?.usd
+        const tier = !cgKey ? 'free tier' : isDemo ? 'demo key' : 'pro key'
+        return price
+          ? { ok: true, message: `Connected (${tier}) — BTC $${price.toLocaleString()}` }
+          : { ok: false, message: 'Connected but response malformed' }
       }
       default:
         return { ok: false, message: 'Unknown service' }
     }
   } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : 'Connection failed' }
+    const msg = e instanceof Error ? e.message : (typeof e === 'object' && e !== null && 'message' in e ? String((e as Record<string, unknown>).message) : String(e))
+    return { ok: false, message: msg }
   }
 }
 
@@ -179,9 +234,15 @@ export async function startServer(): Promise<void> {
   // ── Logs ────────────────────────────────────────────────────────────────────
   app.get('/api/logs', async (req) => {
     const { since, agent } = req.query as { since?: string; agent?: string }
-    let entries = getLogs(since ? parseInt(since) : undefined)
-    if (agent) entries = entries.filter(l => l.agentKey === agent)
-    return entries
+    const floor = dbGetLogClearFloor()
+    const effectiveSince = Math.max(since ? parseInt(since) : 0, floor)
+    return getLogs(effectiveSince || undefined, agent)
+  })
+
+  app.post('/api/logs/clear', async () => {
+    const maxId = dbGetMaxLogId()
+    dbSetLogClearFloor(maxId)
+    return { ok: true, clearedAt: maxId }
   })
 
   // ── Market Data (read-only snapshot, no agent/Claude involved) ───────────────
@@ -221,9 +282,8 @@ export async function startServer(): Promise<void> {
 
   // ── Reports ─────────────────────────────────────────────────────────────────
   app.get('/api/reports/summary', async () => {
-    const { recentEvents } = getState()
     const summary = (market: 'crypto' | 'forex') => {
-      const events = recentEvents.filter(e => e.market === market)
+      const events = dbGetCycleResults(market)
       return {
         totalCycles: events.length,
         buys: events.filter(e => e.decision.toUpperCase().startsWith('BUY')).length,
@@ -238,8 +298,47 @@ export async function startServer(): Promise<void> {
 
   app.get('/api/reports/trades', async (req) => {
     const { market } = req.query as { market?: string }
-    const { recentEvents } = getState()
-    return market ? recentEvents.filter(e => e.market === market) : recentEvents
+    return dbGetCycleResults(market as 'crypto' | 'forex' | undefined)
+  })
+
+  // ── Positions ────────────────────────────────────────────────────────────────
+  app.get('/api/positions', async (_req, reply) => {
+    const agents = Object.values(getState().agents)
+    if (agents.length === 0) return []
+    const results = await Promise.allSettled(
+      agents.map(async (agent) => {
+        const adapter = getAdapter(agent.config.market as 'crypto' | 'forex')
+        const orders = await adapter.getOpenOrders(agent.config.symbol)
+        return orders.map(o => ({
+          ...o,
+          agentKey: `${agent.config.market}:${agent.config.symbol}`,
+          market: agent.config.market,
+          paper: agent.config.paper,
+        }))
+      })
+    )
+    const positions = results.flatMap(r => r.status === 'fulfilled' ? r.value : [])
+    return reply.send(positions)
+  })
+
+  app.get('/api/trades', async (_req, reply) => {
+    const agents = Object.values(getState().agents)
+    if (agents.length === 0) return []
+    const results = await Promise.allSettled(
+      agents.map(async (agent) => {
+        const adapter = getAdapter(agent.config.market as 'crypto' | 'forex')
+        const fills = await adapter.getTradeHistory(agent.config.symbol, 50)
+        return fills.map(f => ({
+          ...f,
+          agentKey: `${agent.config.market}:${agent.config.symbol}`,
+          market: agent.config.market,
+          paper: agent.config.paper,
+        }))
+      })
+    )
+    const trades = results.flatMap(r => r.status === 'fulfilled' ? r.value : [])
+      .sort((a, b) => b.time - a.time)
+    return reply.send(trades)
   })
 
   // ── Serve React frontend ─────────────────────────────────────────────────────
@@ -261,4 +360,19 @@ export async function startServer(): Promise<void> {
 
   await app.listen({ port: PORT, host: '0.0.0.0' })
   log.info({ port: PORT }, `server running at http://localhost:${PORT}`)
+
+  // ── Startup connectivity checks ──────────────────────────────────────────────
+  const services = ['anthropic', 'alpaca', 'binance', 'finnhub', 'twelvedata', 'coingecko']
+  log.info('checking service connectivity...')
+  for (const service of services) {
+    testConnection(service).then(result => {
+      if (result.ok) {
+        log.info({ service }, `[${service}] ${result.message}`)
+      } else {
+        log.warn({ service }, `[${service}] ${result.message}`)
+      }
+    }).catch(err => {
+      log.warn({ service, err }, `[${service}] check failed`)
+    })
+  }
 }

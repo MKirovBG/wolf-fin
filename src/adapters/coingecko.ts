@@ -12,12 +12,16 @@ export interface CryptoMarketData {
  */
 export async function fetchCryptoMarket(): Promise<CryptoMarketData | null> {
   try {
-    const key = process.env.COINGECKO_KEY
-    const url = key
-      ? `https://pro-api.coingecko.com/api/v3/global?x_cg_pro_api_key=${key}`
+    const key = process.env.COINGECKO_KEY?.trim()
+    const isDemo = key?.startsWith('CG-')
+    const url = key && !isDemo
+      ? `https://pro-api.coingecko.com/api/v3/global`
       : 'https://api.coingecko.com/api/v3/global'
+    const headers: Record<string, string> = {}
+    if (key && isDemo)  headers['x-cg-demo-api-key'] = key
+    if (key && !isDemo) headers['x-cg-pro-api-key']  = key
 
-    const res = await fetch(url)
+    const res = await fetch(url, { headers })
     if (!res.ok) return null
 
     const json = await res.json() as {

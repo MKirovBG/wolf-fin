@@ -119,6 +119,32 @@ export interface LogEntry {
   data?: Record<string, unknown>
 }
 
+export interface Fill {
+  symbol: string
+  id: number
+  orderId: number
+  price: number
+  qty: number
+  quoteQty: number
+  commission: number
+  commissionAsset: string
+  time: number
+  isBuyer: boolean
+  isMaker: boolean
+}
+
+export interface PositionEntry extends Order {
+  agentKey: string
+  market: 'crypto' | 'forex'
+  paper: boolean
+}
+
+export interface FillEntry extends Fill {
+  agentKey: string
+  market: 'crypto' | 'forex'
+  paper: boolean
+}
+
 export interface KeysResponse {
   [key: string]: boolean
 }

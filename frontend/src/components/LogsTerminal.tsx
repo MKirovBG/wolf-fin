@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { getLogs } from '../api/client.ts'
+import { getLogs, clearLogs } from '../api/client.ts'
 import type { LogEntry, LogEvent } from '../types/index.ts'
 
 interface Props {
@@ -39,6 +39,20 @@ function timeStr(iso: string) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+function agentIcon(agentKey: string): string {
+  const [market, symbol = ''] = agentKey.split(':')
+  const s = symbol.toUpperCase()
+  if (s.startsWith('BTC')) return '₿'
+  if (s.startsWith('ETH')) return 'Ξ'
+  if (s.startsWith('XAU')) return '✦'
+  if (s.startsWith('SOL')) return '◎'
+  if (s.startsWith('BNB')) return '◈'
+  if (s.startsWith('EUR')) return '€'
+  if (s.startsWith('GBP')) return '£'
+  if (market === 'forex') return '◈'
+  return '◆'
+}
+
 function LogLine({ entry }: { entry: LogEntry }) {
   const color = EVENT_COLOR[entry.event] ?? 'text-white'
   const prefix = EVENT_PREFIX[entry.event] ?? entry.event
@@ -52,7 +66,10 @@ function LogLine({ entry }: { entry: LogEntry }) {
         <span className="text-muted2 text-[10px] whitespace-nowrap font-mono mt-0.5">{timeStr(entry.time)}</span>
         <span className={`text-[10px] font-bold whitespace-nowrap font-mono mt-0.5 w-20 shrink-0 ${color}`}>{prefix}</span>
         {entry.agentKey && (
-          <span className="text-muted2 text-[10px] whitespace-nowrap font-mono mt-0.5 w-24 shrink-0 truncate">[{entry.agentKey}]</span>
+          <span className="text-[10px] whitespace-nowrap font-mono mt-0.5 w-28 shrink-0 truncate flex items-center gap-0.5">
+            <span className="text-white">{agentIcon(entry.agentKey)}</span>
+            <span className="text-muted2">[{entry.agentKey}]</span>
+          </span>
         )}
         <div className={`text-[11px] font-mono leading-relaxed flex-1 min-w-0 ${color === 'text-yellow' ? 'text-[#ccc]' : color}`}>
           {isMultiLine
@@ -117,7 +134,15 @@ export function LogsTerminal({ agentKey, maxHeight = 480 }: Props) {
         return true
       })
 
-  const clear = () => { setLogs([]); lastIdRef.current = 0 }
+  const clear = async () => {
+    try {
+      const { clearedAt } = await clearLogs()
+      lastIdRef.current = clearedAt
+    } catch {
+      if (logs.length > 0) lastIdRef.current = Math.max(...logs.map(l => l.id))
+    }
+    setLogs([])
+  }
 
   return (
     <div className="bg-bg border border-border rounded-lg overflow-hidden flex flex-col" style={{ maxHeight }}>

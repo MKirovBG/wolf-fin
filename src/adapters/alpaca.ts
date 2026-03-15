@@ -8,10 +8,8 @@ const Alpaca = _require('@alpacahq/alpaca-trade-api') as new (config: {
   paper: boolean
 }) => AlpacaClient
 
-// Minimal typing for the methods we use
+// Minimal typing for the methods we use (trading API only — data fetched via REST)
 interface AlpacaClient {
-  getForexBars(symbol: string, opts: { timeframe: string; limit: number }): Promise<unknown[]>
-  getForexLatestQuote(symbol: string): Promise<unknown>
   getAccount(): Promise<unknown>
   getPositions(): Promise<unknown[]>
   getAccountActivities(opts: { activityTypes: string; pageSize: number }): Promise<unknown[]>
@@ -34,7 +32,23 @@ import type {
 import type { IMarketAdapter } from './interface.js'
 import { computeIndicators } from './indicators.js'
 import { isForexSessionOpen } from './session.js'
-import { pipSize, toPips, pipValueUsd } from './oanda.js'
+
+// ── Pip helpers ───────────────────────────────────────────────────────────────
+
+function pipSize(symbol: string): number {
+  return symbol.toUpperCase().includes('JPY') ? 0.01 : 0.0001
+}
+
+function toPips(priceDiff: number, symbol: string): number {
+  return priceDiff / pipSize(symbol)
+}
+
+function pipValueUsd(symbol: string, currentPrice: number): number {
+  if (symbol.toUpperCase().includes('JPY')) {
+    return (0.01 * 100_000) / currentPrice
+  }
+  return 0.0001 * 100_000
+}
 
 // ── Client factory ────────────────────────────────────────────────────────────
 
@@ -58,10 +72,36 @@ function alpaca(): AlpacaClient {
 }
 
 // ── Symbol conversion ─────────────────────────────────────────────────────────
-// OANDA style: EUR_USD  →  Alpaca style: EUR/USD
+// Normalise any format to Alpaca's slash style: XAUUSD / XAU_USD → XAU/USD
 
 function toAlpacaSymbol(symbol: string): string {
-  return symbol.replace('_', '/')
+  const s = symbol.toUpperCase()
+  if (s.includes('/')) return s
+  if (s.includes('_')) return s.replace('_', '/')
+  if (s.length === 6) return `${s.slice(0, 3)}/${s.slice(3)}`
+  return s
+}
+
+// ── Alpaca data REST helper ───────────────────────────────────────────────────
+// The SDK has no forex data methods — call the REST API directly.
+
+const DATA_BASE = 'https://data.alpaca.markets'
+
+function dataHeaders(): Record<string, string> {
+  // data.alpaca.markets always requires live API keys, regardless of paper/live trading mode
+  return {
+    'APCA-API-KEY-ID':     process.env.ALPACA_API_KEY    ?? '',
+    'APCA-API-SECRET-KEY': process.env.ALPACA_API_SECRET ?? '',
+  }
+}
+
+async function alpacaDataGet<T>(path: string, params: Record<string, string | number>): Promise<T | null> {
+  const url = new URL(`${DATA_BASE}${path}`)
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v))
+  const res = await fetch(url.toString(), { headers: dataHeaders() })
+  if (res.status === 404) return null  // endpoint not available for this symbol/subscription
+  if (!res.ok) throw new Error(`Alpaca data ${path} → HTTP ${res.status}: ${await res.text()}`)
+  return res.json() as Promise<T>
 }
 
 // ── Candle fetching ───────────────────────────────────────────────────────────
@@ -76,24 +116,27 @@ const timeframeMs: Record<Timeframe, number> = {
 }
 
 async function fetchCandles(symbol: string, timeframe: Timeframe, limit = 100): Promise<Candle[]> {
-  const bars = await alpaca().getForexBars(toAlpacaSymbol(symbol), {
-    timeframe,
-    limit,
-  }) as Array<{ t: string; o: number; h: number; l: number; c: number; v: number }>
-
+  const alpacaSymbol = toAlpacaSymbol(symbol)
+  const data = await alpacaDataGet<{ bars: Record<string, Array<{ t: string; o: number; h: number; l: number; c: number; v: number }>> }>(
+    '/v1beta3/forex/bars',
+    { symbols: alpacaSymbol, timeframe, limit, sort: 'asc' },
+  )
+  if (!data) return []  // 404 — symbol not available on this endpoint/subscription
+  const bars = data.bars?.[alpacaSymbol] ?? []
   const ms = timeframeMs[timeframe]
   return bars.map(b => {
     const t = new Date(b.t).getTime()
-    return {
-      openTime: t,
-      open: b.o,
-      high: b.h,
-      low: b.l,
-      close: b.c,
-      volume: b.v,
-      closeTime: t + ms,
-    }
+    return { openTime: t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v, closeTime: t + ms }
   })
+}
+
+async function fetchLatestQuote(symbol: string): Promise<{ bp: number; ap: number }> {
+  const alpacaSymbol = toAlpacaSymbol(symbol)
+  const data = await alpacaDataGet<{ quotes: Record<string, { bp: number; ap: number }> }>(
+    '/v1beta3/forex/latest/quotes',
+    { symbols: alpacaSymbol },
+  )
+  return data?.quotes?.[alpacaSymbol] ?? { bp: 0, ap: 0 }
 }
 
 // ── AlpacaAdapter ─────────────────────────────────────────────────────────────
@@ -104,28 +147,14 @@ export class AlpacaAdapter implements IMarketAdapter {
   async getSnapshot(symbol: string, riskState: RiskState): Promise<MarketSnapshot> {
     const alpacaSymbol = toAlpacaSymbol(symbol)
 
-    const [m1, m15, h1, h4, quote, account, positions] = await Promise.all([
+    const [m1, m15, h1, h4, quote, accountResult, positionsResult] = await Promise.all([
       fetchCandles(symbol, '1Min', 100),
       fetchCandles(symbol, '15Min', 100),
       fetchCandles(symbol, '1Hour', 100),
       fetchCandles(symbol, '4Hour', 100),
-      alpaca().getForexLatestQuote(alpacaSymbol) as Promise<{
-        bp: number; ap: number
-      }>,
-      alpaca().getAccount() as Promise<{
-        equity: string
-        buying_power: string
-        portfolio_value: string
-        initial_margin: string
-      }>,
-      alpaca().getPositions() as Promise<Array<{
-        symbol: string
-        qty: string
-        avg_entry_price: string
-        side: string
-        unrealized_pl: string
-        current_price: string
-      }>>,
+      fetchLatestQuote(symbol),
+      (alpaca().getAccount() as Promise<{ equity: string; buying_power: string; portfolio_value: string; initial_margin: string }>).catch(() => null),
+      (alpaca().getPositions() as Promise<Array<{ symbol: string; qty: string; avg_entry_price: string; side: string; unrealized_pl: string; current_price: string }>>).catch(() => []),
     ])
 
     const bid = quote.bp ?? 0
@@ -140,10 +169,15 @@ export class AlpacaAdapter implements IMarketAdapter {
     const changePercent = firstOpen !== 0 ? ((mid - firstOpen) / firstOpen) * 100 : 0
     const totalVolume = last24h.reduce((s, c) => s + c.volume, 0)
 
-    const balances: Balance[] = [
-      { asset: 'EQUITY', free: parseFloat(account.equity), locked: parseFloat(account.initial_margin) },
-      { asset: 'BUYING_POWER', free: parseFloat(account.buying_power), locked: 0 },
-    ]
+    const account = accountResult
+    const positions = positionsResult ?? []
+
+    const balances: Balance[] = account
+      ? [
+          { asset: 'EQUITY', free: parseFloat(account.equity), locked: parseFloat(account.initial_margin) },
+          { asset: 'BUYING_POWER', free: parseFloat(account.buying_power), locked: 0 },
+        ]
+      : []
 
     const openOrders: Order[] = positions
       .filter(p => !symbol || p.symbol === alpacaSymbol)
@@ -191,14 +225,11 @@ export class AlpacaAdapter implements IMarketAdapter {
   }
 
   async getOrderBook(symbol: string, _depth = 20): Promise<OrderBook> {
-    const alpacaSymbol = toAlpacaSymbol(symbol)
-    const quote = await alpaca().getForexLatestQuote(alpacaSymbol) as {
-      bp: number; bs: number; ap: number; as: number
-    }
+    const quote = await fetchLatestQuote(symbol)
     return {
       symbol,
-      bids: [[quote.bp, quote.bs]],
-      asks: [[quote.ap, quote.as]],
+      bids: [[quote.bp, 0]],
+      asks: [[quote.ap, 0]],
       timestamp: Date.now(),
     }
   }
@@ -321,11 +352,8 @@ export class AlpacaAdapter implements IMarketAdapter {
   }
 
   async getSpread(symbol: string): Promise<number | null> {
-    const alpacaSymbol = toAlpacaSymbol(symbol)
-    const quote = await alpaca().getForexLatestQuote(alpacaSymbol) as {
-      bp: number; ap: number
-    }
-    if (!quote) return null
+    const quote = await fetchLatestQuote(symbol)
+    if (!quote.bp && !quote.ap) return null
     return toPips(quote.ap - quote.bp, symbol)
   }
 

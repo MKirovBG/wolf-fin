@@ -124,8 +124,8 @@ function AddAgentForm({ onAdded }: { onAdded: () => void }) {
         <textarea
           {...register('customPrompt')}
           placeholder="Additional instructions appended to the system prompt..."
-          rows={2}
-          style={{ background: '#1e1e1e', border: '1px solid #2a2a2a', color: '#e0e0e0', borderRadius: 4, padding: '6px 10px', fontFamily: 'Courier New, monospace', fontSize: 11, outline: 'none', width: '100%', resize: 'vertical' }}
+          rows={6}
+          style={{ background: '#1e1e1e', border: '1px solid #2a2a2a', color: '#e0e0e0', borderRadius: 4, padding: '8px 10px', fontFamily: 'Courier New, monospace', fontSize: 11, lineHeight: '1.6', outline: 'none', width: '100%', resize: 'vertical', minHeight: 100 }}
         />
       </div>
 

@@ -1,4 +1,4 @@
-import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, LogEntry } from '../types/index.ts'
+import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, LogEntry, PositionEntry, FillEntry } from '../types/index.ts'
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, options)
@@ -51,6 +51,9 @@ export const testKey = (service: string) =>
   api<{ ok: boolean; message: string }>(`/api/keys/test/${service}`, { method: 'POST' })
 
 // ── Logs ─────────────────────────────────────────────────────────────────────
+export const clearLogs = () =>
+  api<{ ok: boolean; clearedAt: number }>('/api/logs/clear', { method: 'POST' })
+
 export const getLogs = (sinceId?: number, agent?: string) => {
   const params = new URLSearchParams()
   if (sinceId) params.set('since', String(sinceId))
@@ -58,6 +61,10 @@ export const getLogs = (sinceId?: number, agent?: string) => {
   const qs = params.toString()
   return api<LogEntry[]>(`/api/logs${qs ? `?${qs}` : ''}`)
 }
+
+// ── Positions ─────────────────────────────────────────────────────────────────
+export const getPositions = () => api<PositionEntry[]>('/api/positions')
+export const getTrades    = () => api<FillEntry[]>('/api/trades')
 
 // ── Reports ───────────────────────────────────────────────────────────────────
 export const getReportSummary = () => api<ReportSummary>('/api/reports/summary')

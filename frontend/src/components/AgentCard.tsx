@@ -1,9 +1,9 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { Badge, decisionVariant } from './Badge.tsx'
 import { AgentStatusBadge } from './AgentStatusBadge.tsx'
 import { MarketDataModal } from './MarketDataModal.tsx'
-import { LogsTerminal } from './LogsTerminal.tsx'
 import { startAgent, pauseAgent, stopAgent, triggerAgent, updateAgentConfig, deleteAgent } from '../api/client.ts'
 import type { AgentState, AgentConfig } from '../types/index.ts'
 
@@ -21,7 +21,7 @@ function rel(iso: string) {
 
 const INTERVALS = [1, 5, 15, 30, 60, 240]
 
-function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
+export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
   agent: AgentState
   agentKey: string
   onSave: () => void
@@ -127,9 +127,8 @@ function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
         <textarea
           {...register('customPrompt')}
           placeholder="Additional instructions appended to the system prompt..."
-          rows={3}
-          className="!w-full !resize-y bg-surface2 border border-border rounded px-2 py-2 text-xs text-white font-mono"
-          style={{ background: '#1e1e1e', border: '1px solid #2a2a2a', color: '#e0e0e0', borderRadius: 4, padding: '6px 10px', fontFamily: 'Courier New, monospace', fontSize: 11, outline: 'none', width: '100%', resize: 'vertical' }}
+          rows={8}
+          style={{ background: '#1e1e1e', border: '1px solid #2a2a2a', color: '#e0e0e0', borderRadius: 4, padding: '8px 10px', fontFamily: 'Courier New, monospace', fontSize: 11, lineHeight: '1.6', outline: 'none', width: '100%', resize: 'vertical', minHeight: 140 }}
         />
       </div>
 
@@ -158,7 +157,6 @@ function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
 export function AgentCard({ agent, onRefresh }: Props) {
   const [showSettings, setShowSettings] = useState(false)
   const [showMarket, setShowMarket] = useState(false)
-  const [showLogs, setShowLogs] = useState(false)
   const [loading, setLoading] = useState<string | null>(null)
 
   const key = `${agent.config.market}:${agent.config.symbol}`
@@ -178,7 +176,12 @@ export function AgentCard({ agent, onRefresh }: Props) {
       <div className="flex justify-between items-start">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-white font-bold text-base">{agent.config.symbol}</span>
+            <Link
+              to={`/agents/${agent.config.market}/${agent.config.symbol}`}
+              className="text-white font-bold text-base hover:text-green transition-colors"
+            >
+              {agent.config.symbol}
+            </Link>
             <Badge label={agent.config.market.toUpperCase()} variant={agent.config.market} />
             <Badge label={agent.config.paper ? 'PAPER' : 'LIVE'} variant={agent.config.paper ? 'paper' : 'live'} />
           </div>
@@ -260,12 +263,6 @@ export function AgentCard({ agent, onRefresh }: Props) {
         >
           📊 Market Data
         </button>
-        <button
-          onClick={() => setShowLogs(s => !s)}
-          className={`px-2.5 py-1 text-[11px] border rounded transition-colors ${showLogs ? 'border-green text-green bg-green-dim' : 'border-border text-muted hover:border-muted hover:text-white'}`}
-        >
-          📋 Logs
-        </button>
       </div>
 
       {/* Settings panel */}
@@ -276,13 +273,6 @@ export function AgentCard({ agent, onRefresh }: Props) {
           onSave={() => { setShowSettings(false); onRefresh() }}
           onDelete={() => onRefresh()}
         />
-      )}
-
-      {/* Per-agent log terminal */}
-      {showLogs && (
-        <div className="mt-2">
-          <LogsTerminal agentKey={key} maxHeight={320} />
-        </div>
       )}
 
       {/* Market data modal */}

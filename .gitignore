@@ -18,6 +18,9 @@ frontend-dist/
 npm-debug.log*
 pnpm-debug.log*
 
+# Database
+data/
+
 # OS
 .DS_Store
 Thumbs.db

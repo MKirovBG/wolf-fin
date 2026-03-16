@@ -1,0 +1,1 @@
+{"version":3,"file":"coingecko.d.ts","sourceRoot":"","sources":["../../src/adapters/coingecko.ts"],"names":[],"mappings":"AAEA,MAAM,WAAW,gBAAgB;IAC/B,YAAY,EAAE,MAAM,CAAA;IACpB,iBAAiB,EAAE,MAAM,CAAA;CAC1B;AAED;;;;GAIG;AACH,wBAAsB,iBAAiB,IAAI,OAAO,CAAC,gBAAgB,GAAG,IAAI,CAAC,CA+B1E"}

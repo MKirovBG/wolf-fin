@@ -6,8 +6,10 @@ The Node.js MT5Adapter calls this over localhost HTTP.
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import MetaTrader5 as mt5
@@ -19,6 +21,21 @@ from pydantic import BaseModel
 app = FastAPI(title="Wolf-Fin MT5 Bridge", version="1.0.0")
 
 connected: bool = False
+ACCOUNTS_CONFIG = Path("mt5_accounts.json")
+
+
+def load_accounts_config() -> dict:
+    """Load registered MT5 accounts from config file."""
+    if ACCOUNTS_CONFIG.exists():
+        with open(ACCOUNTS_CONFIG) as f:
+            return json.load(f)
+    return {"accounts": []}
+
+
+def save_accounts_config(config: dict) -> None:
+    """Save registered MT5 accounts to config file."""
+    with open(ACCOUNTS_CONFIG, "w") as f:
+        json.dump(config, f, indent=2)
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
@@ -46,6 +63,23 @@ def shutdown() -> None:
 def require_connected() -> None:
     if not connected:
         raise HTTPException(503, detail="MT5 terminal not connected")
+
+
+def ensure_account(account_id: Optional[int] = None) -> None:
+    """Switch to account_id if provided, else use current account."""
+    if account_id is None:
+        return
+    require_connected()
+    # Try to login with empty password (account must be authorized in terminal)
+    if not mt5.login(account_id, "", ""):
+        # Try to infer server from accounts config
+        config = load_accounts_config()
+        acc = next((a for a in config.get("accounts", []) if a["login"] == account_id), None)
+        if acc:
+            if not mt5.login(account_id, "", acc["server"]):
+                raise HTTPException(502, detail=f"Could not switch to account {account_id}. Ensure it's authorized in MT5 terminal.")
+        else:
+            raise HTTPException(404, detail=f"Account {account_id} not found in config")
 
 
 # ── Symbol helpers ────────────────────────────────────────────────────────────
@@ -172,6 +206,73 @@ def list_symbols(search: Optional[str] = None) -> list[dict]:
     ]
 
 
+# ── Account management ────────────────────────────────────────────────────────
+
+@app.get("/accounts")
+def list_accounts() -> dict:
+    """List all registered MT5 accounts. Shows which is currently active."""
+    require_connected()
+    config = load_accounts_config()
+    current = mt5.account_info()
+    current_login = current.login if current else None
+
+    return {
+        "current_login": current_login,
+        "accounts": config.get("accounts", [])
+    }
+
+
+class RegisterAccountRequest(BaseModel):
+    login: int
+    password: str
+    server: str
+    name: str  # friendly name (e.g., "EUR Live", "FTMO Demo")
+
+
+@app.post("/accounts/register")
+def register_account(req: RegisterAccountRequest) -> dict:
+    """Register an MT5 account. Tests login validity."""
+    require_connected()
+
+    # Test if credentials work
+    if not mt5.login(req.login, req.password, req.server):
+        raise HTTPException(400, detail="Invalid login credentials")
+
+    config = load_accounts_config()
+    # Check if already registered
+    for acc in config.get("accounts", []):
+        if acc["login"] == req.login:
+            return {"message": f"Account {req.login} already registered"}
+
+    config.setdefault("accounts", []).append({
+        "login": req.login,
+        "server": req.server,
+        "name": req.name,
+        "registered_at": datetime.now(tz=timezone.utc).isoformat()
+    })
+    save_accounts_config(config)
+
+    return {"message": f"Account {req.login} registered", "accounts": config["accounts"]}
+
+
+@app.post("/accounts/switch")
+def switch_account(login: int = Query(..., description="Account login ID")) -> dict:
+    """Switch to a registered account. Account must be loaded in MT5 terminal."""
+    require_connected()
+    config = load_accounts_config()
+
+    # Find account in config
+    acc = next((a for a in config.get("accounts", []) if a["login"] == login), None)
+    if not acc:
+        raise HTTPException(404, detail=f"Account {login} not registered. Use POST /accounts/register first.")
+
+    # Try to login
+    if not mt5.login(login, "", acc["server"]):  # Empty password — account must already be authorized in terminal
+        raise HTTPException(502, detail=f"Could not switch to account {login}. Ensure it's authorized in MT5 terminal.")
+
+    return {"message": f"Switched to account {login}", "name": acc["name"]}
+
+
 # ── Health ────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -209,8 +310,9 @@ def reconnect() -> dict:
 # ── Snapshot (workhorse endpoint) ─────────────────────────────────────────────
 
 @app.get("/snapshot/{symbol}")
-def get_snapshot(symbol: str) -> dict:
+def get_snapshot(symbol: str, accountId: Optional[int] = None) -> dict:
     require_connected()
+    ensure_account(accountId)
     mt5_sym = normalize_symbol(symbol)
 
     # Ensure symbol is available
@@ -301,8 +403,10 @@ def get_candles(
     symbol: str,
     timeframe: str = Query("M15", description="MT5 timeframe: M1, M5, M15, M30, H1, H4, D1, W1, MN1"),
     count: int = Query(100, ge=1, le=1000),
+    accountId: Optional[int] = None,
 ) -> dict:
     require_connected()
+    ensure_account(accountId)
     mt5_sym = normalize_symbol(symbol)
     mt5.symbol_select(mt5_sym, True)
 
@@ -325,8 +429,9 @@ def get_candles(
 # ── Order book (market depth) ────────────────────────────────────────────────
 
 @app.get("/orderbook/{symbol}")
-def get_orderbook(symbol: str, depth: int = Query(20, ge=1, le=50)) -> dict:
+def get_orderbook(symbol: str, depth: int = Query(20, ge=1, le=50), accountId: Optional[int] = None) -> dict:
     require_connected()
+    ensure_account(accountId)
     mt5_sym = normalize_symbol(symbol)
     mt5.symbol_select(mt5_sym, True)
 
@@ -365,8 +470,9 @@ def get_orderbook(symbol: str, depth: int = Query(20, ge=1, le=50)) -> dict:
 # ── Recent trades (ticks) ────────────────────────────────────────────────────
 
 @app.get("/trades/{symbol}")
-def get_recent_trades(symbol: str, count: int = Query(50, ge=1, le=500)) -> dict:
+def get_recent_trades(symbol: str, count: int = Query(50, ge=1, le=500), accountId: Optional[int] = None) -> dict:
     require_connected()
+    ensure_account(accountId)
     mt5_sym = normalize_symbol(symbol)
     mt5.symbol_select(mt5_sym, True)
 
@@ -389,8 +495,9 @@ def get_recent_trades(symbol: str, count: int = Query(50, ge=1, le=500)) -> dict
 # ── Account ───────────────────────────────────────────────────────────────────
 
 @app.get("/account")
-def get_account() -> dict:
+def get_account(accountId: Optional[int] = None) -> dict:
     require_connected()
+    ensure_account(accountId)
     acct = mt5.account_info()
     if acct is None:
         raise HTTPException(502, detail="Cannot fetch account info")
@@ -413,8 +520,9 @@ def get_account() -> dict:
 # ── Positions ─────────────────────────────────────────────────────────────────
 
 @app.get("/positions")
-def get_positions(symbol: Optional[str] = None) -> list[dict]:
+def get_positions(symbol: Optional[str] = None, accountId: Optional[int] = None) -> list[dict]:
     require_connected()
+    ensure_account(accountId)
     if symbol:
         mt5_sym = normalize_symbol(symbol)
         positions = mt5.positions_get(symbol=mt5_sym)
@@ -428,8 +536,9 @@ def get_positions(symbol: Optional[str] = None) -> list[dict]:
 # ── Pending orders ────────────────────────────────────────────────────────────
 
 @app.get("/orders")
-def get_orders(symbol: Optional[str] = None) -> list[dict]:
+def get_orders(symbol: Optional[str] = None, accountId: Optional[int] = None) -> list[dict]:
     require_connected()
+    ensure_account(accountId)
     if symbol:
         mt5_sym = normalize_symbol(symbol)
         orders = mt5.orders_get(symbol=mt5_sym)
@@ -447,8 +556,10 @@ def get_history_deals(
     symbol: Optional[str] = None,
     days: int = Query(7, ge=1, le=90),
     limit: int = Query(50, ge=1, le=500),
+    accountId: Optional[int] = None,
 ) -> list[dict]:
     require_connected()
+    ensure_account(accountId)
     date_to = datetime.now(tz=timezone.utc)
     date_from = date_to - timedelta(days=days)
 
@@ -470,8 +581,9 @@ def get_history_deals(
 # ── Symbol info ───────────────────────────────────────────────────────────────
 
 @app.get("/symbol-info/{symbol}")
-def get_symbol_info(symbol: str) -> dict:
+def get_symbol_info(symbol: str, accountId: Optional[int] = None) -> dict:
     require_connected()
+    ensure_account(accountId)
     mt5_sym = normalize_symbol(symbol)
     mt5.symbol_select(mt5_sym, True)
 
@@ -512,6 +624,7 @@ class OrderRequest(BaseModel):
     deviation: int = 10
     magic: int = 123456
     comment: str = "wolf-fin"
+    accountId: Optional[int] = None  # NEW: specify account
 
 
 ORDER_TYPE_MAP = {
@@ -527,6 +640,7 @@ ORDER_TYPE_MAP = {
 @app.post("/order")
 def place_order(req: OrderRequest) -> dict:
     require_connected()
+    ensure_account(req.accountId)
     mt5_sym = normalize_symbol(req.symbol)
     mt5.symbol_select(mt5_sym, True)
 
@@ -590,11 +704,13 @@ def place_order(req: OrderRequest) -> dict:
 class CloseRequest(BaseModel):
     ticket: int
     volume: Optional[float] = None  # partial close; None = close full
+    accountId: Optional[int] = None
 
 
 @app.post("/order/close")
 def close_position(req: CloseRequest) -> dict:
     require_connected()
+    ensure_account(req.accountId)
 
     # Find the position
     positions = mt5.positions_get(ticket=req.ticket)
@@ -649,11 +765,13 @@ def close_position(req: CloseRequest) -> dict:
 
 class CancelRequest(BaseModel):
     ticket: int
+    accountId: Optional[int] = None
 
 
 @app.post("/order/cancel")
 def cancel_order(req: CancelRequest) -> dict:
     require_connected()
+    ensure_account(req.accountId)
 
     request: dict[str, Any] = {
         "action": mt5.TRADE_ACTION_REMOVE,

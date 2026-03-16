@@ -180,9 +180,20 @@ interface BridgeBookEntry {
 
 export class MT5Adapter implements IMarketAdapter {
   readonly market = 'mt5' as const
+  private accountId?: number
+
+  constructor(accountId?: number) {
+    this.accountId = accountId
+  }
+
+  private buildUrl(path: string): string {
+    if (!this.accountId) return path
+    const sep = path.includes('?') ? '&' : '?'
+    return `${path}${sep}accountId=${this.accountId}`
+  }
 
   async getSnapshot(symbol: string, riskState: RiskState): Promise<MarketSnapshot> {
-    const snap = await mt5Get<BridgeSnapshot>(`/snapshot/${toMt5Symbol(symbol)}`)
+    const snap = await mt5Get<BridgeSnapshot>(this.buildUrl(`/snapshot/${toMt5Symbol(symbol)}`))
 
     const mapCandles = (arr: BridgeCandle[]): Candle[] =>
       arr.map(c => ({
@@ -269,7 +280,7 @@ export class MT5Adapter implements IMarketAdapter {
 
   async getOrderBook(symbol: string, depth = 20): Promise<OrderBook> {
     const data = await mt5Get<{ symbol: string; bids: number[][]; asks: number[][]; timestamp: number }>(
-      `/orderbook/${toMt5Symbol(symbol)}?depth=${depth}`,
+      this.buildUrl(`/orderbook/${toMt5Symbol(symbol)}?depth=${depth}`),
     )
     return {
       symbol,
@@ -281,7 +292,7 @@ export class MT5Adapter implements IMarketAdapter {
 
   async getRecentTrades(symbol: string, limit = 50): Promise<Trade[]> {
     const data = await mt5Get<{ trades: BridgeTrade[] }>(
-      `/trades/${toMt5Symbol(symbol)}?count=${limit}`,
+      this.buildUrl(`/trades/${toMt5Symbol(symbol)}?count=${limit}`),
     )
     return data.trades.map((t, i) => ({
       id: i,
@@ -293,7 +304,7 @@ export class MT5Adapter implements IMarketAdapter {
   }
 
   async getBalances(): Promise<Balance[]> {
-    const acct = await mt5Get<BridgeAccount>('/account')
+    const acct = await mt5Get<BridgeAccount>(this.buildUrl('/account'))
     return [
       { asset: 'EQUITY', free: acct.equity, locked: acct.margin },
       { asset: 'BALANCE', free: acct.balance, locked: 0 },
@@ -303,7 +314,7 @@ export class MT5Adapter implements IMarketAdapter {
 
   async getOpenOrders(symbol?: string): Promise<Order[]> {
     const path = symbol ? `/positions?symbol=${toMt5Symbol(symbol)}` : '/positions'
-    const positions = await mt5Get<BridgePosition[]>(path)
+    const positions = await mt5Get<BridgePosition[]>(this.buildUrl(path))
     return positions.map(p => ({
       orderId: p.ticket,
       clientOrderId: `mt5-${p.ticket}`,
@@ -322,7 +333,7 @@ export class MT5Adapter implements IMarketAdapter {
 
   async getTradeHistory(symbol: string, limit = 50): Promise<Fill[]> {
     const deals = await mt5Get<BridgeDeal[]>(
-      `/history/deals?symbol=${toMt5Symbol(symbol)}&limit=${limit}`,
+      this.buildUrl(`/history/deals?symbol=${toMt5Symbol(symbol)}&limit=${limit}`),
     )
     return deals.map(d => ({
       symbol: fromMt5Symbol(d.symbol),
@@ -353,6 +364,7 @@ export class MT5Adapter implements IMarketAdapter {
       comment: 'wolf-fin',
     }
 
+    if (this.accountId) body.accountId = this.accountId
     if (params.price != null) body.price = params.price
 
     // Compute stop-loss from stopPips if provided
@@ -382,16 +394,21 @@ export class MT5Adapter implements IMarketAdapter {
 
   async cancelOrder(_symbol: string, orderId: string | number): Promise<void> {
     // Try closing as position first, then as pending order
+    const closeBody: Record<string, unknown> = { ticket: Number(orderId) }
+    if (this.accountId) closeBody.accountId = this.accountId
+    const cancelBody: Record<string, unknown> = { ticket: Number(orderId) }
+    if (this.accountId) cancelBody.accountId = this.accountId
+
     try {
-      await mt5Post('/order/close', { ticket: Number(orderId) })
+      await mt5Post('/order/close', closeBody)
     } catch {
-      await mt5Post('/order/cancel', { ticket: Number(orderId) })
+      await mt5Post('/order/cancel', cancelBody)
     }
   }
 
   async getSpread(symbol: string): Promise<number | null> {
     const info = await mt5Get<{ spread: number; point: number }>(
-      `/symbol-info/${toMt5Symbol(symbol)}`,
+      this.buildUrl(`/symbol-info/${toMt5Symbol(symbol)}`),
     )
     const pipSz = pipSizeHeuristic(symbol)
     return (info.spread * info.point) / pipSz
@@ -399,7 +416,7 @@ export class MT5Adapter implements IMarketAdapter {
 
   async isMarketOpen(symbol: string): Promise<boolean> {
     const info = await mt5Get<{ trade_mode: number }>(
-      `/symbol-info/${toMt5Symbol(symbol)}`,
+      this.buildUrl(`/symbol-info/${toMt5Symbol(symbol)}`),
     )
     // trade_mode: 0 = SYMBOL_TRADE_MODE_DISABLED, others = various trade modes
     // In practice, trade_mode > 0 means trading is allowed

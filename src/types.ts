@@ -12,6 +12,7 @@ export interface AgentConfig {
   maxLossUsd: number
   maxPositionUsd: number
   customPrompt?: string
+  mt5AccountId?: number  // Which MT5 account this agent trades with
 }
 
 export interface AgentState {
@@ -31,6 +32,7 @@ export interface CycleResult {
   time: string
   error?: string
   pnlUsd?: number
+  mt5AccountId?: number  // Track which MT5 account this cycle ran on
 }
 
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug'

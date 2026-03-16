@@ -1,0 +1,1 @@
+{"version":3,"file":"cryptopanic.d.ts","sourceRoot":"","sources":["../../src/adapters/cryptopanic.ts"],"names":[],"mappings":"AAEA,MAAM,WAAW,QAAQ;IACvB,QAAQ,EAAE,MAAM,CAAA;IAChB,KAAK,EAAE,MAAM,CAAA;IACb,GAAG,EAAE,MAAM,CAAA;CACZ;AAED;;;;GAIG;AACH,wBAAsB,eAAe,CAAC,MAAM,EAAE,MAAM,EAAE,KAAK,SAAI,GAAG,OAAO,CAAC,QAAQ,EAAE,CAAC,CA4BpF"}

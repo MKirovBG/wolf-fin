@@ -112,9 +112,10 @@ async function dispatchTool(
   input: Record<string, unknown>,
   defaultMarket: 'crypto' | 'forex' | 'mt5',
   paper: boolean,
+  mt5AccountId?: number,
 ): Promise<unknown> {
   const market = (input.market as 'crypto' | 'forex' | 'mt5' | undefined) ?? defaultMarket
-  const adapter = getAdapter(market)
+  const adapter = getAdapter(market, mt5AccountId)
 
   switch (name) {
     case 'get_snapshot': {
@@ -247,7 +248,7 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
         logEvent(agentKey, 'info', 'decision', `DECISION: ${decision}${reason ? ` — ${reason}` : ''}`)
         log.info({ decision }, 'cycle complete')
 
-        recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper, decision, reason, time: new Date().toISOString() })
+        recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper, decision, reason, time: new Date().toISOString(), mt5AccountId: config.mt5AccountId })
         break
       }
 
@@ -266,7 +267,7 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
 
           let result: unknown
           try {
-            result = await dispatchTool(block.name, block.input as Record<string, unknown>, config.market, paper)
+            result = await dispatchTool(block.name, block.input as Record<string, unknown>, config.market, paper, config.mt5AccountId)
             const summary = summariseToolResult(block.name, result)
             logEvent(agentKey, 'info', 'tool_result', `← ${block.name}: ${summary}`)
           } catch (err) {

@@ -247,6 +247,7 @@ export class AlpacaAdapter implements IMarketAdapter {
       forex: {
         spread,
         pipValue: pipValueUsd(symbol, mid),
+        point: symbol.toUpperCase().includes('JPY') ? 0.01 : 0.0001,
         sessionOpen,
         swapLong: 0,
         swapShort: 0,

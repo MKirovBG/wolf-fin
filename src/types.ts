@@ -43,6 +43,7 @@ export type LogEvent =
   | 'tool_call' | 'tool_result' | 'tool_error'
   | 'claude_thinking' | 'decision'
   | 'guardrail_block' | 'session_skip' | 'cycle_skip'
+  | 'auto_execute' | 'auto_execute_error'
 
 export interface LogEntry {
   id: number

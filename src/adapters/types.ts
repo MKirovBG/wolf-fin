@@ -119,10 +119,11 @@ export interface MarketSnapshot {
   risk: RiskState
   /** Enrichment signals assembled by context.ts */
   context?: MarketContext
-  /** Forex-specific fields — only present when market === 'forex' */
+  /** Forex-specific fields — only present when market === 'forex' or 'mt5' */
   forex?: {
     spread: number       // ask - bid in pips
     pipValue: number     // USD per pip per standard lot
+    point: number        // minimum price increment (0.0001 forex, 0.01 gold, 0.01 JPY crosses)
     sessionOpen: boolean // is market in an active session?
     swapLong: number     // overnight swap rate long
     swapShort: number    // overnight swap rate short

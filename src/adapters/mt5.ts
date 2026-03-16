@@ -280,6 +280,7 @@ export class MT5Adapter implements IMarketAdapter {
       forex: {
         spread: info.spread * point / pipSizeHeuristic(symbol, point),
         pipValue,
+        point,
         sessionOpen: info.session_open,
         swapLong: info.swap_long,
         swapShort: info.swap_short,

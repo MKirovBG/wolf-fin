@@ -14,6 +14,17 @@ import { TOOLS } from '../tools/definitions.js';
 import { recordCycle, logEvent, tryAcquireCycleLock, releaseCycleLock } from '../server/state.js';
 import { dbGetAgentPerformance } from '../db/index.js';
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
+/** Pip size for stop-price calculation — commodity-aware */
+function pipSize(symbol, point) {
+    const s = symbol.toUpperCase();
+    if (s.startsWith('XAU') || s.startsWith('XAG') || s.startsWith('XPT') || s.startsWith('XPD') ||
+        s.includes('OIL') || s.includes('GAS') || s.includes('GOLD') || s.includes('SILVER')) {
+        return point ?? 0.01;
+    }
+    if (s.includes('JPY'))
+        return 0.01;
+    return 0.0001;
+}
 // ── System Prompt ─────────────────────────────────────────────────────────────
 function buildSystemPrompt(config, agentKey) {
     const { market, paper, customPrompt } = config;
@@ -47,9 +58,15 @@ ${sessionNote}`;
 - Decisions: BUY ${perf.buys} | SELL ${perf.sells} | HOLD ${perf.holds}
 - Last decisions: ${perf.lastDecisions.map(d => `[${d.time.slice(11, 16)}] ${d.decision.split(' ')[0]}`).join(' → ')}${perf.holds >= 5 && perf.buys === 0 && perf.sells === 0 ? '\nWARNING: You have held every recent cycle. Re-examine if conditions truly warrant inaction or if you are being overly cautious.' : ''}`
         : '';
-    const decisionFormat = `\n\nDECISION FORMAT (append after tool calls):
-  DECISION: [HOLD | BUY <qty> @ <price> | SELL <qty> @ <price> | CANCEL <orderId>]
-  REASON: <1-2 sentences of evidence>`;
+    const decisionFormat = `\n\nEXECUTION RULES (mandatory — the DECISION line does NOT trigger a trade by itself):
+- If BUY or SELL: you MUST call place_order FIRST, then write the DECISION line.
+- If CANCEL: you MUST call cancel_order FIRST, then write the DECISION line.
+- If HOLD: do NOT call place_order. Just write the DECISION line.
+- Always include stopPips on place_order (use ATR14 × 1.5 as minimum distance).
+
+DECISION FORMAT (write AFTER executing the tool call):
+DECISION: [HOLD | BUY <qty> @ <price> | SELL <qty> @ <price> | CANCEL <orderId>]
+REASON: <1-2 sentences of evidence>`;
     const full = base + perfSection + decisionFormat;
     return customPrompt ? `${full}\n\nADDITIONAL INSTRUCTIONS:\n${customPrompt}` : full;
 }
@@ -107,7 +124,8 @@ async function dispatchTool(name, input, defaultMarket, paper, mt5AccountId) {
                 setForexContext({ spread: snap.forex.spread, sessionOpen: snap.forex.sessionOpen, pipValue: snap.forex.pipValue });
             }
             if (market === 'mt5' && snap.forex) {
-                setMt5Context({ spread: snap.forex.spread, sessionOpen: snap.forex.sessionOpen, pipValue: snap.forex.pipValue, point: 0.0001, digits: 5 });
+                const pt = snap.forex.point ?? 0.0001;
+                setMt5Context({ spread: snap.forex.spread, sessionOpen: snap.forex.sessionOpen, pipValue: snap.forex.pipValue, point: pt, digits: pt <= 0.001 ? 5 : 2 });
             }
             return snap;
         }
@@ -138,7 +156,8 @@ async function dispatchTool(name, input, defaultMarket, paper, mt5AccountId) {
             }
             // Compute absolute stop price for forex / MT5 bracket orders
             if ((market === 'forex' || market === 'mt5') && params.stopPips != null && params.price != null) {
-                const pipSz = params.symbol.toUpperCase().includes('JPY') ? 0.01 : 0.0001;
+                const ctxPoint = market === 'mt5' ? getMt5Context().point : undefined;
+                const pipSz = pipSize(params.symbol, ctxPoint);
                 params.stopPrice = params.side === 'BUY'
                     ? params.price - params.stopPips * pipSz
                     : params.price + params.stopPips * pipSz;
@@ -186,6 +205,7 @@ export async function runAgentCycle(config) {
         const llmProvider = getLLMProvider(config);
         const llmModel = getModelForConfig(config);
         let iterations = 0;
+        let orderPlacedThisCycle = false;
         try {
             while (iterations < maxIterations) {
                 iterations++;
@@ -215,6 +235,45 @@ export async function runAgentCycle(config) {
                     const reason = reasonMatch?.[1]?.trim() ?? '';
                     logEvent(agentKey, 'info', 'decision', `DECISION: ${decision}${reason ? ` — ${reason}` : ''}`);
                     log.info({ decision }, 'cycle complete');
+                    // Auto-execute safety net: if agent stated BUY/SELL/CANCEL but never called the tool, execute now
+                    if (!orderPlacedThisCycle) {
+                        const buyMatch = decision.match(/^BUY\s+([\d.]+)\s+@\s+([\d.]+)/i);
+                        const sellMatch = decision.match(/^SELL\s+([\d.]+)\s+@\s+([\d.]+)/i);
+                        const cancelMatch = decision.match(/^CANCEL\s+(\d+)/i);
+                        if (buyMatch || sellMatch) {
+                            const match = (buyMatch ?? sellMatch);
+                            const side = buyMatch ? 'BUY' : 'SELL';
+                            const qty = parseFloat(match[1]);
+                            const price = parseFloat(match[2]);
+                            const ctx = config.market === 'mt5' ? getMt5Context() : getForexContext();
+                            // ATR-based fallback stop: use MIN_STOP_PIPS * 2 or 20 pips minimum
+                            const fallbackStop = Math.max(parseFloat(process.env.MIN_STOP_PIPS ?? '10') * 2, 20);
+                            logEvent(agentKey, 'warn', 'auto_execute', `Agent stated ${side} without calling place_order — auto-executing via text decision`);
+                            try {
+                                const result = await dispatchTool('place_order', {
+                                    symbol: config.symbol, market: config.market,
+                                    side, type: 'LIMIT', quantity: qty, price, stopPips: fallbackStop,
+                                }, config.market, paper, config.mt5AccountId);
+                                logEvent(agentKey, 'info', 'tool_result', `← auto place_order: ${summariseToolResult('place_order', result)}`);
+                            }
+                            catch (autoErr) {
+                                const msg = autoErr instanceof Error ? autoErr.message : String(autoErr);
+                                logEvent(agentKey, 'error', 'auto_execute_error', `Auto-execute failed: ${msg}`);
+                            }
+                        }
+                        else if (cancelMatch) {
+                            const orderId = parseInt(cancelMatch[1], 10);
+                            logEvent(agentKey, 'warn', 'auto_execute', `Agent stated CANCEL without calling cancel_order — auto-executing`);
+                            try {
+                                await dispatchTool('cancel_order', { symbol: config.symbol, market: config.market, orderId }, config.market, paper, config.mt5AccountId);
+                                logEvent(agentKey, 'info', 'tool_result', '← auto cancel_order: cancelled');
+                            }
+                            catch (autoErr) {
+                                const msg = autoErr instanceof Error ? autoErr.message : String(autoErr);
+                                logEvent(agentKey, 'error', 'auto_execute_error', `Auto-cancel failed: ${msg}`);
+                            }
+                        }
+                    }
                     recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper, decision, reason, time: new Date().toISOString(), mt5AccountId: config.mt5AccountId });
                     break;
                 }
@@ -228,6 +287,8 @@ export async function runAgentCycle(config) {
                             .join(' ');
                         logEvent(agentKey, 'info', 'tool_call', `→ ${block.name}(${inputSummary})`);
                         log.info({ tool: block.name, input: block.input }, 'tool call');
+                        if (block.name === 'place_order' || block.name === 'cancel_order')
+                            orderPlacedThisCycle = true;
                         let result;
                         try {
                             result = await dispatchTool(block.name, block.input, config.market, paper, config.mt5AccountId);

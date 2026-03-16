@@ -32,7 +32,7 @@ export interface CycleResult {
     mt5AccountId?: number;
 }
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
-export type LogEvent = 'cycle_start' | 'cycle_end' | 'cycle_error' | 'tool_call' | 'tool_result' | 'tool_error' | 'claude_thinking' | 'decision' | 'guardrail_block' | 'session_skip' | 'cycle_skip';
+export type LogEvent = 'cycle_start' | 'cycle_end' | 'cycle_error' | 'tool_call' | 'tool_result' | 'tool_error' | 'claude_thinking' | 'decision' | 'guardrail_block' | 'session_skip' | 'cycle_skip' | 'auto_execute' | 'auto_execute_error';
 export interface LogEntry {
     id: number;
     time: string;

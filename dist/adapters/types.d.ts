@@ -119,10 +119,11 @@ export interface MarketSnapshot {
     risk: RiskState;
     /** Enrichment signals assembled by context.ts */
     context?: MarketContext;
-    /** Forex-specific fields — only present when market === 'forex' */
+    /** Forex-specific fields — only present when market === 'forex' or 'mt5' */
     forex?: {
         spread: number;
         pipValue: number;
+        point: number;
         sessionOpen: boolean;
         swapLong: number;
         swapShort: number;

@@ -15,6 +15,20 @@ import {
   dbGetMaxLogId,
 } from '../db/index.js'
 
+// ── Cycle in-flight lock — prevents concurrent runs for the same agent ────────
+
+const cyclesInFlight = new Set<string>()
+
+export function tryAcquireCycleLock(agentKey: string): boolean {
+  if (cyclesInFlight.has(agentKey)) return false
+  cyclesInFlight.add(agentKey)
+  return true
+}
+
+export function releaseCycleLock(agentKey: string): void {
+  cyclesInFlight.delete(agentKey)
+}
+
 // ── Log buffer ────────────────────────────────────────────────────────────────
 
 // Initialized lazily on first use so it reads from DB after initDb() has run

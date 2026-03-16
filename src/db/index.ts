@@ -35,7 +35,8 @@ export function initDb(): void {
       decision  TEXT NOT NULL,
       reason    TEXT NOT NULL,
       time      TEXT NOT NULL,
-      error     TEXT
+      error     TEXT,
+      pnl_usd   REAL
     );
 
     CREATE TABLE IF NOT EXISTS log_entries (
@@ -53,6 +54,9 @@ export function initDb(): void {
       value TEXT NOT NULL
     );
   `)
+
+  // Migration: add pnl_usd column to existing databases
+  try { db.exec('ALTER TABLE cycle_results ADD COLUMN pnl_usd REAL') } catch { /* column already exists */ }
 }
 
 // ── Agents ──────────────────────────────────────────────────────────────────
@@ -108,8 +112,8 @@ export function dbUpdateAgentStatus(key: string, status: AgentStatus, startedAt:
 
 export function dbRecordCycle(key: string, result: CycleResult): void {
   db.prepare(`
-    INSERT INTO cycle_results (agent_key, symbol, market, paper, decision, reason, time, error)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO cycle_results (agent_key, symbol, market, paper, decision, reason, time, error, pnl_usd)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     key,
     result.symbol,
@@ -119,7 +123,45 @@ export function dbRecordCycle(key: string, result: CycleResult): void {
     result.reason,
     result.time,
     result.error ?? null,
+    result.pnlUsd ?? null,
   )
+}
+
+export function dbGetTodayRealizedPnl(market: 'crypto' | 'forex', dateStr: string): number {
+  const row = db.prepare(`
+    SELECT COALESCE(SUM(pnl_usd), 0) AS total
+    FROM cycle_results
+    WHERE market = ? AND date(time) = ? AND paper = 0 AND pnl_usd IS NOT NULL
+  `).get(market, dateStr) as { total: number }
+  return row.total
+}
+
+export interface AgentPerformanceSummary {
+  totalCycles: number
+  buys: number
+  sells: number
+  holds: number
+  lastDecisions: Array<{ decision: string; reason: string; time: string }>
+}
+
+export function dbGetAgentPerformance(agentKey: string, limit = 10): AgentPerformanceSummary {
+  const rows = db.prepare(
+    'SELECT decision, reason, time FROM cycle_results WHERE agent_key = ? ORDER BY id DESC LIMIT ?'
+  ).all(agentKey, Math.max(limit, 50)) as Array<{ decision: string; reason: string; time: string }>
+
+  const counts = { buys: 0, sells: 0, holds: 0 }
+  for (const r of rows) {
+    const d = r.decision.toUpperCase()
+    if (d.startsWith('BUY')) counts.buys++
+    else if (d.startsWith('SELL')) counts.sells++
+    else if (d.startsWith('HOLD')) counts.holds++
+  }
+
+  return {
+    totalCycles: rows.length,
+    ...counts,
+    lastDecisions: rows.slice(0, limit).map(r => ({ decision: r.decision, reason: r.reason, time: r.time })),
+  }
 }
 
 export function dbGetCycleResults(market?: string, limit = 500): CycleResult[] {

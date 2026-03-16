@@ -1,8 +1,24 @@
-// Wolf-Fin Twelve Data — fallback forex candle source (free tier: 8/min, 800/day)
+// Wolf-Fin Twelve Data — primary forex data source (free tier: 8/min, 800/day)
 
 import type { Candle } from './types.js'
 
-type Interval = '1min' | '15min' | '1h' | '4h'
+export type Interval = '1min' | '15min' | '1h' | '4h'
+
+// ── Simple rate limiter (8 requests per 60s) ────────────────────────────────
+const RATE_WINDOW_MS = 60_000
+const RATE_LIMIT = 8
+const timestamps: number[] = []
+
+async function rateLimitWait(): Promise<void> {
+  const now = Date.now()
+  // Purge timestamps older than the window
+  while (timestamps.length > 0 && timestamps[0] < now - RATE_WINDOW_MS) timestamps.shift()
+  if (timestamps.length >= RATE_LIMIT) {
+    const waitMs = timestamps[0] + RATE_WINDOW_MS - now + 100  // +100ms buffer
+    await new Promise(resolve => setTimeout(resolve, waitMs))
+  }
+  timestamps.push(Date.now())
+}
 
 interface TwelveDataCandle {
   datetime: string
@@ -13,12 +29,20 @@ interface TwelveDataCandle {
   volume: string
 }
 
+/** Normalise any symbol format to Twelve Data slash style: EURUSD / EUR_USD → EUR/USD */
+function toTdSymbol(symbol: string): string {
+  const s = symbol.toUpperCase()
+  if (s.includes('/')) return s
+  if (s.includes('_')) return s.replace('_', '/')
+  if (s.length === 6) return `${s.slice(0, 3)}/${s.slice(3)}`
+  return s
+}
+
 /**
- * Fetches candles for a forex pair from Twelve Data.
- * Converts OANDA-style symbols (EUR_USD) to Twelve Data style (EUR/USD).
+ * Fetches OHLCV candles for a forex pair from Twelve Data.
  * Returns [] when TWELVE_DATA_KEY is missing or on any error.
  */
-export async function fetchCandlesFallback(
+export async function fetchCandlesTwelveData(
   symbol: string,
   interval: Interval,
   outputsize = 100,
@@ -27,9 +51,8 @@ export async function fetchCandlesFallback(
   if (!key) return []
 
   try {
-    // Normalise symbol: EUR_USD → EUR/USD
-    const tdSymbol = symbol.replace('_', '/')
-
+    await rateLimitWait()
+    const tdSymbol = toTdSymbol(symbol)
     const url = `https://api.twelvedata.com/time_series?symbol=${tdSymbol}&interval=${interval}&outputsize=${outputsize}&apikey=${key}`
     const res = await fetch(url)
     if (!res.ok) return []
@@ -43,7 +66,7 @@ export async function fetchCandlesFallback(
 
     const intervalMs = intervalToMs(interval)
 
-    // Twelve Data returns newest first — reverse to oldest-first (same as Binance/OANDA)
+    // Twelve Data returns newest first — reverse to oldest-first (same as Binance/Alpaca)
     return [...json.values].reverse().map(c => {
       const t = new Date(c.datetime).getTime()
       return {
@@ -58,6 +81,39 @@ export async function fetchCandlesFallback(
     })
   } catch {
     return []
+  }
+}
+
+/** Backward-compatible alias */
+export const fetchCandlesFallback = fetchCandlesTwelveData
+
+/**
+ * Fetches the latest quote for a forex pair from Twelve Data.
+ * Returns last price; bid/ask are approximated with a conservative 1-pip spread
+ * (actual execution spread comes from Alpaca at order time).
+ */
+export async function fetchQuoteTwelveData(
+  symbol: string,
+): Promise<{ bid: number; ask: number; last: number } | null> {
+  const key = process.env.TWELVE_DATA_KEY
+  if (!key) return null
+
+  try {
+    await rateLimitWait()
+    const tdSymbol = toTdSymbol(symbol)
+    const url = `https://api.twelvedata.com/price?symbol=${tdSymbol}&apikey=${key}`
+    const res = await fetch(url)
+    if (!res.ok) return null
+
+    const json = await res.json() as { price?: string; status?: string }
+    if (!json.price) return null
+
+    const price = parseFloat(json.price)
+    // Approximate bid/ask with a 1-pip spread (conservative estimate)
+    const halfSpread = symbol.toUpperCase().includes('JPY') ? 0.005 : 0.00005
+    return { bid: price - halfSpread, ask: price + halfSpread, last: price }
+  } catch {
+    return null
   }
 }
 

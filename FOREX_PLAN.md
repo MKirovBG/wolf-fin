@@ -12,22 +12,21 @@ other.
 
 ## 1. Broker / API Choice
 
-The recommended broker for this project is **OANDA**.
+The broker used for this project is **Alpaca**.
 
-| Criterion | OANDA | IBKR (TWS) | Alpaca | FXCM |
+| Criterion | Alpaca | OANDA | IBKR (TWS) | FXCM |
 |---|---|---|---|---|
-| REST API | Yes, clean v20 API | No (FIX/TWS socket) | Yes | Yes |
-| Paper account | Yes, free | Yes | Yes | Yes |
-| Npm SDK | Unofficial but simple | ibkr SDK (complex) | `@alpacahq/alpaca-trade-api` | fxcm-rest |
-| Lot flexibility | 1 unit minimum | 1000 unit minimum | 1 unit | 1000 unit |
-| Data quality | Good (own book) | Excellent | Good | Good |
-| Regulation | FCA / CFTC | FCA / CFTC | FINRA | FCA |
+| REST API | Yes, clean REST v2 | Yes, v20 API | No (FIX/TWS socket) | Yes |
+| Paper account | Yes, free | Yes, free | Yes | Yes |
+| Npm SDK | `@alpacahq/alpaca-trade-api` | Unofficial | ibkr SDK (complex) | fxcm-rest |
+| Lot flexibility | 1 unit minimum | 1 unit minimum | 1000 unit minimum | 1000 unit |
+| Data quality | Good | Good (own book) | Excellent | Good |
+| Regulation | FINRA | FCA / CFTC | FCA / CFTC | FCA |
 
-**Decision: OANDA** — clean REST/streaming API, 1-unit minimums suitable for
-small accounts, free paper trading, and no complex socket setup.
+**Decision: Alpaca** — unified REST API for both crypto and forex, free paper trading, good SDK support.
 
-OANDA v20 REST base: `https://api-fxtrade.oanda.com` (live) /
-`https://api-fxpractice.oanda.com` (paper).
+Alpaca REST base: `https://api.alpaca.markets` (live) / `https://paper-api.alpaca.markets` (paper).
+Forex data: `https://data.alpaca.markets/v1beta3/forex/`.
 
 ---
 
@@ -58,7 +57,7 @@ interface IMarketAdapter {
 ```
 
 Binance adapter wraps its functions in a class implementing this interface.
-OANDA adapter is a second implementation.
+Alpaca adapter is a second implementation.
 
 ### 2b. Adapter Registry
 
@@ -66,7 +65,7 @@ OANDA adapter is a second implementation.
 // src/adapters/registry.ts
 const adapters: Record<string, IMarketAdapter> = {
   crypto: new BinanceAdapter(),
-  forex: new OandaAdapter(),
+  forex: new AlpacaAdapter(),
 }
 
 export function getAdapter(market: 'crypto' | 'forex'): IMarketAdapter {
@@ -75,7 +74,7 @@ export function getAdapter(market: 'crypto' | 'forex'): IMarketAdapter {
 ```
 
 The agent loop and tool dispatcher call `getAdapter(market)` — they never import
-Binance or OANDA directly.
+Binance or Alpaca directly.
 
 ### 2c. Tool Routing
 
@@ -97,12 +96,12 @@ symbol.
 
 ### 3a. What Changes in MarketSnapshot
 
-| Field | Crypto (Binance) | Forex (OANDA) |
+| Field | Crypto (Binance) | Forex (Alpaca) |
 |---|---|---|
-| `price.bid/ask` | From order book | From OANDA streaming price |
+| `price.bid/ask` | From order book | From Alpaca latest forex quote |
 | `price.last` | Last trade | Mid-price (no tape in OTC) |
 | `stats24h.volume` | Base asset volume | Tick count / notional (proxy) |
-| `candles` | Klines endpoint | OANDA `/v3/instruments/{pair}/candles` |
+| `candles` | Klines endpoint | Alpaca `/v1beta3/forex/bars` |
 | `indicators.vwap` | Volume-weighted | Tick-VWAP (lower confidence) |
 | `indicators.*` | Same formulas | Same formulas on OHLC |
 
@@ -204,7 +203,7 @@ funding rate, etc.).
 |---|---|
 | `src/adapters/interface.ts` | `IMarketAdapter` contract |
 | `src/adapters/registry.ts` | Adapter lookup by market |
-| `src/adapters/oanda.ts` | OANDA REST wrapper implementing `IMarketAdapter` |
+| `src/adapters/alpaca.ts` | Alpaca REST wrapper implementing `IMarketAdapter` |
 | `src/adapters/session.ts` | Forex session open/close logic |
 | `src/guardrails/forex.ts` | `validateForexOrder()`, pip-size calc |
 | `src/guardrails/riskStateStore.ts` | Per-market risk state + combined cap |
@@ -219,7 +218,7 @@ Changes to existing files:
 | `src/adapters/binance.ts` | Wrap functions in `BinanceAdapter` class |
 | `src/tools/definitions.ts` | Add `market` param to all tools; add `stopPips` to `place_order` |
 | `src/guardrails/riskState.ts` | Extract into `riskStateStore.ts` (per-market) |
-| `.env.example` | Add `OANDA_API_KEY`, `OANDA_ACCOUNT_ID`, `OANDA_PAPER=true` |
+| `.env.example` | Add `ALPACA_KEY`, `ALPACA_SECRET`, `ALPACA_PAPER=true` |
 
 ---
 
@@ -230,21 +229,21 @@ Step 1 — Abstraction (no new features, just refactor)
   Introduce IMarketAdapter, wrap BinanceAdapter, add registry.
   All existing tests must still pass.
 
-Step 2 — OANDA paper adapter
-  Build OandaAdapter against paper account.
-  Verify getSnapshot("EURUSD") returns a well-formed MarketSnapshot.
-  Verify indicator values are reasonable on 1h OHLC.
+Step 2 — Alpaca paper adapter ✅ complete
+  AlpacaAdapter built against paper account.
+  getSnapshot("EUR_USD") returns a well-formed MarketSnapshot.
+  Indicators computed from Alpaca forex bars.
 
-Step 3 — Forex guardrails
+Step 3 — Forex guardrails ✅ complete
   validateForexOrder(), session guard, spread check.
-  Unit-test with synthetic order params.
+  Pip-based risk sizing implemented.
 
-Step 4 — Agent loop with market routing
-  Extend agent loop to accept `market` param.
-  Run both Binance (crypto) and OANDA (forex) in separate scheduler slots.
+Step 4 — Agent loop with market routing ✅ complete
+  Agent loop routes by `market` param via adapter registry.
+  Binance (crypto) and Alpaca (forex) run in separate scheduler slots.
 
 Step 5 — Live forex
-  Switch OANDA_PAPER=false on small position sizes.
+  Switch ALPACA_PAPER=false on small position sizes.
   Monitor 2 weeks before increasing size.
 ```
 
@@ -256,6 +255,6 @@ Step 5 — Live forex
 |---|---|
 | Forex spread widens during news (NFP, FOMC) | Economic calendar guard — skip cycle if high-impact event within 30 min |
 | Leverage amplifies losses | Hard max leverage cap in `validateForexOrder` regardless of broker margin |
-| OANDA API rate limits | Cache candles for 1m; don't re-fetch within same candle window |
+| Alpaca API rate limits | Cache candles for 1m; don't re-fetch within same candle window |
 | Cross-market correlation (USD in both BTC and forex) | Future: correlation matrix — reduce forex USD exposure if crypto is long heavy |
 | Session open gaps | Detect daily gap on Monday open, skip first candle |

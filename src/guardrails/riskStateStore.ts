@@ -53,6 +53,13 @@ function get(market: Market): DayState {
   return states[market]
 }
 
+/** Restore daily P&L from DB on server restart so the loss limit survives restarts. */
+export function hydrateRiskStateFromDb(market: Market, pnlUsd: number): void {
+  const s = get(market)
+  s.realizedPnlUsd = pnlUsd
+  if (pnlUsd > s.peakPnlUsd) s.peakPnlUsd = pnlUsd
+}
+
 export function recordFillFor(market: Market, pnlUsd: number): void {
   const s = get(market)
   s.realizedPnlUsd += pnlUsd

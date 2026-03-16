@@ -301,6 +301,112 @@ export async function startServer(): Promise<void> {
     return dbGetCycleResults(market as 'crypto' | 'forex' | undefined)
   })
 
+  // ── Accounts ─────────────────────────────────────────────────────────────────
+
+  type AlpacaAccountEntry = {
+    id: string; exchange: 'alpaca'; mode: 'PAPER' | 'LIVE'
+    connected: boolean; error?: string
+    summary?: { equity: number; cash: number; buyingPower: number; portfolioValue: number; unrealizedPl: number; dayPl: number; status: string }
+    positions?: Array<{ symbol: string; side: 'BUY' | 'SELL'; qty: number; avgEntry: number; currentPrice: number; marketValue: number; unrealizedPl: number; unrealizedPlPct: number; costBasis: number }>
+    recentFills?: Array<{ symbol: string; side: 'BUY' | 'SELL'; qty: number; price: number; time: string }>
+  }
+
+  type BinanceAccountEntry = {
+    id: string; exchange: 'binance'; mode: 'LIVE' | 'TESTNET'
+    connected: boolean; error?: string
+    balances?: Array<{ asset: string; free: number; locked: number }>
+    openOrders?: Array<{ symbol: string; side: string; type: string; price: number; origQty: number; executedQty: number; status: string; time: number }>
+  }
+
+  type AccountEntry = AlpacaAccountEntry | BinanceAccountEntry
+
+  async function fetchAlpacaEntry(paper: boolean): Promise<AlpacaAccountEntry> {
+    const id = paper ? 'alpaca-paper' : 'alpaca-live'
+    const mode = paper ? 'PAPER' : 'LIVE'
+    const keyId  = paper ? (process.env.ALPACA_PAPER_KEY ?? '')   : (process.env.ALPACA_API_KEY ?? '')
+    const secret = paper ? (process.env.ALPACA_PAPER_SECRET ?? '') : (process.env.ALPACA_API_SECRET ?? '')
+    if (!keyId) throw new Error('Keys not configured')
+    const base = paper ? 'https://paper-api.alpaca.markets' : 'https://api.alpaca.markets'
+    const h = { 'APCA-API-KEY-ID': keyId, 'APCA-API-SECRET-KEY': secret }
+    const [acct, pos, acts] = await Promise.all([
+      fetch(`${base}/v2/account`, { headers: h }).then(r => { if (!r.ok) throw new Error(`account HTTP ${r.status}`); return r.json() as Promise<Record<string, string>> }),
+      fetch(`${base}/v2/positions`, { headers: h }).then(r => { if (!r.ok) return [] as unknown[]; return r.json() as Promise<Array<Record<string, string>>> }),
+      fetch(`${base}/v2/account/activities/FILL?page_size=30`, { headers: h }).then(r => { if (!r.ok) return [] as unknown[]; return r.json() as Promise<Array<Record<string, string>>> }),
+    ])
+    return {
+      id, exchange: 'alpaca', mode, connected: true,
+      summary: {
+        equity: parseFloat(acct.equity ?? '0'),
+        cash: parseFloat(acct.cash ?? '0'),
+        buyingPower: parseFloat(acct.buying_power ?? '0'),
+        portfolioValue: parseFloat(acct.portfolio_value ?? '0'),
+        unrealizedPl: parseFloat(acct.unrealized_pl ?? '0'),
+        dayPl: parseFloat(acct.pl ?? '0'),
+        status: acct.status ?? 'UNKNOWN',
+      },
+      positions: (pos as Array<Record<string, string>>).map(p => ({
+        symbol: p.symbol,
+        side: p.side === 'long' ? 'BUY' : 'SELL',
+        qty: Math.abs(parseFloat(p.qty ?? '0')),
+        avgEntry: parseFloat(p.avg_entry_price ?? '0'),
+        currentPrice: parseFloat(p.current_price ?? '0'),
+        marketValue: parseFloat(p.market_value ?? '0'),
+        unrealizedPl: parseFloat(p.unrealized_pl ?? '0'),
+        unrealizedPlPct: parseFloat(p.unrealized_plpc ?? '0') * 100,
+        costBasis: parseFloat(p.cost_basis ?? '0'),
+      })),
+      recentFills: (acts as Array<Record<string, string>>).map(a => ({
+        symbol: a.symbol,
+        side: a.side === 'buy' ? 'BUY' : 'SELL',
+        qty: parseFloat(a.qty ?? '0'),
+        price: parseFloat(a.price ?? '0'),
+        time: a.transaction_time,
+      })),
+    }
+  }
+
+  async function fetchBinanceEntry(): Promise<BinanceAccountEntry> {
+    const { createHmac } = await import('crypto')
+    const binKey    = process.env.BINANCE_API_KEY?.trim() ?? ''
+    const binSecret = process.env.BINANCE_API_SECRET?.trim() ?? ''
+    if (!binKey) throw new Error('Keys not configured')
+    const testnet = process.env.BINANCE_TESTNET === 'true'
+    const mode = testnet ? 'TESTNET' : 'LIVE'
+    const base = testnet ? 'https://testnet.binance.vision' : 'https://api.binance.com'
+    const ts = Date.now()
+    const qs = `timestamp=${ts}`
+    const sig = createHmac('sha256', binSecret).update(qs).digest('hex')
+    type BinanceAcct = { balances: Array<{ asset: string; free: string; locked: string }> }
+    type BinanceOrder = { symbol: string; side: string; type: string; price: string; origQty: string; executedQty: string; status: string; time: number }
+    const [acct, orders] = await Promise.all([
+      fetch(`${base}/api/v3/account?${qs}&signature=${sig}`, { headers: { 'X-MBX-APIKEY': binKey } })
+        .then(r => { if (!r.ok) throw new Error(`account HTTP ${r.status}`); return r.json() as Promise<BinanceAcct> }),
+      fetch(`${base}/api/v3/openOrders?timestamp=${ts}&signature=${createHmac('sha256', binSecret).update(`timestamp=${ts}`).digest('hex')}`, { headers: { 'X-MBX-APIKEY': binKey } })
+        .then(r => { if (!r.ok) return [] as BinanceOrder[]; return r.json() as Promise<BinanceOrder[]> }),
+    ])
+    return {
+      id: `binance-${mode.toLowerCase()}`, exchange: 'binance', mode, connected: true,
+      balances: acct.balances
+        .filter(b => parseFloat(b.free) > 0 || parseFloat(b.locked) > 0)
+        .map(b => ({ asset: b.asset, free: parseFloat(b.free), locked: parseFloat(b.locked) }))
+        .sort((a, b) => (b.free + b.locked) - (a.free + a.locked)),
+      openOrders: orders.map(o => ({
+        symbol: o.symbol, side: o.side, type: o.type,
+        price: parseFloat(o.price), origQty: parseFloat(o.origQty),
+        executedQty: parseFloat(o.executedQty), status: o.status, time: o.time,
+      })),
+    }
+  }
+
+  app.get('/api/accounts', async (_req, reply) => {
+    const jobs: Array<Promise<AccountEntry>> = []
+    if (process.env.ALPACA_PAPER_KEY) jobs.push(fetchAlpacaEntry(true).catch(err => ({ id: 'alpaca-paper', exchange: 'alpaca' as const, mode: 'PAPER' as const, connected: false, error: String(err) })))
+    if (process.env.ALPACA_API_KEY)   jobs.push(fetchAlpacaEntry(false).catch(err => ({ id: 'alpaca-live',  exchange: 'alpaca' as const, mode: 'LIVE' as const,  connected: false, error: String(err) })))
+    if (process.env.BINANCE_API_KEY)  jobs.push(fetchBinanceEntry().catch(err => ({ id: 'binance-main', exchange: 'binance' as const, mode: (process.env.BINANCE_TESTNET === 'true' ? 'TESTNET' : 'LIVE') as 'LIVE' | 'TESTNET', connected: false, error: String(err) })))
+    const accounts = await Promise.all(jobs)
+    return reply.send(accounts)
+  })
+
   // ── Positions ────────────────────────────────────────────────────────────────
   app.get('/api/positions', async (_req, reply) => {
     const agents = Object.values(getState().agents)

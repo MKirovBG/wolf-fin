@@ -11,7 +11,8 @@ import { getForexContext } from '../guardrails/riskStateStore.js'
 import { buildMarketContext } from './context.js'
 import { sessionLabel } from '../adapters/session.js'
 import { TOOLS } from '../tools/definitions.js'
-import { recordCycle, logEvent } from '../server/state.js'
+import { recordCycle, logEvent, tryAcquireCycleLock, releaseCycleLock } from '../server/state.js'
+import { dbGetAgentPerformance } from '../db/index.js'
 import type { AgentConfig } from '../types.js'
 import type { OrderParams } from '../adapters/types.js'
 
@@ -22,12 +23,12 @@ const anthropic = new Anthropic()
 
 // ── System Prompt ─────────────────────────────────────────────────────────────
 
-function buildSystemPrompt(config: AgentConfig): string {
+function buildSystemPrompt(config: AgentConfig, agentKey: string): string {
   const { market, paper, customPrompt } = config
   const mode = paper ? '[PAPER TRADING — no real orders will be sent]' : '[LIVE TRADING]'
   const sessionNote =
     market === 'forex'
-      ? `\nCURRENT SESSION: ${sessionLabel()}\nFOREX SESSION RULES: Only trade during Tokyo, London, or New York sessions. Avoid Sydney-only hours. Reject entries when spread > 3 pips or sessionOpen is false.`
+      ? `\nCURRENT SESSION: ${sessionLabel()}\nFOREX SESSION RULES: Only trade during Tokyo, London, or New York sessions. Avoid Sydney-only hours. Reject entries when spread > 3 pips or sessionOpen is false.\nNOTE: Overnight swap rates are unavailable from the data provider — do not factor swap costs into hold decisions.`
       : ''
 
   const base = `You are Wolf-Fin, an autonomous trading agent. ${mode}
@@ -46,13 +47,37 @@ RISK RULES (non-negotiable):
 - Size so that a stop-out costs at most 1% of NAV.
 - Do not pyramid an open position unless RSI and EMA both confirm.
 - Never risk more than remainingBudgetUsd on a single trade.
-${sessionNote}
+${sessionNote}`
 
-DECISION FORMAT (append after tool calls):
+  const perf = dbGetAgentPerformance(agentKey, 10)
+  const perfSection = perf.totalCycles > 0
+    ? `\n\nYOUR RECENT PERFORMANCE (last ${perf.totalCycles} cycles on ${config.symbol}):
+- Decisions: BUY ${perf.buys} | SELL ${perf.sells} | HOLD ${perf.holds}
+- Last decisions: ${perf.lastDecisions.map(d => `[${d.time.slice(11, 16)}] ${d.decision.split(' ')[0]}`).join(' → ')}${perf.holds >= 5 && perf.buys === 0 && perf.sells === 0 ? '\nWARNING: You have held every recent cycle. Re-examine if conditions truly warrant inaction or if you are being overly cautious.' : ''}`
+    : ''
+
+  const decisionFormat = `\n\nDECISION FORMAT (append after tool calls):
   DECISION: [HOLD | BUY <qty> @ <price> | SELL <qty> @ <price> | CANCEL <orderId>]
   REASON: <1-2 sentences of evidence>`
 
-  return customPrompt ? `${base}\n\nADDITIONAL INSTRUCTIONS:\n${customPrompt}` : base
+  const full = base + perfSection + decisionFormat
+  return customPrompt ? `${full}\n\nADDITIONAL INSTRUCTIONS:\n${customPrompt}` : full
+}
+
+// ── Cycle user message with signal priority ────────────────────────────────────
+
+function buildCycleUserMessage(config: AgentConfig): string {
+  return `Run a trading cycle for ${config.symbol} (${config.market}).
+
+SIGNAL PRIORITY (evaluate in order):
+1. RISK GATE — if remainingBudgetUsd = 0, output HOLD immediately without further tool calls
+2. TREND — EMA20 vs EMA50 direction (EMA20 > EMA50 = bullish bias)
+3. MOMENTUM — RSI14: <30 oversold watch, >70 overbought watch, 45-55 neutral
+4. VOLATILITY — ATR14 and BB width for stop sizing and breakout detection
+5. CONTEXT — Fear/Greed (crypto) or session quality (forex); skip if high-impact event imminent
+6. POSITION — manage any existing open position before entering a new one
+
+Use at most 3 tool calls per cycle. Call get_snapshot first. Only call get_order_book if actively sizing a new entry.`
 }
 
 // ── Tool result summariser (keeps logs readable) ──────────────────────────────
@@ -126,6 +151,13 @@ async function dispatchTool(
         log.warn({ reason: validation.reason }, 'order blocked by guardrails')
         return { blocked: true, reason: validation.reason }
       }
+      // Compute absolute stop price for forex bracket orders
+      if (market === 'forex' && params.stopPips != null && params.price != null) {
+        const pipSz = params.symbol.toUpperCase().includes('JPY') ? 0.01 : 0.0001
+        params.stopPrice = params.side === 'BUY'
+          ? params.price - params.stopPips * pipSz
+          : params.price + params.stopPips * pipSz
+      }
       if (paper) {
         log.info({ params }, '[PAPER] order simulated')
         return { orderId: Date.now(), clientOrderId: `paper-${Date.now()}`, symbol: params.symbol, side: params.side, type: params.type, price: params.price ?? 0, origQty: params.quantity, status: 'PAPER_FILLED', transactTime: Date.now() }
@@ -149,6 +181,13 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
   const maxIterations = config.maxIterations
   const agentKey = `${config.market}:${config.symbol}`
 
+  if (!tryAcquireCycleLock(agentKey)) {
+    logEvent(agentKey, 'warn', 'cycle_skip', 'Cycle already running — skipped duplicate trigger')
+    log.warn({ agentKey }, 'cycle already in flight — skipping tick')
+    return
+  }
+
+  try {
   logEvent(agentKey, 'info', 'cycle_start', `Starting cycle for ${config.symbol} (${config.market}) [${paper ? 'PAPER' : 'LIVE'}]`)
   log.info({ symbol: config.symbol, market: config.market, paper }, 'agent cycle start')
 
@@ -159,10 +198,10 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
   }
 
   const messages: Anthropic.MessageParam[] = [
-    { role: 'user', content: `Run a trading cycle for ${config.symbol} (${config.market}). Analyse the market and make your decision now.` },
+    { role: 'user', content: buildCycleUserMessage(config) },
   ]
 
-  const systemPrompt = buildSystemPrompt(config)
+  const systemPrompt = buildSystemPrompt(config, agentKey)
   let iterations = 0
 
   try {
@@ -229,7 +268,12 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
             result = { error: msg }
           }
 
-          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) })
+          // Strip raw candles from snapshot before adding to message history —
+          // indicators are already derived from them, so candles just waste tokens.
+          const resultForHistory = block.name === 'get_snapshot' && result != null
+            ? { ...(result as Record<string, unknown>), candles: undefined }
+            : result
+          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(resultForHistory) })
         }
 
         messages.push({ role: 'user', content: toolResults })
@@ -255,4 +299,7 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
   }
 
   logEvent(agentKey, 'info', 'cycle_end', `Cycle complete after ${iterations} iteration(s)`)
+  } finally {
+    releaseCycleLock(agentKey)
+  }
 }

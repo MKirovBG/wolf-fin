@@ -32,6 +32,8 @@ import type {
 import type { IMarketAdapter } from './interface.js'
 import { computeIndicators } from './indicators.js'
 import { isForexSessionOpen } from './session.js'
+import { fetchCandlesTwelveData, fetchQuoteTwelveData } from './twelvedata.js'
+import type { Interval } from './twelvedata.js'
 
 // ── Pip helpers ───────────────────────────────────────────────────────────────
 
@@ -83,60 +85,84 @@ function toAlpacaSymbol(symbol: string): string {
 }
 
 // ── Alpaca data REST helper ───────────────────────────────────────────────────
-// The SDK has no forex data methods — call the REST API directly.
+// Alpaca FX data requires a paid subscription. We try Alpaca first for latest
+// quotes (bid/ask accuracy), but fall back to Twelve Data for everything.
 
 const DATA_BASE = 'https://data.alpaca.markets'
 
 function dataHeaders(): Record<string, string> {
-  // data.alpaca.markets always requires live API keys, regardless of paper/live trading mode
   return {
     'APCA-API-KEY-ID':     process.env.ALPACA_API_KEY    ?? '',
     'APCA-API-SECRET-KEY': process.env.ALPACA_API_SECRET ?? '',
   }
 }
 
+/** Strip slashes/underscores: EUR/USD → EURUSD (Alpaca rates format) */
+function toAlpacaRatesSymbol(symbol: string): string {
+  return symbol.toUpperCase().replace(/[/_]/g, '')
+}
+
 async function alpacaDataGet<T>(path: string, params: Record<string, string | number>): Promise<T | null> {
   const url = new URL(`${DATA_BASE}${path}`)
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v))
   const res = await fetch(url.toString(), { headers: dataHeaders() })
-  if (res.status === 404) return null  // endpoint not available for this symbol/subscription
-  if (!res.ok) throw new Error(`Alpaca data ${path} → HTTP ${res.status}: ${await res.text()}`)
+  if (res.status === 403 || res.status === 404) return null  // not authorized or not found
+  if (!res.ok) return null  // don't throw — Twelve Data will handle it
   return res.json() as Promise<T>
 }
 
 // ── Candle fetching ───────────────────────────────────────────────────────────
+// Primary: Twelve Data (free tier, proper OHLCV). Fallback: Alpaca rates (paid).
 
 type Timeframe = '1Min' | '15Min' | '1Hour' | '4Hour'
 
-const timeframeMs: Record<Timeframe, number> = {
-  '1Min':  60_000,
-  '15Min': 15 * 60_000,
-  '1Hour': 3_600_000,
-  '4Hour': 4 * 3_600_000,
+const timeframeToTd: Record<Timeframe, Interval> = {
+  '1Min': '1min',
+  '15Min': '15min',
+  '1Hour': '1h',
+  '4Hour': '4h',
 }
 
 async function fetchCandles(symbol: string, timeframe: Timeframe, limit = 100): Promise<Candle[]> {
-  const alpacaSymbol = toAlpacaSymbol(symbol)
-  const data = await alpacaDataGet<{ bars: Record<string, Array<{ t: string; o: number; h: number; l: number; c: number; v: number }>> }>(
-    '/v1beta3/forex/bars',
-    { symbols: alpacaSymbol, timeframe, limit, sort: 'asc' },
+  // Primary: Twelve Data (always available with free key)
+  const tdInterval = timeframeToTd[timeframe]
+  const tdCandles = await fetchCandlesTwelveData(symbol, tdInterval, limit)
+  if (tdCandles.length > 0) return tdCandles
+
+  // Fallback: Alpaca rates API (requires paid FX data subscription)
+  const ratesSym = toAlpacaRatesSymbol(symbol)
+  const data = await alpacaDataGet<{ rates: Record<string, Array<{ t: string; bp: number; mp: number; ap: number }>> }>(
+    '/v1beta1/forex/rates',
+    { currency_pairs: ratesSym, timeframe: timeframe === '4Hour' ? '1Min' : timeframe, limit, sort: 'asc' },
   )
-  if (!data) return []  // 404 — symbol not available on this endpoint/subscription
-  const bars = data.bars?.[alpacaSymbol] ?? []
+  if (!data) return []
+  const rates = data.rates?.[ratesSym] ?? []
+  const timeframeMs: Record<Timeframe, number> = { '1Min': 60_000, '15Min': 15 * 60_000, '1Hour': 3_600_000, '4Hour': 4 * 3_600_000 }
   const ms = timeframeMs[timeframe]
-  return bars.map(b => {
-    const t = new Date(b.t).getTime()
-    return { openTime: t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v, closeTime: t + ms }
+  // Synthesize candles from rate snapshots (bid/mid/ask → OHLCV approximation)
+  return rates.map(r => {
+    const t = new Date(r.t).getTime()
+    return { openTime: t, open: r.mp, high: r.ap, low: r.bp, close: r.mp, volume: 0, closeTime: t + ms }
   })
 }
 
 async function fetchLatestQuote(symbol: string): Promise<{ bp: number; ap: number }> {
-  const alpacaSymbol = toAlpacaSymbol(symbol)
-  const data = await alpacaDataGet<{ quotes: Record<string, { bp: number; ap: number }> }>(
-    '/v1beta3/forex/latest/quotes',
-    { symbols: alpacaSymbol },
+  // Primary: Alpaca latest rates (most accurate bid/ask if subscription active)
+  const ratesSym = toAlpacaRatesSymbol(symbol)
+  const data = await alpacaDataGet<{ rates: Record<string, { bp: number; mp: number; ap: number }> }>(
+    '/v1beta1/forex/latest/rates',
+    { currency_pairs: ratesSym },
   )
-  return data?.quotes?.[alpacaSymbol] ?? { bp: 0, ap: 0 }
+  if (data?.rates?.[ratesSym]) {
+    const r = data.rates[ratesSym]
+    return { bp: r.bp, ap: r.ap }
+  }
+
+  // Fallback: Twelve Data real-time price (free tier)
+  const quote = await fetchQuoteTwelveData(symbol)
+  if (quote) return { bp: quote.bid, ap: quote.ask }
+
+  return { bp: 0, ap: 0 }
 }
 
 // ── AlpacaAdapter ─────────────────────────────────────────────────────────────
@@ -147,15 +173,19 @@ export class AlpacaAdapter implements IMarketAdapter {
   async getSnapshot(symbol: string, riskState: RiskState): Promise<MarketSnapshot> {
     const alpacaSymbol = toAlpacaSymbol(symbol)
 
-    const [m1, m15, h1, h4, quote, accountResult, positionsResult] = await Promise.all([
-      fetchCandles(symbol, '1Min', 100),
-      fetchCandles(symbol, '15Min', 100),
-      fetchCandles(symbol, '1Hour', 100),
-      fetchCandles(symbol, '4Hour', 100),
-      fetchLatestQuote(symbol),
-      (alpaca().getAccount() as Promise<{ equity: string; buying_power: string; portfolio_value: string; initial_margin: string }>).catch(() => null),
-      (alpaca().getPositions() as Promise<Array<{ symbol: string; qty: string; avg_entry_price: string; side: string; unrealized_pl: string; current_price: string }>>).catch(() => []),
-    ])
+    // Fetch Twelve Data candles sequentially to stay within 8/min rate limit,
+    // while Alpaca account/positions calls run in parallel (separate API).
+    const accountPromise = (alpaca().getAccount() as Promise<{ equity: string; buying_power: string; portfolio_value: string; initial_margin: string }>).catch(() => null)
+    const positionsPromise = (alpaca().getPositions() as Promise<Array<{ symbol: string; qty: string; avg_entry_price: string; side: string; unrealized_pl: string; current_price: string }>>).catch(() => [])
+
+    // Sequential candle fetches (Twelve Data free tier: 8 req/min)
+    const m1  = await fetchCandles(symbol, '1Min', 100)
+    const m15 = await fetchCandles(symbol, '15Min', 100)
+    const h1  = await fetchCandles(symbol, '1Hour', 100)
+    const h4  = await fetchCandles(symbol, '4Hour', 100)
+    const quote = await fetchLatestQuote(symbol)
+
+    const [accountResult, positionsResult] = await Promise.all([accountPromise, positionsPromise])
 
     const bid = quote.bp ?? 0
     const ask = quote.ap ?? 0
@@ -319,6 +349,9 @@ export class AlpacaAdapter implements IMarketAdapter {
       time_in_force: (params.timeInForce ?? 'gtc').toLowerCase(),
       ...(params.type === 'LIMIT' && params.price != null
         ? { limit_price: params.price }
+        : {}),
+      ...(params.stopPrice != null
+        ? { order_class: 'bracket', stop_loss: { stop_price: params.stopPrice.toFixed(5) } }
         : {}),
     }
 

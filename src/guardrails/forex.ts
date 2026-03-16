@@ -13,12 +13,12 @@ const MAX_SPREAD_PIPS = parseFloat(process.env.MAX_SPREAD_PIPS ?? '3')
 const MIN_STOP_PIPS = parseFloat(process.env.MIN_STOP_PIPS ?? '10')
 
 /**
- * Validate a forex order before sending to OANDA.
+ * Validate a forex order before sending to Alpaca.
  *
  * @param params    - Order parameters (symbol, side, qty, price, stopPips)
  * @param spread    - Current bid/ask spread in pips (from last snapshot)
  * @param sessionOpen - Whether a major forex session is currently active
- * @param pipValue  - USD value per pip per unit (from OANDA adapter)
+ * @param pipValue  - USD value per pip per unit (from Alpaca adapter)
  */
 export function validateForexOrder(
   params: OrderParams,

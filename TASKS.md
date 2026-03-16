@@ -26,14 +26,13 @@
 
 See `FOREX_PLAN.md` for full architecture and rollout.
 
-- [ ] OANDA adapter — `src/adapters/oanda.ts` (REST wrapper matching IMarketAdapter)
-- [ ] Forex-specific types — pip value, lot size, spread, margin, swap rate
-- [ ] Forex indicators — tick-volume RSI/EMA (no reliable quote volume in OTC FX)
-- [ ] Market hours guard — block orders when session is closed or spread too wide
-- [ ] Pip-based risk sizing — position size calc from account risk% and pip distance
-- [ ] Multi-asset tool routing — `get_snapshot("EURUSD", "forex")` vs `"BTCUSDT", "crypto"`
-- [ ] Cross-asset guardrails — separate daily budgets per market, combined notional cap
-- [ ] Session awareness prompt — London/NY/Tokyo overlap logic injected into Claude context
+- [x] Alpaca adapter — `src/adapters/alpaca.ts` (REST wrapper matching IMarketAdapter)
+- [x] Forex-specific types — pip value, lot size, spread, margin, swap rate
+- [x] Market hours guard — block orders when session is closed or spread too wide
+- [x] Pip-based risk sizing — position size calc from account risk% and pip distance
+- [x] Multi-asset tool routing — `get_snapshot("EUR_USD", "forex")` vs `"BTCUSDT", "crypto"`
+- [x] Cross-asset guardrails — separate daily budgets per market, combined notional cap
+- [x] Session awareness prompt — London/NY/Tokyo overlap logic injected into Claude context
 
 ## Phase 4 — Operations
 
@@ -45,7 +44,7 @@ See `FOREX_PLAN.md` for full architecture and rollout.
 ## Phase 5 — Live Trading
 
 - [ ] Crypto: switch `BINANCE_TESTNET=false`, end-to-end integration test
-- [ ] Forex: switch OANDA to live account, verify pip values and margin maths
+- [ ] Forex: switch `ALPACA_PAPER=false`, verify pip values and margin maths on live account
 - [ ] Performance dashboard — realized P&L, win rate, avg R:R per market
 - [ ] Drawdown monitoring — auto-pause if max drawdown threshold crossed
 - [ ] Multi-symbol support — generalize single-symbol loop to a symbol list

@@ -6,6 +6,7 @@ const links = [
   { to: '/positions', label: 'Positions' },
   { to: '/keys', label: 'API Keys' },
   { to: '/reports', label: 'Reports' },
+  { to: '/account', label: 'Account' },
 ]
 
 export function Layout() {

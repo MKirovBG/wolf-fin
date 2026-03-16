@@ -6,9 +6,9 @@
   - API Keys → Create Key
   - `.env`: `ANTHROPIC_API_KEY`
 
-- [ ] **OANDA** — https://www.oanda.com/register/
-  - My Account → Manage API Access → Generate Token
-  - `.env`: `OANDA_API_KEY`, `OANDA_ACCOUNT_ID`
+- [ ] **Alpaca** — https://alpaca.markets
+  - Create Account → API Keys → Generate Key (use paper keys for testing)
+  - `.env`: `ALPACA_KEY`, `ALPACA_SECRET`, `ALPACA_PAPER=true`
 
 - [ ] **Binance** — https://testnet.binance.vision _(testnet, free — no real money)_
   - Account → API Management → Create API → Enable Spot Trading

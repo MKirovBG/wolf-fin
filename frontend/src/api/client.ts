@@ -1,4 +1,4 @@
-import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, LogEntry, PositionEntry, FillEntry } from '../types/index.ts'
+import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, LogEntry, PositionEntry, FillEntry, AccountEntry } from '../types/index.ts'
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, options)
@@ -71,3 +71,6 @@ export const getReportSummary = () => api<ReportSummary>('/api/reports/summary')
 
 export const getReportTrades = (market?: string) =>
   api<CycleResult[]>(`/api/reports/trades${market ? `?market=${market}` : ''}`)
+
+// ── Accounts ─────────────────────────────────────────────────────────────────
+export const getAccounts = () => api<AccountEntry[]>('/api/accounts')

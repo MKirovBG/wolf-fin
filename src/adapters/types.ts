@@ -139,6 +139,7 @@ export interface OrderParams {
   price?: number           // required for LIMIT
   timeInForce?: 'GTC' | 'IOC' | 'FOK'
   stopPips?: number        // forex only: stop-loss distance in pips
+  stopPrice?: number       // computed absolute stop price (set by agent before calling placeOrder)
 }
 
 export interface OrderResult {

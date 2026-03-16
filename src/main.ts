@@ -2,13 +2,19 @@
 
 import 'dotenv/config'
 import pino from 'pino'
-import { initDb, dbGetAllAgents } from './db/index.js'
+import { initDb, dbGetAllAgents, dbGetTodayRealizedPnl } from './db/index.js'
 import { upsertAgent } from './server/state.js'
+import { hydrateRiskStateFromDb } from './guardrails/riskStateStore.js'
 import { startServer } from './server/index.js'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
 
 initDb()
+
+// Restore today's realized P&L so the daily loss limit survives server restarts
+const today = new Date().toISOString().slice(0, 10)
+hydrateRiskStateFromDb('crypto', dbGetTodayRealizedPnl('crypto', today))
+hydrateRiskStateFromDb('forex', dbGetTodayRealizedPnl('forex', today))
 
 const savedAgents = dbGetAllAgents()
 for (const agent of savedAgents) {

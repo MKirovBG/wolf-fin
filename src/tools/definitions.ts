@@ -7,7 +7,7 @@ import Anthropic from '@anthropic-ai/sdk'
 const MARKET_FIELD = {
   type: 'string',
   enum: ['crypto', 'forex'],
-  description: 'Market type. "crypto" routes to Binance, "forex" routes to OANDA.',
+  description: 'Market type. "crypto" routes to Binance, "forex" routes to Alpaca.',
 } as const
 
 export const TOOLS: Anthropic.Tool[] = [

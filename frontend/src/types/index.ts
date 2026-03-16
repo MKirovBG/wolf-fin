@@ -154,6 +154,78 @@ export interface ReportSummary {
   forex: MarketSummary
 }
 
+// ── Accounts ─────────────────────────────────────────────────────────────────
+
+export interface AlpacaAccountSummary {
+  equity: number
+  cash: number
+  buyingPower: number
+  portfolioValue: number
+  unrealizedPl: number
+  dayPl: number
+  status: string
+}
+
+export interface AlpacaPosition {
+  symbol: string
+  side: 'BUY' | 'SELL'
+  qty: number
+  avgEntry: number
+  currentPrice: number
+  marketValue: number
+  unrealizedPl: number
+  unrealizedPlPct: number
+  costBasis: number
+}
+
+export interface AlpacaFill {
+  symbol: string
+  side: 'BUY' | 'SELL'
+  qty: number
+  price: number
+  time: string
+}
+
+export interface AlpacaAccountEntry {
+  id: string
+  exchange: 'alpaca'
+  mode: 'PAPER' | 'LIVE'
+  connected: boolean
+  error?: string
+  summary?: AlpacaAccountSummary
+  positions?: AlpacaPosition[]
+  recentFills?: AlpacaFill[]
+}
+
+export interface BinanceBalance {
+  asset: string
+  free: number
+  locked: number
+}
+
+export interface BinanceOpenOrder {
+  symbol: string
+  side: string
+  type: string
+  price: number
+  origQty: number
+  executedQty: number
+  status: string
+  time: number
+}
+
+export interface BinanceAccountEntry {
+  id: string
+  exchange: 'binance'
+  mode: 'LIVE' | 'TESTNET'
+  connected: boolean
+  error?: string
+  balances?: BinanceBalance[]
+  openOrders?: BinanceOpenOrder[]
+}
+
+export type AccountEntry = AlpacaAccountEntry | BinanceAccountEntry
+
 export interface MarketSummary {
   totalCycles: number
   buys: number

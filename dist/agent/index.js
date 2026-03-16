@@ -3,10 +3,11 @@ import Anthropic from '@anthropic-ai/sdk';
 import pino from 'pino';
 import { getAdapter } from '../adapters/registry.js';
 import { getRiskState } from '../guardrails/riskState.js';
-import { updatePositionNotionalFor, isDailyLimitHitFor, setForexContext } from '../guardrails/riskStateStore.js';
+import { updatePositionNotionalFor, isDailyLimitHitFor, setForexContext, setMt5Context } from '../guardrails/riskStateStore.js';
 import { validateOrder } from '../guardrails/validate.js';
 import { validateForexOrder } from '../guardrails/forex.js';
-import { getForexContext } from '../guardrails/riskStateStore.js';
+import { validateMt5Order } from '../guardrails/mt5.js';
+import { getForexContext, getMt5Context } from '../guardrails/riskStateStore.js';
 import { buildMarketContext } from './context.js';
 import { sessionLabel } from '../adapters/session.js';
 import { TOOLS } from '../tools/definitions.js';
@@ -18,9 +19,12 @@ const anthropic = new Anthropic();
 function buildSystemPrompt(config, agentKey) {
     const { market, paper, customPrompt } = config;
     const mode = paper ? '[PAPER TRADING — no real orders will be sent]' : '[LIVE TRADING]';
+    const maxSpreadPips = parseFloat(process.env.MAX_SPREAD_PIPS ?? '3');
     const sessionNote = market === 'forex'
-        ? `\nCURRENT SESSION: ${sessionLabel()}\nFOREX SESSION RULES: Only trade during Tokyo, London, or New York sessions. Avoid Sydney-only hours. Reject entries when spread > 3 pips or sessionOpen is false.\nNOTE: Overnight swap rates are unavailable from the data provider — do not factor swap costs into hold decisions.`
-        : '';
+        ? `\nCURRENT SESSION: ${sessionLabel()}\nFOREX SESSION RULES: Only trade during Tokyo, London, or New York sessions. Avoid Sydney-only hours. Reject entries when spread > ${maxSpreadPips} pips or sessionOpen is false.\nNOTE: Overnight swap rates are unavailable from the data provider — do not factor swap costs into hold decisions.`
+        : market === 'mt5'
+            ? `\nCURRENT SESSION: ${sessionLabel()}\nMT5 SESSION RULES: Only trade during Tokyo, London, or New York sessions. Reject entries when spread > ${maxSpreadPips} pips or sessionOpen is false.\nMT5 provides real swap rates in the snapshot — factor overnight costs into hold decisions for multi-day positions.`
+            : '';
     const base = `You are Wolf-Fin, an autonomous trading agent. ${mode}
 
 ROLE: Disciplined, risk-first algorithmic trader. Make exactly one trading decision per cycle — HOLD, BUY, SELL, or CANCEL — based on technical evidence and market context.
@@ -31,7 +35,7 @@ PROCESS:
 3. Reason through the evidence: trend (EMA cross), momentum (RSI), volatility (ATR, BB width), context signals.
 4. Decide: HOLD / BUY qty @ price / SELL qty @ price / CANCEL orderId.
 5. Execute via place_order or cancel_order. Always prefer LIMIT orders.
-${market === 'forex' ? '6. Forex: always include stopPips on every order (ATR-based distance).' : ''}
+${market === 'forex' || market === 'mt5' ? `6. ${market === 'mt5' ? 'MT5' : 'Forex'}: always include stopPips on every order (ATR-based distance).` : ''}
 RISK RULES (non-negotiable):
 - If the daily loss limit is hit (remainingBudgetUsd = 0), HOLD unconditionally.
 - Size so that a stop-out costs at most 1% of NAV.
@@ -90,9 +94,9 @@ function summariseToolResult(name, result) {
     }
 }
 // ── Tool Dispatcher ───────────────────────────────────────────────────────────
-async function dispatchTool(name, input, defaultMarket, paper) {
+async function dispatchTool(name, input, defaultMarket, paper, mt5AccountId) {
     const market = input.market ?? defaultMarket;
-    const adapter = getAdapter(market);
+    const adapter = getAdapter(market, mt5AccountId);
     switch (name) {
         case 'get_snapshot': {
             const riskState = getRiskState();
@@ -102,6 +106,9 @@ async function dispatchTool(name, input, defaultMarket, paper) {
             updatePositionNotionalFor(market, openNotional);
             if (market === 'forex' && snap.forex) {
                 setForexContext({ spread: snap.forex.spread, sessionOpen: snap.forex.sessionOpen, pipValue: snap.forex.pipValue });
+            }
+            if (market === 'mt5' && snap.forex) {
+                setMt5Context({ spread: snap.forex.spread, sessionOpen: snap.forex.sessionOpen, pipValue: snap.forex.pipValue, point: 0.0001, digits: 5 });
             }
             return snap;
         }
@@ -123,13 +130,15 @@ async function dispatchTool(name, input, defaultMarket, paper) {
             };
             const validation = market === 'forex'
                 ? (() => { const fx = getForexContext(); return validateForexOrder(params, fx.spread, fx.sessionOpen, fx.pipValue); })()
-                : validateOrder(params, params.price ?? 0);
+                : market === 'mt5'
+                    ? (() => { const ctx = getMt5Context(); return validateMt5Order(params, ctx.spread, ctx.sessionOpen, ctx.pipValue); })()
+                    : validateOrder(params, params.price ?? 0);
             if (!validation.ok) {
                 log.warn({ reason: validation.reason }, 'order blocked by guardrails');
                 return { blocked: true, reason: validation.reason };
             }
-            // Compute absolute stop price for forex bracket orders
-            if (market === 'forex' && params.stopPips != null && params.price != null) {
+            // Compute absolute stop price for forex / MT5 bracket orders
+            if ((market === 'forex' || market === 'mt5') && params.stopPips != null && params.price != null) {
                 const pipSz = params.symbol.toUpperCase().includes('JPY') ? 0.01 : 0.0001;
                 params.stopPrice = params.side === 'BUY'
                     ? params.price - params.stopPips * pipSz
@@ -204,7 +213,7 @@ export async function runAgentCycle(config) {
                     const reason = reasonMatch?.[1]?.trim() ?? '';
                     logEvent(agentKey, 'info', 'decision', `DECISION: ${decision}${reason ? ` — ${reason}` : ''}`);
                     log.info({ decision }, 'cycle complete');
-                    recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper, decision, reason, time: new Date().toISOString() });
+                    recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper, decision, reason, time: new Date().toISOString(), mt5AccountId: config.mt5AccountId });
                     break;
                 }
                 if (response.stop_reason === 'tool_use') {
@@ -219,7 +228,7 @@ export async function runAgentCycle(config) {
                         log.info({ tool: block.name, input: block.input }, 'tool call');
                         let result;
                         try {
-                            result = await dispatchTool(block.name, block.input, config.market, paper);
+                            result = await dispatchTool(block.name, block.input, config.market, paper, config.mt5AccountId);
                             const summary = summariseToolResult(block.name, result);
                             logEvent(agentKey, 'info', 'tool_result', `← ${block.name}: ${summary}`);
                         }

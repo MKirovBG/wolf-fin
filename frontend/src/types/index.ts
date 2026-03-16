@@ -10,6 +10,7 @@ export interface AgentConfig {
   maxLossUsd: number
   maxPositionUsd: number
   customPrompt?: string
+  mt5AccountId?: number
 }
 
 export interface AgentState {
@@ -260,6 +261,16 @@ export interface Mt5AccountEntry {
 }
 
 export type AccountEntry = AlpacaAccountEntry | BinanceAccountEntry | Mt5AccountEntry
+
+export interface Mt5AccountInfo {
+  login: number
+  name: string
+  server: string
+  balance: number | null
+  equity: number | null
+  currency: string
+  mode: 'LIVE' | 'DEMO'
+}
 
 export interface MarketSummary {
   totalCycles: number

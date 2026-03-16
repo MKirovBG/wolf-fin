@@ -1,0 +1,19 @@
+{
+  "accounts": [
+    {
+      "login": 1013336511,
+      "server": "EquitiBrokerageSC-Live",
+      "name": "EUR Live"
+    },
+    {
+      "login": 1511022881,
+      "server": "FTMO-Demo",
+      "name": "FTMO Demo"
+    },
+    {
+      "login": 1111343,
+      "server": "EquitiBrokerageSC-Demo",
+      "name": "EUR Demo"
+    }
+  ]
+}

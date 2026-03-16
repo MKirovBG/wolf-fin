@@ -126,6 +126,14 @@ export function AgentDetail() {
             )}
             <div className="text-muted">Max Loss <span className="text-white font-bold ml-2">${agent.config.maxLossUsd}</span></div>
             <div className="text-muted">Max Position <span className="text-white font-bold ml-2">${agent.config.maxPositionUsd}</span></div>
+            {agent.config.market === 'mt5' && (
+              <div className="text-muted col-span-2">
+                MT5 Account{' '}
+                <span className="text-white font-bold ml-2">
+                  {agent.config.mt5AccountId ? `#${agent.config.mt5AccountId}` : 'Not set'}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 

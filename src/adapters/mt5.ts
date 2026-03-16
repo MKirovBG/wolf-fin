@@ -57,8 +57,17 @@ function fromMt5Symbol(s: string): string {
 
 // ── Pip helpers (use MT5 symbol info when available, fallback to heuristic) ──
 
-function pipSizeHeuristic(symbol: string): number {
-  return symbol.toUpperCase().includes('JPY') ? 0.01 : 0.0001
+function isCommodity(symbol: string): boolean {
+  const s = symbol.toUpperCase()
+  return s.startsWith('XAU') || s.startsWith('XAG') || s.startsWith('XPT') || s.startsWith('XPD') ||
+    s.includes('OIL') || s.includes('GAS') || s.includes('GOLD') || s.includes('SILVER')
+}
+
+function pipSizeHeuristic(symbol: string, point?: number): number {
+  // Commodities: pip == point (e.g., XAUUSD point=0.01, 1 point IS 1 pip in gold terms)
+  if (isCommodity(symbol)) return point ?? 0.01
+  if (symbol.toUpperCase().includes('JPY')) return 0.01
+  return 0.0001
 }
 
 // ── Bridge response types ────────────────────────────────────────────────────
@@ -269,7 +278,7 @@ export class MT5Adapter implements IMarketAdapter {
       account: { balances, openOrders },
       risk: riskState,
       forex: {
-        spread: info.spread * point / pipSizeHeuristic(symbol),
+        spread: info.spread * point / pipSizeHeuristic(symbol, point),
         pipValue,
         sessionOpen: info.session_open,
         swapLong: info.swap_long,
@@ -410,7 +419,7 @@ export class MT5Adapter implements IMarketAdapter {
     const info = await mt5Get<{ spread: number; point: number }>(
       this.buildUrl(`/symbol-info/${toMt5Symbol(symbol)}`),
     )
-    const pipSz = pipSizeHeuristic(symbol)
+    const pipSz = pipSizeHeuristic(symbol, info.point)
     return (info.spread * info.point) / pipSz
   }
 

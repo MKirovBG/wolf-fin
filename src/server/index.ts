@@ -405,43 +405,87 @@ export async function startServer(): Promise<void> {
     }
   }
 
-  async function fetchMt5Entry(): Promise<Mt5AccountEntry> {
+  type BridgeAcctData = { login: number; server: string; trade_mode: number; balance: number; equity: number; margin: number; free_margin: number; profit: number; leverage: number; currency?: string; name?: string }
+  type BridgePosition = { ticket: number; symbol: string; side: 'BUY' | 'SELL'; volume: number; priceOpen: number; priceCurrent: number; profit: number; swap: number; sl: number; tp: number; time: string }
+
+  async function fetchMt5Entries(): Promise<Mt5AccountEntry[]> {
     const base = `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`
-    const [health, positions] = await Promise.all([
-      fetch(`${base}/health`).then(r => { if (!r.ok) throw new Error(`MT5 bridge HTTP ${r.status}`); return r.json() as Promise<{ connected: boolean; account?: { login: number; server: string; trade_mode: number; leverage: number; balance: number } }> }),
-      fetch(`${base}/positions`).then(r => { if (!r.ok) return [] as Array<{ ticket: number; symbol: string; side: 'BUY' | 'SELL'; volume: number; priceOpen: number; priceCurrent: number; profit: number; swap: number; sl: number; tp: number; time: string }>; return r.json() as Promise<Array<{ ticket: number; symbol: string; side: 'BUY' | 'SELL'; volume: number; priceOpen: number; priceCurrent: number; profit: number; swap: number; sl: number; tp: number; time: string }>> }),
-    ])
-    const acct = health.account
-    // trade_mode: 0=demo, 1=contest, 2=real
-    const mode = acct?.trade_mode === 2 ? 'LIVE' : 'DEMO'
-    // Fetch full account data for equity/margin
-    const fullAcct = await fetch(`${base}/account`).then(r => r.json() as Promise<{ balance: number; equity: number; margin: number; free_margin: number; profit: number; leverage: number; login: number; server: string }>).catch(() => null)
-    return {
-      id: `mt5-${acct?.login ?? 'unknown'}`,
-      exchange: 'mt5',
-      mode,
-      connected: health.connected,
-      summary: fullAcct ? {
-        balance: fullAcct.balance,
-        equity: fullAcct.equity,
-        margin: fullAcct.margin,
-        freeMargin: fullAcct.free_margin,
-        profit: fullAcct.profit,
-        leverage: fullAcct.leverage,
-        login: fullAcct.login,
-        server: fullAcct.server,
-      } : undefined,
-      positions,
+    // Get registered accounts list
+    const accountsRes = await fetch(`${base}/accounts`)
+    if (!accountsRes.ok) throw new Error(`MT5 bridge HTTP ${accountsRes.status}`)
+    const accountsData = await accountsRes.json() as { accounts: Array<{ login: number; name?: string; server?: string }> }
+
+    if (accountsData.accounts.length === 0) {
+      // No registered accounts — fall back to currently active account
+      const health = await fetch(`${base}/health`).then(r => r.json() as Promise<{ connected: boolean; account?: { login: number; server: string; trade_mode: number } }>)
+      const fullAcct = await fetch(`${base}/account`).then(r => r.json() as Promise<BridgeAcctData>).catch(() => null)
+      const positions = await fetch(`${base}/positions`).then(r => r.json() as Promise<BridgePosition[]>).catch(() => [])
+      const mode = fullAcct?.trade_mode === 2 ? 'LIVE' : 'DEMO'
+      return [{
+        id: `mt5-${health.account?.login ?? 'unknown'}`,
+        exchange: 'mt5', mode, connected: health.connected,
+        summary: fullAcct ? { balance: fullAcct.balance, equity: fullAcct.equity, margin: fullAcct.margin, freeMargin: fullAcct.free_margin, profit: fullAcct.profit, leverage: fullAcct.leverage, login: fullAcct.login, server: fullAcct.server } : undefined,
+        positions,
+      }]
     }
+
+    return Promise.all(
+      accountsData.accounts.map(async (acc) => {
+        try {
+          const [acctData, positions] = await Promise.all([
+            fetch(`${base}/account?accountId=${acc.login}`).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() as Promise<BridgeAcctData> }),
+            fetch(`${base}/positions?accountId=${acc.login}`).then(r => r.ok ? r.json() as Promise<BridgePosition[]> : [] as BridgePosition[]).catch(() => [] as BridgePosition[]),
+          ])
+          const mode = acctData.trade_mode === 2 ? 'LIVE' : 'DEMO'
+          return {
+            id: `mt5-${acc.login}`,
+            exchange: 'mt5' as const, mode, connected: true,
+            summary: { balance: acctData.balance, equity: acctData.equity, margin: acctData.margin, freeMargin: acctData.free_margin, profit: acctData.profit, leverage: acctData.leverage, login: acctData.login, server: acctData.server },
+            positions,
+          }
+        } catch (e) {
+          return { id: `mt5-${acc.login}`, exchange: 'mt5' as const, mode: 'DEMO' as const, connected: false, error: e instanceof Error ? e.message : `Failed to fetch account ${acc.login}` }
+        }
+      })
+    )
   }
+
+  app.get('/api/mt5-accounts', async (_req, reply) => {
+    const base = `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`
+    try {
+      const accountsRes = await fetch(`${base}/accounts`)
+      if (!accountsRes.ok) return reply.status(502).send({ error: 'MT5 bridge unavailable' })
+      const data = await accountsRes.json() as { accounts: Array<{ login: number; name?: string; server?: string }> }
+      const enriched = await Promise.all(
+        data.accounts.map(async (acc) => {
+          const acctData = await fetch(`${base}/account?accountId=${acc.login}`)
+            .then(r => r.ok ? r.json() as Promise<BridgeAcctData> : null)
+            .catch(() => null)
+          return {
+            login: acc.login,
+            name: acc.name ?? `Account ${acc.login}`,
+            server: acc.server ?? '',
+            balance: acctData?.balance ?? null,
+            equity: acctData?.equity ?? null,
+            currency: acctData?.currency ?? 'USD',
+            mode: (acctData?.trade_mode === 2 ? 'LIVE' : 'DEMO') as 'LIVE' | 'DEMO',
+          }
+        })
+      )
+      return reply.send(enriched)
+    } catch (e) {
+      return reply.status(502).send({ error: e instanceof Error ? e.message : 'Bridge error' })
+    }
+  })
 
   app.get('/api/accounts', async (_req, reply) => {
     const jobs: Array<Promise<AccountEntry>> = []
     if (process.env.ALPACA_PAPER_KEY) jobs.push(fetchAlpacaEntry(true).catch(err => ({ id: 'alpaca-paper', exchange: 'alpaca' as const, mode: 'PAPER' as const, connected: false, error: String(err) })))
     if (process.env.ALPACA_API_KEY)   jobs.push(fetchAlpacaEntry(false).catch(err => ({ id: 'alpaca-live',  exchange: 'alpaca' as const, mode: 'LIVE' as const,  connected: false, error: String(err) })))
     if (process.env.BINANCE_API_KEY)  jobs.push(fetchBinanceEntry().catch(err => ({ id: 'binance-main', exchange: 'binance' as const, mode: (process.env.BINANCE_TESTNET === 'true' ? 'TESTNET' : 'LIVE') as 'LIVE' | 'TESTNET', connected: false, error: String(err) })))
-    // MT5 bridge — try connecting; silently skip if bridge is not running
-    jobs.push(fetchMt5Entry().catch(err => ({ id: 'mt5-unknown', exchange: 'mt5' as const, mode: 'DEMO' as const, connected: false, error: String(err) })))
+    // MT5 bridge — try all registered accounts; silently skip if bridge is not running
+    const mt5Entries = await fetchMt5Entries().catch(() => [{ id: 'mt5-unknown', exchange: 'mt5' as const, mode: 'DEMO' as const, connected: false, error: 'Bridge not running' } as Mt5AccountEntry])
+    mt5Entries.forEach(e => jobs.push(Promise.resolve(e)))
     const accounts = await Promise.all(jobs)
     return reply.send(accounts)
   })

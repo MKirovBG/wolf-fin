@@ -27,11 +27,12 @@ const anthropic = new Anthropic()
 function buildSystemPrompt(config: AgentConfig, agentKey: string): string {
   const { market, paper, customPrompt } = config
   const mode = paper ? '[PAPER TRADING — no real orders will be sent]' : '[LIVE TRADING]'
+  const maxSpreadPips = parseFloat(process.env.MAX_SPREAD_PIPS ?? '3')
   const sessionNote =
     market === 'forex'
-      ? `\nCURRENT SESSION: ${sessionLabel()}\nFOREX SESSION RULES: Only trade during Tokyo, London, or New York sessions. Avoid Sydney-only hours. Reject entries when spread > 3 pips or sessionOpen is false.\nNOTE: Overnight swap rates are unavailable from the data provider — do not factor swap costs into hold decisions.`
+      ? `\nCURRENT SESSION: ${sessionLabel()}\nFOREX SESSION RULES: Only trade during Tokyo, London, or New York sessions. Avoid Sydney-only hours. Reject entries when spread > ${maxSpreadPips} pips or sessionOpen is false.\nNOTE: Overnight swap rates are unavailable from the data provider — do not factor swap costs into hold decisions.`
       : market === 'mt5'
-        ? `\nCURRENT SESSION: ${sessionLabel()}\nMT5 SESSION RULES: Only trade during Tokyo, London, or New York sessions. Reject entries when spread > 3 pips or sessionOpen is false.\nMT5 provides real swap rates in the snapshot — factor overnight costs into hold decisions for multi-day positions.`
+        ? `\nCURRENT SESSION: ${sessionLabel()}\nMT5 SESSION RULES: Only trade during Tokyo, London, or New York sessions. Reject entries when spread > ${maxSpreadPips} pips or sessionOpen is false.\nMT5 provides real swap rates in the snapshot — factor overnight costs into hold decisions for multi-day positions.`
         : ''
 
   const base = `You are Wolf-Fin, an autonomous trading agent. ${mode}

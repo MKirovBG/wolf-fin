@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useForm } from 'react-hook-form'
-import { getAgents, addAgent } from '../api/client.ts'
-import type { AgentState, AgentConfig } from '../types/index.ts'
+import { getAgents, addAgent, getMt5Accounts } from '../api/client.ts'
+import type { AgentState, AgentConfig, Mt5AccountInfo } from '../types/index.ts'
 import { AgentCard } from '../components/AgentCard.tsx'
 
 const DEFAULT_CONFIG: AgentConfig = {
@@ -24,7 +24,15 @@ function AddAgentForm({ onAdded }: { onAdded: () => void }) {
   })
   const [adding, setAdding] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [mt5Accounts, setMt5Accounts] = useState<Mt5AccountInfo[]>([])
   const fetchMode = watch('fetchMode')
+  const market = watch('market')
+
+  useEffect(() => {
+    if (market === 'mt5') {
+      getMt5Accounts().then(setMt5Accounts).catch(() => setMt5Accounts([]))
+    }
+  }, [market])
 
   const onSubmit = handleSubmit(async (data) => {
     setErr(null)
@@ -37,6 +45,7 @@ function AddAgentForm({ onAdded }: { onAdded: () => void }) {
         scheduleIntervalMinutes: Number(data.scheduleIntervalMinutes),
         maxLossUsd: Number(data.maxLossUsd),
         maxPositionUsd: Number(data.maxPositionUsd),
+        mt5AccountId: data.mt5AccountId ? Number(data.mt5AccountId) : undefined,
       })
       if (!res.ok) { setErr((res as { message?: string }).message ?? 'Failed'); return }
       reset(DEFAULT_CONFIG)
@@ -67,8 +76,28 @@ function AddAgentForm({ onAdded }: { onAdded: () => void }) {
           <select {...register('market')}>
             <option value="crypto">Crypto (Binance)</option>
             <option value="forex">Forex (Alpaca)</option>
+            <option value="mt5">MetaTrader 5</option>
           </select>
         </div>
+
+        {/* MT5 Account */}
+        {market === 'mt5' && (
+          <div>
+            <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">MT5 Account</label>
+            {mt5Accounts.length === 0 ? (
+              <p className="text-xs text-muted py-2">No accounts found — register accounts in the MT5 bridge first.</p>
+            ) : (
+              <select {...register('mt5AccountId', { setValueAs: v => v ? Number(v) : undefined })}>
+                <option value="">— Select account —</option>
+                {mt5Accounts.map(a => (
+                  <option key={a.login} value={a.login}>
+                    {a.name} #{a.login} · {a.mode}{a.balance != null ? ` · ${a.currency ?? ''} ${a.balance.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
 
         {/* Mode */}
         <div>

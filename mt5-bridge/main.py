@@ -87,8 +87,22 @@ def ensure_account(account_id: Optional[int] = None) -> None:
 # Optional broker-specific suffix mapping.  If your broker appends a suffix
 # (e.g. "EURUSDm", "EURUSD."), add entries here.
 SYMBOL_MAP: dict[str, str] = {
-    "EURUSD": "EURUSD.sd",   # adjust to match your broker
-    "GBPUSD": "GBPUSD.sd",
+    # ── Equiti STP/SD account — broker appends .sd suffix ──────────────────
+    "EURUSD":  "EURUSD.sd",
+    "GBPUSD":  "GBPUSD.sd",
+    "USDJPY":  "USDJPY.sd",
+    "USDCHF":  "USDCHF.sd",
+    "AUDUSD":  "AUDUSD.sd",
+    "NZDUSD":  "NZDUSD.sd",
+    "USDCAD":  "USDCAD.sd",
+    "EURGBP":  "EURGBP.sd",
+    "EURJPY":  "EURJPY.sd",
+    "GBPJPY":  "GBPJPY.sd",
+    "XAUUSD":  "XAUUSD.sd",   # Gold vs USD
+    "XAGUSD":  "XAGUSD.sd",   # Silver vs USD
+    "XAUUSD.SD": "XAUUSD.sd", # normalise case variants
+    # ── Add non-.sd broker symbols below if needed ─────────────────────────
+    # "BTCUSD": "BTCUSD",
 }
 
 
@@ -367,7 +381,7 @@ def get_snapshot(symbol: str, accountId: Optional[int] = None) -> dict:
             "volume_max": info.volume_max,
             "volume_step": info.volume_step,
             "trade_contract_size": info.trade_contract_size,
-            "session_open": info.trade_mode == 0 or True,  # simplified; real session check below
+            "session_open": info.trade_mode > 0,  # 0=disabled, 1=longonly, 2=shortonly, 3=closeonly, 4=full
         },
         "account": {
             "balance": acct.balance if acct else 0,

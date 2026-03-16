@@ -1,86 +1,80 @@
 # Wolf-Fin Implementation Status
 
-Last updated: 2026-03-14
+Last updated: 2026-03-16
 
 ---
 
-## Overall Progress: Step 1–3 partial (~60% complete)
+## Overall Progress: Phase 1–4 mostly complete (~85%)
 
 ---
 
-## ✅ Completed
+## Core Architecture
 
-### Types (`src/adapters/types.ts`)
-- Added `MarketContext` interface (fearGreed, news, upcomingEvents, cryptoMarket)
-- Added `market: 'crypto' | 'forex'` field to `MarketSnapshot`
-- Added `context?: MarketContext` to `MarketSnapshot`
-- Added `forex?` block to `MarketSnapshot` (spread, pipValue, sessionOpen, swapLong, swapShort)
-- Added `stopPips?: number` to `OrderParams`
+### Adapters (`src/adapters/`)
+- `interface.ts` — `IMarketAdapter` contract with optional forex methods
+- `registry.ts` — `getAdapter('crypto' | 'forex')` lookup
+- `binance.ts` — `BinanceAdapter` class (crypto) + backward-compat exports
+- `alpaca.ts` — `AlpacaAdapter` class (forex) with bracket stop-loss orders
+- `session.ts` — Forex session open/close logic (Sydney/Tokyo/London/NewYork)
+- `types.ts` — `MarketSnapshot`, `OrderParams` (with `stopPips`, `stopPrice`), `MarketContext`
 
-### Adapter Interface (`src/adapters/interface.ts`) — NEW
-- `IMarketAdapter` contract with all required methods
-- Optional forex-only methods: `getSpread()`, `isMarketOpen()`
+### Enrichment Adapters
+- `feargreed.ts` — Alternative.me Fear & Greed index
+- `coingecko.ts` — BTC dominance + total market cap
+- `cryptopanic.ts` — CryptoPanic headlines
+- `calendar.ts` — Finnhub economic calendar + `isHighImpactEventSoon()`
+- `twelvedata.ts` — Twelve Data candle fallback for forex
 
-### Binance Adapter (`src/adapters/binance.ts`) — REFACTORED
-- Wrapped all functions in `BinanceAdapter` class implementing `IMarketAdapter`
-- `market = 'crypto'` field set
-- `MarketSnapshot` now includes `market: 'crypto'` field
-- Exported `binanceAdapter` singleton
-- Kept all backward-compatible standalone function exports (`getSnapshot`, `placeOrder`, etc.)
+### Agent (`src/agent/`)
+- `index.ts` — `runAgentCycle()` agentic loop with Claude tool-use
+- `context.ts` — `buildMarketContext()` parallel enrichment fetcher
+- System prompt includes: market context, session info, risk budget, performance history
+- Cycle user message: structured signal priority, 3-tool-call limit guidance
+- Candle stripping from message history (keeps indicators, drops raw OHLC)
+- Concurrent cycle lock via `src/server/state.ts`
 
-### Alpaca Adapter (`src/adapters/alpaca.ts`) — NEW
-- Full `AlpacaAdapter` class implementing `IMarketAdapter`
-- `getSnapshot()`: fetches M1/M15/H1/H4 candles via `/v1beta3/forex/bars`, live bid/ask from latest quote
-- `getOrderBook()`: single-level book from latest forex quote
-- `getRecentTrades()`: returns [] (Alpaca forex has no public trade tape)
-- `getBalances()`: account equity + buying power from Alpaca brokerage API
-- `getOpenOrders()`: maps open Alpaca orders to `Order[]`
-- `getTradeHistory()`: closed orders endpoint
-- `placeOrder()`: MARKET and LIMIT orders; bracket orders with `stop_loss` when `stopPrice` is set
-- `cancelOrder()`: cancel by order ID
-- `getSpread()`: live spread in pips from latest forex quote
-- `isMarketOpen()`: delegates to session logic
-- Symbol normalization: `EUR_USD` / `EURUSD` → `EUR/USD` (Alpaca format)
+### Guardrails (`src/guardrails/`)
+- `validate.ts` — `validateOrder()` for crypto
+- `forex.ts` — `validateForexOrder()` with pip sizing, spread check, session guard
+- `riskStateStore.ts` — Per-market risk state, DB hydration on startup
+- `riskState.ts` — Re-exports from riskStateStore
 
-### Session Logic (`src/adapters/session.ts`) — NEW
-- `openSessions()`: returns which of Sydney/Tokyo/London/NewYork are currently open
-- `isForexSessionOpen()`: true when at least one major session is active
-- `sessionLabel()`: human-readable label for system prompt (e.g. "London / New York overlap (highest liquidity)")
+### Database (`src/db/`)
+- SQLite via `better-sqlite3`
+- Tables: `agents`, `cycle_results` (with `pnl_usd`), `log_entries`, `settings`
+- `dbGetTodayRealizedPnl()` — daily P&L query for risk hydration
+- `dbGetAgentPerformance()` — recent decision history for system prompt
 
-### Adapter Registry (`src/adapters/registry.ts`) — NEW
-- `getAdapter('crypto')` → `BinanceAdapter`
-- `getAdapter('forex')` → `AlpacaAdapter`
+### Server (`src/server/`)
+- Fastify 5.8 serving REST API + React SPA
+- Endpoints: `/api/agents`, `/api/cycle`, `/api/accounts`, `/api/logs`, `/api/settings`
+- `/api/accounts` — fetches Alpaca (paper+live) and Binance account data
+- State: cycle lock (`tryAcquireCycleLock` / `releaseCycleLock`)
 
-### Enrichment Adapters — ALL NEW
-- `src/adapters/feargreed.ts` — Alternative.me Fear & Greed index (no key)
-- `src/adapters/coingecko.ts` — CoinGecko BTC dominance + total market cap (optional key)
-- `src/adapters/cryptopanic.ts` — CryptoPanic top headlines for a symbol (no key)
-- `src/adapters/calendar.ts` — Finnhub economic calendar; `isHighImpactEventSoon()` for guardrail gate
-- `src/adapters/twelvedata.ts` — Twelve Data fallback candle source for forex
-
-### Context Assembler (`src/agent/context.ts`) — NEW
-- `buildMarketContext(symbol, market)` fetches all enrichment in parallel
-- Crypto: fearGreed + cryptoMarket + news + upcomingEvents
-- Forex: upcomingEvents only
-- All failures are silent (null/[]) — never blocks trading cycle
-
-### Adapters Barrel (`src/adapters/index.ts`) — UPDATED
-- Re-exports all new modules
+### Frontend (`frontend/src/`)
+- React 18 + Vite + Tailwind CSS (dark terminal theme) + Recharts
+- Pages: Dashboard, Agents, AgentDetail, Positions, Logs, Settings, Account
+- Components: Layout (nav), LiveLog (real-time streaming)
+- Account page: Alpaca cards (paper/live) + Binance card with positions, fills, balances
 
 ---
 
-## ✅ All phases complete
+## Key Design Decisions
 
-The agent loop, tool dispatcher, guardrails, scheduler, and Alpaca adapter are all implemented.
-See `src/agent/index.ts`, `src/scheduler/index.ts`, `src/guardrails/`, and `src/adapters/alpaca.ts`.
+- **Alpaca for forex** — sole forex broker; OANDA fully removed
+- **Bracket orders** — forex stop-loss sent as `order_class: 'bracket'` with computed `stopPrice`
+- **Enrichment failures are silent** — broken enrichment never blocks a trade cycle
+- **Performance context** — last N decisions shown in system prompt; HOLD streak warning at 5+
+- **Risk persistence** — `pnl_usd` stored in `cycle_results`; hydrated from DB on startup
+- **Concurrent cycle lock** — in-memory `Set<string>` prevents overlapping runs per agent
+- **Candle stripping** — raw candle arrays removed from tool result history to save tokens
 
 ---
 
-## Key Design Decisions Made
+## Remaining Work
 
-- **Alpaca for forex** — uses `@alpacahq/alpaca-trade-api` SDK; forex data fetched via REST `/v1beta3/forex/`
-- **`getRecentTrades` for Alpaca returns `[]`** — Alpaca forex has no public trade tape
-- **Swap rates are placeholder `0`** — financing rates not available from Alpaca forex API
-- **Enrichment failures are silent** — a broken enrichment source never blocks the trade cycle
-- **Backward-compat exports** — `binance.ts` keeps all standalone function exports so nothing breaks
-- **`BinanceAdapter` and `AlpacaAdapter` are singletons** — exported from their files, registry uses them
+- [ ] Alerting (Telegram/email on daily limit hit, large fill, error)
+- [ ] Live trading cutover (Binance live, Alpaca live)
+- [ ] Drawdown auto-pause
+- [ ] Multi-symbol per agent
+- [ ] Performance analytics (win rate, Sharpe, R:R)

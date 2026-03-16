@@ -12,19 +12,20 @@
 - [x] `src/guardrails/riskState.ts` — daily P&L tracker, budget gate
 - [x] `src/guardrails/validate.ts` — pre-execution order validation
 
-## Phase 2 — Agent Loop (next)
+## Phase 2 — Agent Loop ✅ complete
 
-- [ ] Adapter abstraction — `IMarketAdapter` interface so Binance + Forex share a contract
-- [ ] Agent loop — agentic loop with tool-use (`src/agent/index.ts`)
-  - [ ] Cycle: getSnapshot → Claude reasons → tool calls → guardrails → execute
-  - [ ] Tool dispatcher — routes Claude tool_use results to the right adapter method
-  - [ ] Decision types: HOLD | BUY qty @ limit | SELL qty @ limit | CANCEL orderId
-- [ ] Paper-trading mode — dry-run flag, log orders without sending to exchange
-- [ ] Strategy system prompt — market context framing, persona, decision format
+- [x] Adapter abstraction — `IMarketAdapter` interface (`src/adapters/interface.ts`)
+- [x] Agent loop — agentic loop with tool-use (`src/agent/index.ts`)
+  - [x] Cycle: getSnapshot → Claude reasons → tool calls → guardrails → execute
+  - [x] Tool dispatcher — routes Claude tool_use results to the right adapter method
+  - [x] Decision types: HOLD | BUY qty @ limit | SELL qty @ limit | CANCEL orderId
+- [x] Paper-trading mode — per-agent paper flag, orders routed to paper account
+- [x] Strategy system prompt — market context framing, persona, decision format
+- [x] Performance history — recent decisions injected into system prompt
+- [x] Concurrent cycle lock — prevents overlapping runs for same agent
+- [x] Candle stripping — removes raw candle data from message history to reduce tokens
 
-## Phase 3 — Forex Integration
-
-See `FOREX_PLAN.md` for full architecture and rollout.
+## Phase 3 — Forex Integration ✅ complete
 
 - [x] Alpaca adapter — `src/adapters/alpaca.ts` (REST wrapper matching IMarketAdapter)
 - [x] Forex-specific types — pip value, lot size, spread, margin, swap rate
@@ -33,18 +34,23 @@ See `FOREX_PLAN.md` for full architecture and rollout.
 - [x] Multi-asset tool routing — `get_snapshot("EUR_USD", "forex")` vs `"BTCUSDT", "crypto"`
 - [x] Cross-asset guardrails — separate daily budgets per market, combined notional cap
 - [x] Session awareness prompt — London/NY/Tokyo overlap logic injected into Claude context
+- [x] Bracket stop-loss orders — Alpaca `order_class: 'bracket'` with computed stopPrice
 
-## Phase 4 — Operations
+## Phase 4 — Operations ✅ mostly complete
 
-- [ ] Fastify HTTP server — `/status`, `/portfolio`, `/pause`, `/resume` endpoints
-- [ ] Scheduler — cron per market (crypto: every 15m; forex: on candle close, session-aware)
-- [ ] Pino structured logging with trade audit trail
+- [x] Fastify HTTP server — full REST API (`/api/agents`, `/api/cycle`, `/api/accounts`, etc.)
+- [x] Scheduler — cron per agent with manual/scheduled/autonomous modes
+- [x] Pino structured logging with trade audit trail
+- [x] SQLite persistence — agents, cycle_results (with pnl_usd), log_entries, settings
+- [x] Risk state persistence — daily P&L hydrated from DB on startup
+- [x] Frontend — Dashboard, Agents, AgentDetail, Positions, Logs, Settings, Account pages
+- [x] Live log terminal — real-time agent cycle streaming
 - [ ] Alerting — Telegram or email on: daily limit hit, large fill, error
 
 ## Phase 5 — Live Trading
 
-- [ ] Crypto: switch `BINANCE_TESTNET=false`, end-to-end integration test
-- [ ] Forex: switch `ALPACA_PAPER=false`, verify pip values and margin maths on live account
-- [ ] Performance dashboard — realized P&L, win rate, avg R:R per market
+- [ ] Crypto: switch to live Binance, end-to-end integration test
+- [ ] Forex: switch `ALPACA_PAPER=false`, verify pip values and margin on live account
 - [ ] Drawdown monitoring — auto-pause if max drawdown threshold crossed
 - [ ] Multi-symbol support — generalize single-symbol loop to a symbol list
+- [ ] Performance analytics — win rate, avg R:R, Sharpe ratio per market

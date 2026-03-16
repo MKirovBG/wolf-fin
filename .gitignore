@@ -20,6 +20,13 @@ pnpm-debug.log*
 
 # Database
 data/
+*.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
 # OS
 .DS_Store

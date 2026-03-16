@@ -2,8 +2,8 @@
 // ── Tool input schemas ────────────────────────────────────────────────────────
 const MARKET_FIELD = {
     type: 'string',
-    enum: ['crypto', 'forex'],
-    description: 'Market type. "crypto" routes to Binance, "forex" routes to Alpaca.',
+    enum: ['crypto', 'forex', 'mt5'],
+    description: 'Market type. "crypto" routes to Binance, "forex" routes to Alpaca, "mt5" routes to MetaTrader 5.',
 };
 export const TOOLS = [
     {

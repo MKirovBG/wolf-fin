@@ -1,6 +1,6 @@
 import type { MarketSnapshot, OrderBook, Trade, Balance, Order, Fill, OrderParams, OrderResult, RiskState } from './types.js';
 export interface IMarketAdapter {
-    readonly market: 'crypto' | 'forex';
+    readonly market: 'crypto' | 'forex' | 'mt5';
     getSnapshot(symbol: string, riskState: RiskState): Promise<MarketSnapshot>;
     getOrderBook(symbol: string, depth?: number): Promise<OrderBook>;
     getRecentTrades(symbol: string, limit?: number): Promise<Trade[]>;

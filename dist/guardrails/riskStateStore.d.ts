@@ -2,7 +2,7 @@ import type { RiskState } from '../adapters/types.js';
 declare const MAX_DAILY_LOSS_USD: number;
 declare const MAX_POSITION_USD: number;
 declare const MAX_COMBINED_NOTIONAL_USD: number;
-type Market = 'crypto' | 'forex';
+type Market = 'crypto' | 'forex' | 'mt5';
 export interface ForexContext {
     spread: number;
     sessionOpen: boolean;
@@ -10,6 +10,15 @@ export interface ForexContext {
 }
 export declare function setForexContext(ctx: ForexContext): void;
 export declare function getForexContext(): ForexContext;
+export interface Mt5Context {
+    spread: number;
+    sessionOpen: boolean;
+    pipValue: number;
+    point: number;
+    digits: number;
+}
+export declare function setMt5Context(ctx: Mt5Context): void;
+export declare function getMt5Context(): Mt5Context;
 /** Restore daily P&L from DB on server restart so the loss limit survives restarts. */
 export declare function hydrateRiskStateFromDb(market: Market, pnlUsd: number): void;
 export declare function recordFillFor(market: Market, pnlUsd: number): void;

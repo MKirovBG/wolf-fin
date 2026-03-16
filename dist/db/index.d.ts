@@ -5,7 +5,7 @@ export declare function dbUpsertAgent(agent: AgentState): void;
 export declare function dbRemoveAgent(key: string): void;
 export declare function dbUpdateAgentStatus(key: string, status: AgentStatus, startedAt: string | null): void;
 export declare function dbRecordCycle(key: string, result: CycleResult): void;
-export declare function dbGetTodayRealizedPnl(market: 'crypto' | 'forex', dateStr: string): number;
+export declare function dbGetTodayRealizedPnl(market: 'crypto' | 'forex' | 'mt5', dateStr: string): number;
 export interface AgentPerformanceSummary {
     totalCycles: number;
     buys: number;

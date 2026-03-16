@@ -1,3 +1,3 @@
 import type { IMarketAdapter } from './interface.js';
-export declare function getAdapter(market: 'crypto' | 'forex'): IMarketAdapter;
+export declare function getAdapter(market: 'crypto' | 'forex' | 'mt5', mt5AccountId?: number): IMarketAdapter;
 //# sourceMappingURL=registry.d.ts.map

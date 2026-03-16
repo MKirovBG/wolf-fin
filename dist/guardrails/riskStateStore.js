@@ -9,6 +9,13 @@ export function setForexContext(ctx) {
 export function getForexContext() {
     return lastForexContext;
 }
+let lastMt5Context = { spread: 0, sessionOpen: false, pipValue: 0.0001, point: 0.0001, digits: 5 };
+export function setMt5Context(ctx) {
+    lastMt5Context = ctx;
+}
+export function getMt5Context() {
+    return lastMt5Context;
+}
 // ── Per-market day state ───────────────────────────────────────────────────────
 function utcDateString() {
     return new Date().toISOString().slice(0, 10);
@@ -19,6 +26,7 @@ function freshState() {
 const states = {
     crypto: freshState(),
     forex: freshState(),
+    mt5: freshState(),
 };
 function get(market) {
     if (states[market].date !== utcDateString())
@@ -55,7 +63,7 @@ export function isDailyLimitHitFor(market) {
 }
 /** Sum of open position notional across all markets. */
 export function getCombinedNotionalUsd() {
-    return get('crypto').positionNotionalUsd + get('forex').positionNotionalUsd;
+    return get('crypto').positionNotionalUsd + get('forex').positionNotionalUsd + get('mt5').positionNotionalUsd;
 }
 export { MAX_DAILY_LOSS_USD, MAX_POSITION_USD, MAX_COMBINED_NOTIONAL_USD };
 //# sourceMappingURL=riskStateStore.js.map

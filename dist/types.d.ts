@@ -1,7 +1,7 @@
 export type AgentStatus = 'idle' | 'running' | 'paused';
 export interface AgentConfig {
     symbol: string;
-    market: 'crypto' | 'forex';
+    market: 'crypto' | 'forex' | 'mt5';
     paper: boolean;
     maxIterations: number;
     fetchMode: 'manual' | 'scheduled' | 'autonomous';
@@ -9,6 +9,9 @@ export interface AgentConfig {
     maxLossUsd: number;
     maxPositionUsd: number;
     customPrompt?: string;
+    mt5AccountId?: number;
+    llmProvider?: 'anthropic' | 'openrouter';
+    llmModel?: string;
 }
 export interface AgentState {
     config: AgentConfig;
@@ -19,13 +22,14 @@ export interface AgentState {
 }
 export interface CycleResult {
     symbol: string;
-    market: 'crypto' | 'forex';
+    market: 'crypto' | 'forex' | 'mt5';
     paper: boolean;
     decision: string;
     reason: string;
     time: string;
     error?: string;
     pnlUsd?: number;
+    mt5AccountId?: number;
 }
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
 export type LogEvent = 'cycle_start' | 'cycle_end' | 'cycle_error' | 'tool_call' | 'tool_result' | 'tool_error' | 'claude_thinking' | 'decision' | 'guardrail_block' | 'session_skip' | 'cycle_skip';

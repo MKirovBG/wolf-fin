@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useForm } from 'react-hook-form'
-import { getAgents, addAgent, getMt5Accounts } from '../api/client.ts'
-import type { AgentState, AgentConfig, Mt5AccountInfo } from '../types/index.ts'
+import { getAgents, addAgent, getMt5Accounts, getOpenRouterModels } from '../api/client.ts'
+import type { AgentState, AgentConfig, Mt5AccountInfo, OpenRouterModel } from '../types/index.ts'
 import { AgentCard } from '../components/AgentCard.tsx'
 
 const DEFAULT_CONFIG: AgentConfig = {
@@ -14,6 +14,8 @@ const DEFAULT_CONFIG: AgentConfig = {
   maxLossUsd: 200,
   maxPositionUsd: 1000,
   customPrompt: '',
+  llmProvider: 'anthropic',
+  llmModel: '',
 }
 
 const INTERVALS = [1, 5, 15, 30, 60, 240]
@@ -25,14 +27,29 @@ function AddAgentForm({ onAdded }: { onAdded: () => void }) {
   const [adding, setAdding] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [mt5Accounts, setMt5Accounts] = useState<Mt5AccountInfo[]>([])
+  const [orModels, setOrModels] = useState<OpenRouterModel[]>([])
+  const [orLoading, setOrLoading] = useState(false)
+  const [orError, setOrError] = useState<string | null>(null)
   const fetchMode = watch('fetchMode')
   const market = watch('market')
+  const llmProvider = watch('llmProvider')
 
   useEffect(() => {
     if (market === 'mt5') {
       getMt5Accounts().then(setMt5Accounts).catch(() => setMt5Accounts([]))
     }
   }, [market])
+
+  useEffect(() => {
+    if (llmProvider === 'openrouter') {
+      setOrError(null)
+      setOrLoading(true)
+      getOpenRouterModels()
+        .then(setOrModels)
+        .catch(() => setOrError('Could not load models — check your OpenRouter API key on the API Keys page'))
+        .finally(() => setOrLoading(false))
+    }
+  }, [llmProvider])
 
   const onSubmit = handleSubmit(async (data) => {
     setErr(null)
@@ -92,6 +109,37 @@ function AddAgentForm({ onAdded }: { onAdded: () => void }) {
                 {mt5Accounts.map(a => (
                   <option key={a.login} value={a.login}>
                     {a.name} #{a.login} · {a.mode}{a.balance != null ? ` · ${a.currency ?? ''} ${a.balance.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
+
+        {/* LLM Provider */}
+        <div>
+          <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">LLM Provider</label>
+          <select {...register('llmProvider')}>
+            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="openrouter">OpenRouter</option>
+          </select>
+        </div>
+
+        {/* OpenRouter model */}
+        {llmProvider === 'openrouter' && (
+          <div>
+            <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">OpenRouter Model</label>
+            {orLoading ? (
+              <p className="text-xs text-muted py-2">Loading models...</p>
+            ) : orError ? (
+              <p className="text-xs text-red py-2">{orError}</p>
+            ) : (
+              <select {...register('llmModel')}>
+                <option value="">— Select model —</option>
+                {orModels.map(m => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}{m.contextLength ? ` · ${(m.contextLength / 1000).toFixed(0)}k ctx` : ''}
+                    {m.promptCost ? ` · $${(parseFloat(m.promptCost) * 1e6).toFixed(2)}/M` : ''}
                   </option>
                 ))}
               </select>

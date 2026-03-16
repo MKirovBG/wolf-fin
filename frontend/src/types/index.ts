@@ -11,6 +11,16 @@ export interface AgentConfig {
   maxPositionUsd: number
   customPrompt?: string
   mt5AccountId?: number
+  llmProvider?: 'anthropic' | 'openrouter'
+  llmModel?: string
+}
+
+export interface OpenRouterModel {
+  id: string
+  name: string
+  contextLength: number
+  promptCost?: string
+  completionCost?: string
 }
 
 export interface AgentState {

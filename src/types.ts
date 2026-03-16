@@ -12,7 +12,9 @@ export interface AgentConfig {
   maxLossUsd: number
   maxPositionUsd: number
   customPrompt?: string
-  mt5AccountId?: number  // Which MT5 account this agent trades with
+  mt5AccountId?: number          // Which MT5 account this agent trades with
+  llmProvider?: 'anthropic' | 'openrouter'  // defaults to 'anthropic'
+  llmModel?: string              // OpenRouter model ID e.g. "openai/gpt-4o" or "anthropic/claude-opus-4-5"
 }
 
 export interface AgentState {

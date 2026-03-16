@@ -24,6 +24,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const ENV_KEYS = [
   'ANTHROPIC_API_KEY', 'CLAUDE_MODEL',
+  'OPENROUTER_API_KEY',
   'ALPACA_API_KEY', 'ALPACA_API_SECRET', 'ALPACA_PAPER_KEY', 'ALPACA_PAPER_SECRET',
   'BINANCE_API_KEY', 'BINANCE_API_SECRET',
   'FINNHUB_KEY', 'TWELVE_DATA_KEY', 'COINGECKO_KEY',
@@ -54,6 +55,16 @@ async function testConnection(service: string): Promise<{ ok: boolean; message: 
           headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY ?? '', 'anthropic-version': '2023-06-01' },
         })
         return r.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `HTTP ${r.status}` }
+      }
+      case 'openrouter': {
+        const key = process.env.OPENROUTER_API_KEY
+        if (!key) return { ok: false, message: 'OPENROUTER_API_KEY not set' }
+        const r = await fetch('https://openrouter.ai/api/v1/models', {
+          headers: { 'Authorization': `Bearer ${key}` },
+        })
+        if (!r.ok) return { ok: false, message: `HTTP ${r.status}` }
+        const data = await r.json() as { data: unknown[] }
+        return { ok: true, message: `Connected — ${data.data.length} models available` }
       }
       case 'alpaca': {
         const messages: string[] = []
@@ -449,6 +460,29 @@ export async function startServer(): Promise<void> {
       })
     )
   }
+
+  // ── OpenRouter models ─────────────────────────────────────────────────────
+  app.get('/api/openrouter/models', async (_req, reply) => {
+    const key = process.env.OPENROUTER_API_KEY
+    if (!key) return reply.status(400).send({ error: 'OPENROUTER_API_KEY not set' })
+    const res = await fetch('https://openrouter.ai/api/v1/models', {
+      headers: { 'Authorization': `Bearer ${key}` },
+    })
+    if (!res.ok) return reply.status(502).send({ error: `OpenRouter HTTP ${res.status}` })
+    const data = await res.json() as {
+      data: Array<{ id: string; name: string; context_length: number; pricing?: { prompt?: string; completion?: string } }>
+    }
+    const models = data.data
+      .map(m => ({
+        id: m.id,
+        name: m.name || m.id,
+        contextLength: m.context_length ?? 0,
+        promptCost: m.pricing?.prompt,
+        completionCost: m.pricing?.completion,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+    return reply.send(models)
+  })
 
   app.get('/api/mt5-accounts', async (_req, reply) => {
     const base = `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`

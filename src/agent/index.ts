@@ -1,7 +1,8 @@
 // Wolf-Fin Agent — core agentic trading loop
 
-import Anthropic from '@anthropic-ai/sdk'
+import type Anthropic from '@anthropic-ai/sdk'
 import pino from 'pino'
+import { getLLMProvider, getModelForConfig } from '../llm/index.js'
 import { getAdapter } from '../adapters/registry.js'
 import { getRiskState, isDailyLimitHit } from '../guardrails/riskState.js'
 import { updatePositionNotionalFor, isDailyLimitHitFor, setForexContext, setMt5Context } from '../guardrails/riskStateStore.js'
@@ -20,7 +21,6 @@ import type { OrderParams } from '../adapters/types.js'
 export type { AgentConfig } from '../types.js'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
-const anthropic = new Anthropic()
 
 // ── System Prompt ─────────────────────────────────────────────────────────────
 
@@ -212,15 +212,18 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
   ]
 
   const systemPrompt = buildSystemPrompt(config, agentKey)
+  const llmProvider = getLLMProvider(config)
+  const llmModel = getModelForConfig(config)
   let iterations = 0
 
   try {
     while (iterations < maxIterations) {
       iterations++
-      logEvent(agentKey, 'debug', 'claude_thinking', `Sending to Claude (iteration ${iterations}/${maxIterations})`)
+      const providerLabel = config.llmProvider === 'openrouter' ? `OpenRouter/${llmModel}` : `Anthropic/${llmModel}`
+      logEvent(agentKey, 'debug', 'claude_thinking', `Sending to ${providerLabel} (iteration ${iterations}/${maxIterations})`)
 
-      const response = await anthropic.messages.create({
-        model: process.env.CLAUDE_MODEL ?? 'claude-opus-4-6',
+      const response = await llmProvider.createMessage({
+        model: llmModel,
         max_tokens: 4096,
         system: systemPrompt,
         tools: TOOLS,

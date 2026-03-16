@@ -1,6 +1,6 @@
 // Wolf-Fin Agent — core agentic trading loop
-import Anthropic from '@anthropic-ai/sdk';
 import pino from 'pino';
+import { getLLMProvider, getModelForConfig } from '../llm/index.js';
 import { getAdapter } from '../adapters/registry.js';
 import { getRiskState } from '../guardrails/riskState.js';
 import { updatePositionNotionalFor, isDailyLimitHitFor, setForexContext, setMt5Context } from '../guardrails/riskStateStore.js';
@@ -14,7 +14,6 @@ import { TOOLS } from '../tools/definitions.js';
 import { recordCycle, logEvent, tryAcquireCycleLock, releaseCycleLock } from '../server/state.js';
 import { dbGetAgentPerformance } from '../db/index.js';
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
-const anthropic = new Anthropic();
 // ── System Prompt ─────────────────────────────────────────────────────────────
 function buildSystemPrompt(config, agentKey) {
     const { market, paper, customPrompt } = config;
@@ -184,13 +183,16 @@ export async function runAgentCycle(config) {
             { role: 'user', content: buildCycleUserMessage(config) },
         ];
         const systemPrompt = buildSystemPrompt(config, agentKey);
+        const llmProvider = getLLMProvider(config);
+        const llmModel = getModelForConfig(config);
         let iterations = 0;
         try {
             while (iterations < maxIterations) {
                 iterations++;
-                logEvent(agentKey, 'debug', 'claude_thinking', `Sending to Claude (iteration ${iterations}/${maxIterations})`);
-                const response = await anthropic.messages.create({
-                    model: process.env.CLAUDE_MODEL ?? 'claude-opus-4-6',
+                const providerLabel = config.llmProvider === 'openrouter' ? `OpenRouter/${llmModel}` : `Anthropic/${llmModel}`;
+                logEvent(agentKey, 'debug', 'claude_thinking', `Sending to ${providerLabel} (iteration ${iterations}/${maxIterations})`);
+                const response = await llmProvider.createMessage({
+                    model: llmModel,
                     max_tokens: 4096,
                     system: systemPrompt,
                     tools: TOOLS,

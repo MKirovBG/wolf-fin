@@ -1,4 +1,4 @@
-import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, LogEntry, PositionEntry, FillEntry, AccountEntry, Mt5AccountInfo } from '../types/index.ts'
+import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, LogEntry, PositionEntry, FillEntry, AccountEntry, Mt5AccountInfo, OpenRouterModel } from '../types/index.ts'
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, options)
@@ -75,3 +75,4 @@ export const getReportTrades = (market?: string) =>
 // ── Accounts ─────────────────────────────────────────────────────────────────
 export const getAccounts = () => api<AccountEntry[]>('/api/accounts')
 export const getMt5Accounts = () => api<Mt5AccountInfo[]>('/api/mt5-accounts')
+export const getOpenRouterModels = () => api<OpenRouterModel[]>('/api/openrouter/models')

@@ -13,8 +13,9 @@ interface ServiceRow {
 }
 
 const SERVICES: ServiceRow[] = [
-  { label: 'Anthropic', envKey: 'ANTHROPIC_API_KEY', service: 'anthropic', description: 'Claude AI — required for all trading decisions', required: true, placeholder: 'sk-ant-api03-...' },
-  { label: 'Claude Model', envKey: 'CLAUDE_MODEL', service: '', description: 'Leave blank to use default (claude-opus-4-6)', required: false, placeholder: 'claude-haiku-4-5-20251001' },
+  { label: 'Anthropic', envKey: 'ANTHROPIC_API_KEY', service: 'anthropic', description: 'Claude AI — required when using Anthropic as LLM provider', required: false, placeholder: 'sk-ant-api03-...' },
+  { label: 'Claude Model', envKey: 'CLAUDE_MODEL', service: '', description: 'Leave blank to use default (claude-opus-4-5-20251101)', required: false, placeholder: 'claude-haiku-4-5-20251001' },
+  { label: 'OpenRouter', envKey: 'OPENROUTER_API_KEY', service: 'openrouter', description: 'OpenRouter — access 100+ models (GPT-4o, Gemini, Llama, etc.) as LLM provider', required: false, placeholder: 'sk-or-v1-...' },
   { label: 'Alpaca API Key', envKey: 'ALPACA_API_KEY', service: 'alpaca', description: 'Forex/stock broker — live trading', required: false, placeholder: 'AK...' },
   { label: 'Alpaca Secret', envKey: 'ALPACA_API_SECRET', service: '', description: 'Live account secret', required: false, placeholder: 'Your Alpaca live secret' },
   { label: 'Alpaca Paper Key', envKey: 'ALPACA_PAPER_KEY', service: '', description: 'Paper trading key (recommended for testing)', required: false, placeholder: 'PK...' },

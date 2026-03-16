@@ -88,8 +88,9 @@ def ensure_account(account_id: Optional[int] = None) -> None:
 # (e.g. "EURUSDm", "EURUSD."), add entries here.
 SYMBOL_MAP: dict[str, str] = {
     # ── Equiti STP/SD account — broker appends .sd suffix ──────────────────
-    "EURUSD":  "EURUSD.sd",
-    "GBPUSD":  "GBPUSD.sd",
+    "BTCUSD": "BTCUSD.lv",
+    "EURUSD":  "EURUSD",
+    "GBPUSD":  "GBPUSD",
     "USDJPY":  "USDJPY.sd",
     "USDCHF":  "USDCHF.sd",
     "AUDUSD":  "AUDUSD.sd",

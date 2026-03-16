@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { getAccounts } from '../api/client.ts'
-import type { AccountEntry, AlpacaAccountEntry, BinanceAccountEntry, AlpacaPosition, AlpacaFill, BinanceBalance, BinanceOpenOrder } from '../types/index.ts'
+import type { AccountEntry, AlpacaAccountEntry, BinanceAccountEntry, Mt5AccountEntry, AlpacaPosition, AlpacaFill, BinanceBalance, BinanceOpenOrder, Mt5Position } from '../types/index.ts'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -373,6 +373,100 @@ function BinanceOrderRow({ o }: { o: BinanceOpenOrder }) {
   )
 }
 
+// ── MT5 card ─────────────────────────────────────────────────────────────────
+
+function Mt5Card({ entry }: { entry: Mt5AccountEntry }) {
+  const s = entry.summary
+  const positions = entry.positions ?? []
+
+  const marginLevel = s && s.margin > 0 ? (s.equity / s.margin) * 100 : 0
+
+  return (
+    <div className="bg-surface border border-border rounded-lg overflow-hidden">
+      {/* Card header */}
+      <div className="px-5 py-4 border-b border-border flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <span className="text-white font-bold text-sm tracking-wide">METATRADER 5</span>
+          <ModeBadge mode={entry.mode} />
+          <ConnectedDot ok={entry.connected} />
+        </div>
+        {s && (
+          <span className="text-[11px] text-muted font-mono">
+            #{s.login} @ {s.server}
+          </span>
+        )}
+      </div>
+
+      {/* Error state */}
+      {!entry.connected && (
+        <div className="px-5 py-6 text-xs text-red font-mono">
+          ✗ {entry.error ?? 'Bridge not running'}
+        </div>
+      )}
+
+      {/* Summary metrics */}
+      {s && (
+        <div className="px-5 py-4 grid grid-cols-3 gap-4 border-b border-border">
+          <SummaryMetric label="Balance" value={`$${usd(s.balance)}`} />
+          <SummaryMetric label="Equity" value={`$${usd(s.equity)}`} />
+          <SummaryMetric label="Free Margin" value={`$${usd(s.freeMargin)}`} color="text-blue-400" />
+          <SummaryMetric
+            label="Margin Level"
+            value={s.margin > 0 ? `${marginLevel.toFixed(1)}%` : '—'}
+            color={marginLevel > 200 ? 'text-green' : marginLevel > 100 ? 'text-yellow' : 'text-red'}
+          />
+          <SummaryMetric
+            label="Floating P&L"
+            value={`${s.profit >= 0 ? '+' : ''}$${usd(s.profit)}`}
+            color={s.profit >= 0 ? 'text-green' : 'text-red'}
+          />
+          <SummaryMetric label="Leverage" value={`1:${s.leverage}`} color="text-muted" />
+        </div>
+      )}
+
+      {/* Positions table */}
+      {entry.connected && (
+        <div className="px-5 pt-4">
+          <h3 className="text-[10px] uppercase tracking-widest text-muted mb-3">Positions</h3>
+          <div className="overflow-x-auto mb-4">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-border">
+                  {['Symbol', 'Side', 'Volume', 'Open Price', 'Current', 'P&L', 'Swap', 'SL', 'TP'].map(h => <Th key={h}>{h}</Th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {positions.length === 0
+                  ? <EmptyRow cols={9} label="No open positions" />
+                  : positions.map((p, i) => <Mt5PositionRow key={i} p={p} />)
+                }
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Mt5PositionRow({ p }: { p: Mt5Position }) {
+  return (
+    <tr className="border-b border-[#1a1a1a] hover:bg-surface2 transition-colors">
+      <Td className="font-bold text-white">{p.symbol}</Td>
+      <Td>
+        <span className={`font-bold ${p.side === 'BUY' ? 'text-green' : 'text-red'}`}>{p.side}</span>
+      </Td>
+      <Td className="font-mono">{p.volume}</Td>
+      <Td className="font-mono text-muted">{p.priceOpen.toFixed(5)}</Td>
+      <Td className="font-mono">{p.priceCurrent.toFixed(5)}</Td>
+      <Td><PnlSpan value={p.profit} /></Td>
+      <Td className="font-mono text-muted">{p.swap !== 0 ? p.swap.toFixed(2) : '—'}</Td>
+      <Td className="font-mono text-muted">{p.sl > 0 ? p.sl.toFixed(5) : '—'}</Td>
+      <Td className="font-mono text-muted">{p.tp > 0 ? p.tp.toFixed(5) : '—'}</Td>
+    </tr>
+  )
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export function Account() {
@@ -402,6 +496,7 @@ export function Account() {
 
   const alpacaAccounts = accounts.filter((a): a is AlpacaAccountEntry => a.exchange === 'alpaca')
   const binanceAccounts = accounts.filter((a): a is BinanceAccountEntry => a.exchange === 'binance')
+  const mt5Accounts = accounts.filter((a): a is Mt5AccountEntry => a.exchange === 'mt5')
 
   return (
     <div className="p-6">
@@ -465,6 +560,18 @@ export function Account() {
           <div className="grid grid-cols-1 gap-5">
             {binanceAccounts.map(a => (
               <BinanceCard key={a.id} entry={a} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* MT5 accounts */}
+      {!loading && mt5Accounts.length > 0 && (
+        <section className="mb-8">
+          <h2 className="text-[10px] uppercase tracking-[2px] text-muted mb-3">MetaTrader 5</h2>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+            {mt5Accounts.map(a => (
+              <Mt5Card key={a.id} entry={a} />
             ))}
           </div>
         </section>

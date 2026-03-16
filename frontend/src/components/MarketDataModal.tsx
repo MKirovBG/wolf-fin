@@ -4,7 +4,7 @@ import { getMarketData } from '../api/client.ts'
 import type { MarketSnapshot } from '../types/index.ts'
 
 interface Props {
-  market: 'crypto' | 'forex'
+  market: 'crypto' | 'forex' | 'mt5'
   symbol: string
   onClose: () => void
 }

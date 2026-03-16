@@ -1,4 +1,4 @@
-interface BadgeProps { label: string; variant: 'buy' | 'sell' | 'hold' | 'cancel' | 'paper' | 'live' | 'crypto' | 'forex' }
+interface BadgeProps { label: string; variant: 'buy' | 'sell' | 'hold' | 'cancel' | 'paper' | 'live' | 'crypto' | 'forex' | 'mt5' }
 
 const styles: Record<BadgeProps['variant'], string> = {
   buy: 'bg-green-dim border border-green-border text-green',
@@ -9,6 +9,7 @@ const styles: Record<BadgeProps['variant'], string> = {
   live: 'bg-red-dim border border-red-border text-red',
   crypto: 'bg-blue-900/20 border border-blue-500/30 text-blue-400',
   forex: 'bg-yellow-dim border border-yellow-border text-yellow',
+  mt5: 'bg-purple-900/20 border border-purple-500/30 text-purple-400',
 }
 
 export function Badge({ label, variant }: BadgeProps) {

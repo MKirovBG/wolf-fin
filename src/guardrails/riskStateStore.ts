@@ -6,7 +6,7 @@ const MAX_DAILY_LOSS_USD = parseFloat(process.env.MAX_DAILY_LOSS_USD ?? '200')
 const MAX_POSITION_USD = parseFloat(process.env.MAX_POSITION_USD ?? '1000')
 const MAX_COMBINED_NOTIONAL_USD = parseFloat(process.env.MAX_COMBINED_NOTIONAL_USD ?? '2000')
 
-type Market = 'crypto' | 'forex'
+type Market = 'crypto' | 'forex' | 'mt5'
 
 interface DayState {
   date: string
@@ -33,6 +33,26 @@ export function getForexContext(): ForexContext {
   return lastForexContext
 }
 
+// ── MT5 context cache — populated by agent on each get_snapshot ───────────────
+
+export interface Mt5Context {
+  spread: number
+  sessionOpen: boolean
+  pipValue: number
+  point: number
+  digits: number
+}
+
+let lastMt5Context: Mt5Context = { spread: 0, sessionOpen: false, pipValue: 0.0001, point: 0.0001, digits: 5 }
+
+export function setMt5Context(ctx: Mt5Context): void {
+  lastMt5Context = ctx
+}
+
+export function getMt5Context(): Mt5Context {
+  return lastMt5Context
+}
+
 // ── Per-market day state ───────────────────────────────────────────────────────
 
 function utcDateString(): string {
@@ -46,6 +66,7 @@ function freshState(): DayState {
 const states: Record<Market, DayState> = {
   crypto: freshState(),
   forex: freshState(),
+  mt5: freshState(),
 }
 
 function get(market: Market): DayState {
@@ -86,7 +107,7 @@ export function isDailyLimitHitFor(market: Market): boolean {
 
 /** Sum of open position notional across all markets. */
 export function getCombinedNotionalUsd(): number {
-  return get('crypto').positionNotionalUsd + get('forex').positionNotionalUsd
+  return get('crypto').positionNotionalUsd + get('forex').positionNotionalUsd + get('mt5').positionNotionalUsd
 }
 
 export { MAX_DAILY_LOSS_USD, MAX_POSITION_USD, MAX_COMBINED_NOTIONAL_USD }

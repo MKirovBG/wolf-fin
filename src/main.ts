@@ -15,6 +15,7 @@ initDb()
 const today = new Date().toISOString().slice(0, 10)
 hydrateRiskStateFromDb('crypto', dbGetTodayRealizedPnl('crypto', today))
 hydrateRiskStateFromDb('forex', dbGetTodayRealizedPnl('forex', today))
+hydrateRiskStateFromDb('mt5', dbGetTodayRealizedPnl('mt5', today))
 
 const savedAgents = dbGetAllAgents()
 for (const agent of savedAgents) {

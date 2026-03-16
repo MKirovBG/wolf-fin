@@ -127,7 +127,7 @@ export function dbRecordCycle(key: string, result: CycleResult): void {
   )
 }
 
-export function dbGetTodayRealizedPnl(market: 'crypto' | 'forex', dateStr: string): number {
+export function dbGetTodayRealizedPnl(market: 'crypto' | 'forex' | 'mt5', dateStr: string): number {
   const row = db.prepare(`
     SELECT COALESCE(SUM(pnl_usd), 0) AS total
     FROM cycle_results
@@ -173,7 +173,7 @@ export function dbGetCycleResults(market?: string, limit = 500): CycleResult[] {
     decision: string; reason: string; time: string; error: string | null
   }[]).map(r => ({
     symbol: r.symbol,
-    market: r.market as 'crypto' | 'forex',
+    market: r.market as 'crypto' | 'forex' | 'mt5',
     paper: r.paper === 1,
     decision: r.decision,
     reason: r.reason,

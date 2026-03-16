@@ -6,8 +6,8 @@ import Anthropic from '@anthropic-ai/sdk'
 
 const MARKET_FIELD = {
   type: 'string',
-  enum: ['crypto', 'forex'],
-  description: 'Market type. "crypto" routes to Binance, "forex" routes to Alpaca.',
+  enum: ['crypto', 'forex', 'mt5'],
+  description: 'Market type. "crypto" routes to Binance, "forex" routes to Alpaca, "mt5" routes to MetaTrader 5.',
 } as const
 
 export const TOOLS: Anthropic.Tool[] = [
@@ -103,29 +103,29 @@ export const TOOLS: Anthropic.Tool[] = [
 
 export interface GetSnapshotInput {
   symbol: string
-  market: 'crypto' | 'forex'
+  market: 'crypto' | 'forex' | 'mt5'
 }
 
 export interface GetOrderBookInput {
   symbol: string
-  market: 'crypto' | 'forex'
+  market: 'crypto' | 'forex' | 'mt5'
   depth?: number
 }
 
 export interface GetRecentTradesInput {
   symbol: string
-  market: 'crypto' | 'forex'
+  market: 'crypto' | 'forex' | 'mt5'
   limit?: number
 }
 
 export interface GetOpenOrdersInput {
   symbol?: string
-  market: 'crypto' | 'forex'
+  market: 'crypto' | 'forex' | 'mt5'
 }
 
 export interface PlaceOrderInput {
   symbol: string
-  market: 'crypto' | 'forex'
+  market: 'crypto' | 'forex' | 'mt5'
   side: 'BUY' | 'SELL'
   type: 'LIMIT' | 'MARKET'
   quantity: number
@@ -136,6 +136,6 @@ export interface PlaceOrderInput {
 
 export interface CancelOrderInput {
   symbol: string
-  market: 'crypto' | 'forex'
+  market: 'crypto' | 'forex' | 'mt5'
   orderId: number
 }

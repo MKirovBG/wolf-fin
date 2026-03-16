@@ -93,7 +93,7 @@ export interface MarketContext {
 export interface MarketSnapshot {
   symbol: string
   timestamp: number
-  market: 'crypto' | 'forex'
+  market: 'crypto' | 'forex' | 'mt5'
   price: {
     bid: number
     ask: number

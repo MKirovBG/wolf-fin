@@ -4,10 +4,11 @@ import Anthropic from '@anthropic-ai/sdk'
 import pino from 'pino'
 import { getAdapter } from '../adapters/registry.js'
 import { getRiskState, isDailyLimitHit } from '../guardrails/riskState.js'
-import { updatePositionNotionalFor, isDailyLimitHitFor, setForexContext } from '../guardrails/riskStateStore.js'
+import { updatePositionNotionalFor, isDailyLimitHitFor, setForexContext, setMt5Context } from '../guardrails/riskStateStore.js'
 import { validateOrder } from '../guardrails/validate.js'
 import { validateForexOrder } from '../guardrails/forex.js'
-import { getForexContext } from '../guardrails/riskStateStore.js'
+import { validateMt5Order } from '../guardrails/mt5.js'
+import { getForexContext, getMt5Context } from '../guardrails/riskStateStore.js'
 import { buildMarketContext } from './context.js'
 import { sessionLabel } from '../adapters/session.js'
 import { TOOLS } from '../tools/definitions.js'
@@ -29,7 +30,9 @@ function buildSystemPrompt(config: AgentConfig, agentKey: string): string {
   const sessionNote =
     market === 'forex'
       ? `\nCURRENT SESSION: ${sessionLabel()}\nFOREX SESSION RULES: Only trade during Tokyo, London, or New York sessions. Avoid Sydney-only hours. Reject entries when spread > 3 pips or sessionOpen is false.\nNOTE: Overnight swap rates are unavailable from the data provider — do not factor swap costs into hold decisions.`
-      : ''
+      : market === 'mt5'
+        ? `\nCURRENT SESSION: ${sessionLabel()}\nMT5 SESSION RULES: Only trade during Tokyo, London, or New York sessions. Reject entries when spread > 3 pips or sessionOpen is false.\nMT5 provides real swap rates in the snapshot — factor overnight costs into hold decisions for multi-day positions.`
+        : ''
 
   const base = `You are Wolf-Fin, an autonomous trading agent. ${mode}
 
@@ -41,7 +44,7 @@ PROCESS:
 3. Reason through the evidence: trend (EMA cross), momentum (RSI), volatility (ATR, BB width), context signals.
 4. Decide: HOLD / BUY qty @ price / SELL qty @ price / CANCEL orderId.
 5. Execute via place_order or cancel_order. Always prefer LIMIT orders.
-${market === 'forex' ? '6. Forex: always include stopPips on every order (ATR-based distance).' : ''}
+${market === 'forex' || market === 'mt5' ? `6. ${market === 'mt5' ? 'MT5' : 'Forex'}: always include stopPips on every order (ATR-based distance).` : ''}
 RISK RULES (non-negotiable):
 - If the daily loss limit is hit (remainingBudgetUsd = 0), HOLD unconditionally.
 - Size so that a stop-out costs at most 1% of NAV.
@@ -107,10 +110,10 @@ function summariseToolResult(name: string, result: unknown): string {
 async function dispatchTool(
   name: string,
   input: Record<string, unknown>,
-  defaultMarket: 'crypto' | 'forex',
+  defaultMarket: 'crypto' | 'forex' | 'mt5',
   paper: boolean,
 ): Promise<unknown> {
-  const market = (input.market as 'crypto' | 'forex' | undefined) ?? defaultMarket
+  const market = (input.market as 'crypto' | 'forex' | 'mt5' | undefined) ?? defaultMarket
   const adapter = getAdapter(market)
 
   switch (name) {
@@ -124,6 +127,9 @@ async function dispatchTool(
       updatePositionNotionalFor(market, openNotional)
       if (market === 'forex' && snap.forex) {
         setForexContext({ spread: snap.forex.spread, sessionOpen: snap.forex.sessionOpen, pipValue: snap.forex.pipValue })
+      }
+      if (market === 'mt5' && snap.forex) {
+        setMt5Context({ spread: snap.forex.spread, sessionOpen: snap.forex.sessionOpen, pipValue: snap.forex.pipValue, point: 0.0001, digits: 5 })
       }
       return snap
     }
@@ -146,13 +152,15 @@ async function dispatchTool(
       const validation =
         market === 'forex'
           ? (() => { const fx = getForexContext(); return validateForexOrder(params, fx.spread, fx.sessionOpen, fx.pipValue) })()
-          : validateOrder(params, params.price ?? 0)
+          : market === 'mt5'
+            ? (() => { const ctx = getMt5Context(); return validateMt5Order(params, ctx.spread, ctx.sessionOpen, ctx.pipValue) })()
+            : validateOrder(params, params.price ?? 0)
       if (!validation.ok) {
         log.warn({ reason: validation.reason }, 'order blocked by guardrails')
         return { blocked: true, reason: validation.reason }
       }
-      // Compute absolute stop price for forex bracket orders
-      if (market === 'forex' && params.stopPips != null && params.price != null) {
+      // Compute absolute stop price for forex / MT5 bracket orders
+      if ((market === 'forex' || market === 'mt5') && params.stopPips != null && params.price != null) {
         const pipSz = params.symbol.toUpperCase().includes('JPY') ? 0.01 : 0.0001
         params.stopPrice = params.side === 'BUY'
           ? params.price - params.stopPips * pipSz

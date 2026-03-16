@@ -248,11 +248,11 @@ export async function startServer(): Promise<void> {
   // ── Market Data (read-only snapshot, no agent/Claude involved) ───────────────
   app.get('/api/market/:market/:symbol', async (req, reply) => {
     const { market, symbol } = req.params as { market: string; symbol: string }
-    if (market !== 'crypto' && market !== 'forex') {
-      return reply.status(400).send({ error: 'market must be crypto or forex' })
+    if (market !== 'crypto' && market !== 'forex' && market !== 'mt5') {
+      return reply.status(400).send({ error: 'market must be crypto, forex, or mt5' })
     }
     try {
-      const adapter = getAdapter(market as 'crypto' | 'forex')
+      const adapter = getAdapter(market as 'crypto' | 'forex' | 'mt5')
       const snapshot = await adapter.getSnapshot(symbol, getRiskState())
       return snapshot
     } catch (e) {
@@ -282,7 +282,7 @@ export async function startServer(): Promise<void> {
 
   // ── Reports ─────────────────────────────────────────────────────────────────
   app.get('/api/reports/summary', async () => {
-    const summary = (market: 'crypto' | 'forex') => {
+    const summary = (market: 'crypto' | 'forex' | 'mt5') => {
       const events = dbGetCycleResults(market)
       return {
         totalCycles: events.length,
@@ -293,12 +293,12 @@ export async function startServer(): Promise<void> {
         risk: getRiskStateFor(market),
       }
     }
-    return { crypto: summary('crypto'), forex: summary('forex') }
+    return { crypto: summary('crypto'), forex: summary('forex'), mt5: summary('mt5') }
   })
 
   app.get('/api/reports/trades', async (req) => {
     const { market } = req.query as { market?: string }
-    return dbGetCycleResults(market as 'crypto' | 'forex' | undefined)
+    return dbGetCycleResults(market as 'crypto' | 'forex' | 'mt5' | undefined)
   })
 
   // ── Accounts ─────────────────────────────────────────────────────────────────
@@ -318,7 +318,14 @@ export async function startServer(): Promise<void> {
     openOrders?: Array<{ symbol: string; side: string; type: string; price: number; origQty: number; executedQty: number; status: string; time: number }>
   }
 
-  type AccountEntry = AlpacaAccountEntry | BinanceAccountEntry
+  type Mt5AccountEntry = {
+    id: string; exchange: 'mt5'; mode: 'DEMO' | 'LIVE'
+    connected: boolean; error?: string
+    summary?: { balance: number; equity: number; margin: number; freeMargin: number; profit: number; leverage: number; login: number; server: string }
+    positions?: Array<{ ticket: number; symbol: string; side: 'BUY' | 'SELL'; volume: number; priceOpen: number; priceCurrent: number; profit: number; swap: number; sl: number; tp: number; time: string }>
+  }
+
+  type AccountEntry = AlpacaAccountEntry | BinanceAccountEntry | Mt5AccountEntry
 
   async function fetchAlpacaEntry(paper: boolean): Promise<AlpacaAccountEntry> {
     const id = paper ? 'alpaca-paper' : 'alpaca-live'
@@ -398,11 +405,43 @@ export async function startServer(): Promise<void> {
     }
   }
 
+  async function fetchMt5Entry(): Promise<Mt5AccountEntry> {
+    const base = `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`
+    const [health, positions] = await Promise.all([
+      fetch(`${base}/health`).then(r => { if (!r.ok) throw new Error(`MT5 bridge HTTP ${r.status}`); return r.json() as Promise<{ connected: boolean; account?: { login: number; server: string; trade_mode: number; leverage: number; balance: number } }> }),
+      fetch(`${base}/positions`).then(r => { if (!r.ok) return [] as Array<{ ticket: number; symbol: string; side: 'BUY' | 'SELL'; volume: number; priceOpen: number; priceCurrent: number; profit: number; swap: number; sl: number; tp: number; time: string }>; return r.json() as Promise<Array<{ ticket: number; symbol: string; side: 'BUY' | 'SELL'; volume: number; priceOpen: number; priceCurrent: number; profit: number; swap: number; sl: number; tp: number; time: string }>> }),
+    ])
+    const acct = health.account
+    // trade_mode: 0=demo, 1=contest, 2=real
+    const mode = acct?.trade_mode === 2 ? 'LIVE' : 'DEMO'
+    // Fetch full account data for equity/margin
+    const fullAcct = await fetch(`${base}/account`).then(r => r.json() as Promise<{ balance: number; equity: number; margin: number; free_margin: number; profit: number; leverage: number; login: number; server: string }>).catch(() => null)
+    return {
+      id: `mt5-${acct?.login ?? 'unknown'}`,
+      exchange: 'mt5',
+      mode,
+      connected: health.connected,
+      summary: fullAcct ? {
+        balance: fullAcct.balance,
+        equity: fullAcct.equity,
+        margin: fullAcct.margin,
+        freeMargin: fullAcct.free_margin,
+        profit: fullAcct.profit,
+        leverage: fullAcct.leverage,
+        login: fullAcct.login,
+        server: fullAcct.server,
+      } : undefined,
+      positions,
+    }
+  }
+
   app.get('/api/accounts', async (_req, reply) => {
     const jobs: Array<Promise<AccountEntry>> = []
     if (process.env.ALPACA_PAPER_KEY) jobs.push(fetchAlpacaEntry(true).catch(err => ({ id: 'alpaca-paper', exchange: 'alpaca' as const, mode: 'PAPER' as const, connected: false, error: String(err) })))
     if (process.env.ALPACA_API_KEY)   jobs.push(fetchAlpacaEntry(false).catch(err => ({ id: 'alpaca-live',  exchange: 'alpaca' as const, mode: 'LIVE' as const,  connected: false, error: String(err) })))
     if (process.env.BINANCE_API_KEY)  jobs.push(fetchBinanceEntry().catch(err => ({ id: 'binance-main', exchange: 'binance' as const, mode: (process.env.BINANCE_TESTNET === 'true' ? 'TESTNET' : 'LIVE') as 'LIVE' | 'TESTNET', connected: false, error: String(err) })))
+    // MT5 bridge — try connecting; silently skip if bridge is not running
+    jobs.push(fetchMt5Entry().catch(err => ({ id: 'mt5-unknown', exchange: 'mt5' as const, mode: 'DEMO' as const, connected: false, error: String(err) })))
     const accounts = await Promise.all(jobs)
     return reply.send(accounts)
   })
@@ -413,7 +452,7 @@ export async function startServer(): Promise<void> {
     if (agents.length === 0) return []
     const results = await Promise.allSettled(
       agents.map(async (agent) => {
-        const adapter = getAdapter(agent.config.market as 'crypto' | 'forex')
+        const adapter = getAdapter(agent.config.market as 'crypto' | 'forex' | 'mt5')
         const orders = await adapter.getOpenOrders(agent.config.symbol)
         return orders.map(o => ({
           ...o,
@@ -432,7 +471,7 @@ export async function startServer(): Promise<void> {
     if (agents.length === 0) return []
     const results = await Promise.allSettled(
       agents.map(async (agent) => {
-        const adapter = getAdapter(agent.config.market as 'crypto' | 'forex')
+        const adapter = getAdapter(agent.config.market as 'crypto' | 'forex' | 'mt5')
         const fills = await adapter.getTradeHistory(agent.config.symbol, 50)
         return fills.map(f => ({
           ...f,

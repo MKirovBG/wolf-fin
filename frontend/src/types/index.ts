@@ -2,7 +2,7 @@ export type AgentStatus = 'idle' | 'running' | 'paused'
 
 export interface AgentConfig {
   symbol: string
-  market: 'crypto' | 'forex'
+  market: 'crypto' | 'forex' | 'mt5'
   paper: boolean
   maxIterations: number
   fetchMode: 'manual' | 'scheduled' | 'autonomous'
@@ -22,7 +22,7 @@ export interface AgentState {
 
 export interface CycleResult {
   symbol: string
-  market: 'crypto' | 'forex'
+  market: 'crypto' | 'forex' | 'mt5'
   paper: boolean
   decision: string
   reason: string
@@ -86,7 +86,7 @@ export interface Order {
 export interface MarketSnapshot {
   symbol: string
   timestamp: number
-  market: 'crypto' | 'forex'
+  market: 'crypto' | 'forex' | 'mt5'
   price: { bid: number; ask: number; last: number }
   stats24h: { volume: number; changePercent: number; high: number; low: number }
   candles: { m1: Candle[]; m15: Candle[]; h1: Candle[]; h4: Candle[] }
@@ -135,13 +135,13 @@ export interface Fill {
 
 export interface PositionEntry extends Order {
   agentKey: string
-  market: 'crypto' | 'forex'
+  market: 'crypto' | 'forex' | 'mt5'
   paper: boolean
 }
 
 export interface FillEntry extends Fill {
   agentKey: string
-  market: 'crypto' | 'forex'
+  market: 'crypto' | 'forex' | 'mt5'
   paper: boolean
 }
 
@@ -224,7 +224,42 @@ export interface BinanceAccountEntry {
   openOrders?: BinanceOpenOrder[]
 }
 
-export type AccountEntry = AlpacaAccountEntry | BinanceAccountEntry
+export interface Mt5AccountSummary {
+  balance: number
+  equity: number
+  margin: number
+  freeMargin: number
+  profit: number
+  leverage: number
+  login: number
+  server: string
+}
+
+export interface Mt5Position {
+  ticket: number
+  symbol: string
+  side: 'BUY' | 'SELL'
+  volume: number
+  priceOpen: number
+  priceCurrent: number
+  profit: number
+  swap: number
+  sl: number
+  tp: number
+  time: string
+}
+
+export interface Mt5AccountEntry {
+  id: string
+  exchange: 'mt5'
+  mode: 'DEMO' | 'LIVE'
+  connected: boolean
+  error?: string
+  summary?: Mt5AccountSummary
+  positions?: Mt5Position[]
+}
+
+export type AccountEntry = AlpacaAccountEntry | BinanceAccountEntry | Mt5AccountEntry
 
 export interface MarketSummary {
   totalCycles: number

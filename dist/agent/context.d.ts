@@ -4,5 +4,5 @@ import type { MarketContext } from '../adapters/types.js';
  * All fetches are parallel and fail gracefully — a broken enrichment
  * source never stops the trading cycle.
  */
-export declare function buildMarketContext(symbol: string, market: 'crypto' | 'forex'): Promise<MarketContext>;
+export declare function buildMarketContext(symbol: string, market: 'crypto' | 'forex' | 'mt5'): Promise<MarketContext>;
 //# sourceMappingURL=context.d.ts.map

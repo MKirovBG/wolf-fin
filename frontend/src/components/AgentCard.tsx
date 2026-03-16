@@ -1,11 +1,11 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { Badge, decisionVariant } from './Badge.tsx'
 import { AgentStatusBadge } from './AgentStatusBadge.tsx'
 import { MarketDataModal } from './MarketDataModal.tsx'
-import { startAgent, pauseAgent, stopAgent, triggerAgent, updateAgentConfig, deleteAgent } from '../api/client.ts'
-import type { AgentState, AgentConfig } from '../types/index.ts'
+import { startAgent, pauseAgent, stopAgent, triggerAgent, updateAgentConfig, deleteAgent, getOpenRouterModels } from '../api/client.ts'
+import type { AgentState, AgentConfig, OpenRouterModel } from '../types/index.ts'
 
 interface Props {
   agent: AgentState
@@ -31,9 +31,24 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
     defaultValues: agent.config,
   })
   const fetchMode = watch('fetchMode')
+  const llmProvider = watch('llmProvider')
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [orModels, setOrModels] = useState<OpenRouterModel[]>([])
+  const [orLoading, setOrLoading] = useState(false)
+  const [orError, setOrError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (llmProvider === 'openrouter') {
+      setOrError(null)
+      setOrLoading(true)
+      getOpenRouterModels()
+        .then(setOrModels)
+        .catch(() => setOrError('Could not load models — check your OpenRouter API key'))
+        .finally(() => setOrLoading(false))
+    }
+  }, [llmProvider])
 
   const onSubmit = handleSubmit(async (data) => {
     setSaving(true)
@@ -131,6 +146,41 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
           style={{ background: '#1e1e1e', border: '1px solid #2a2a2a', color: '#e0e0e0', borderRadius: 4, padding: '8px 10px', fontFamily: 'Courier New, monospace', fontSize: 11, lineHeight: '1.6', outline: 'none', width: '100%', resize: 'vertical', minHeight: 140 }}
         />
       </div>
+
+      {/* LLM Provider */}
+      <div>
+        <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">LLM Provider</label>
+        <select {...register('llmProvider')}>
+          <option value="anthropic">Anthropic (Claude)</option>
+          <option value="openrouter">OpenRouter</option>
+        </select>
+      </div>
+
+      {/* OpenRouter model — shown only when provider = openrouter */}
+      {llmProvider === 'openrouter' && (
+        <div>
+          <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">OpenRouter Model</label>
+          {orLoading ? (
+            <p className="text-xs text-muted py-2">Loading models...</p>
+          ) : orError ? (
+            <p className="text-xs text-red py-2">{orError}</p>
+          ) : (
+            <select {...register('llmModel')}>
+              <option value="">— Select model —</option>
+              {orModels.map(m => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                  {m.contextLength ? ` · ${(m.contextLength / 1000).toFixed(0)}k ctx` : ''}
+                  {m.promptCost ? ` · $${(parseFloat(m.promptCost) * 1e6).toFixed(2)}/M` : ''}
+                </option>
+              ))}
+            </select>
+          )}
+          {agent.config.llmModel && (
+            <p className="text-[10px] text-muted mt-1">Current: {agent.config.llmModel}</p>
+          )}
+        </div>
+      )}
 
       {/* Save / Delete */}
       <div className="flex items-center justify-between pt-1">

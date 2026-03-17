@@ -3,6 +3,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import pino from 'pino'
 import { getLLMProvider, getModelForConfig } from '../llm/index.js'
+import { RateLimitError } from '../llm/openrouter.js'
 import { getAdapter } from '../adapters/registry.js'
 import { getRiskState, isDailyLimitHit } from '../guardrails/riskState.js'
 import { updatePositionNotionalFor, isDailyLimitHitFor, setMt5Context } from '../guardrails/riskStateStore.js'
@@ -372,6 +373,82 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
+
+    // ── Rate limit: emergency stop + close all open positions ─────────────────
+    if (err instanceof RateLimitError || (err instanceof Error && (err.message.includes('429') || err.message.toLowerCase().includes('rate limit')))) {
+      const resetMsg = (err instanceof RateLimitError && err.resetAt)
+        ? ` Resets at ${new Date(err.resetAt).toISOString()}.`
+        : ''
+      logEvent(agentKey, 'error', 'cycle_error',
+        `⚠ Rate limit hit — emergency stopping agent and closing all open positions.${resetMsg}`)
+      log.error({ agentKey }, 'rate limit hit — emergency stop')
+
+      // Stop the scheduler without creating a circular import
+      try {
+        const { stopAgentSchedule } = await import('../scheduler/index.js')
+        stopAgentSchedule(agentKey)
+      } catch (schedErr) {
+        log.error({ schedErr }, 'failed to stop agent schedule during rate-limit emergency')
+      }
+
+      // Close / cancel all open positions
+      try {
+        const openOrders = await dispatchTool(
+          'get_open_orders',
+          { symbol: config.symbol },
+          config.market,
+          config.mt5AccountId,
+        ) as Array<{ orderId: number }>
+
+        if (Array.isArray(openOrders) && openOrders.length > 0) {
+          logEvent(agentKey, 'warn', 'cycle_error',
+            `Emergency closing ${openOrders.length} open position(s) / order(s)…`)
+
+          for (const order of openOrders) {
+            try {
+              if (config.market === 'mt5') {
+                const result = await dispatchTool(
+                  'close_position',
+                  { ticket: order.orderId, market: config.market },
+                  config.market,
+                  config.mt5AccountId,
+                )
+                logEvent(agentKey, 'warn', 'tool_result',
+                  `← Emergency close_position: ${summariseToolResult('close_position', result)}`)
+              } else {
+                await dispatchTool(
+                  'cancel_order',
+                  { symbol: config.symbol, market: config.market, orderId: order.orderId },
+                  config.market,
+                  config.mt5AccountId,
+                )
+                logEvent(agentKey, 'warn', 'tool_result',
+                  `← Emergency cancel_order orderId=${order.orderId}: cancelled`)
+              }
+            } catch (closeErr) {
+              const closeMsg = closeErr instanceof Error ? closeErr.message : String(closeErr)
+              logEvent(agentKey, 'error', 'cycle_error',
+                `Emergency close failed for orderId=${order.orderId}: ${closeMsg}`)
+            }
+          }
+        } else {
+          logEvent(agentKey, 'info', 'cycle_end', 'No open positions to close during emergency stop.')
+        }
+      } catch (fetchErr) {
+        const fetchMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr)
+        logEvent(agentKey, 'error', 'cycle_error',
+          `Could not fetch open orders for emergency close: ${fetchMsg}`)
+      }
+
+      recordCycle(agentKey, {
+        symbol: config.symbol, market: config.market, paper: false,
+        decision: 'EMERGENCY_STOP', reason: `Rate limit: ${msg}`,
+        time: new Date().toISOString(), error: msg,
+      })
+      return
+    }
+
+    // ── All other errors ──────────────────────────────────────────────────────
     logEvent(agentKey, 'error', 'cycle_error', `Cycle failed: ${msg}`)
     log.error({ err: msg }, 'agent cycle crashed')
     recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper: false, decision: 'ERROR', reason: msg, time: new Date().toISOString(), error: msg })

@@ -4,6 +4,15 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import type { LLMProvider, LLMCreateParams, LLMResponse } from './types.js'
 
+// ── Typed errors ──────────────────────────────────────────────────────────────
+
+export class RateLimitError extends Error {
+  constructor(message: string, public readonly resetAt?: number) {
+    super(message)
+    this.name = 'RateLimitError'
+  }
+}
+
 // ── OpenAI-compatible wire types ──────────────────────────────────────────────
 
 interface OAITool {
@@ -143,6 +152,11 @@ export class OpenRouterProvider implements LLMProvider {
 
     if (!res.ok) {
       const err = await res.text()
+      if (res.status === 429) {
+        const resetHeader = res.headers.get('X-RateLimit-Reset')
+        const resetAt = resetHeader ? parseInt(resetHeader, 10) : undefined
+        throw new RateLimitError(`OpenRouter API error 429: ${err}`, resetAt)
+      }
       throw new Error(`OpenRouter API error ${res.status}: ${err}`)
     }
 

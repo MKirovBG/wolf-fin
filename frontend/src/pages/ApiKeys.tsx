@@ -63,8 +63,8 @@ export function ApiKeys() {
 
   return (
     <div className="p-6">
-      <h1 className="text-sm font-bold tracking-widest text-white uppercase mb-2">Integrations</h1>
-      <p className="text-muted text-xs mb-6">API keys and provider credentials — saved to your .env file and applied immediately. Values are never shown after saving.</p>
+      <h1 className="text-xl font-bold text-text mb-2">Integrations</h1>
+      <p className="text-muted text-sm mb-6">API keys and provider credentials — saved to your .env file and applied immediately. Values are never shown after saving.</p>
 
       <Card title="Service Credentials">
         <div className="space-y-5">
@@ -74,17 +74,17 @@ export function ApiKeys() {
             const isTesting = testing === s.envKey
             const result = results[s.envKey]
             return (
-              <div key={s.envKey} className="grid grid-cols-[200px_1fr_auto] gap-3 items-start pb-5 border-b border-border last:border-0 last:pb-0">
+              <div key={s.envKey} className="grid grid-cols-[200px_1fr_auto] gap-4 items-start pb-5 border-b border-border last:border-0 last:pb-0">
                 <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-xs font-bold text-white">{s.label}</span>
-                    {s.required && <span className="text-[9px] text-red uppercase">required</span>}
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="text-sm font-semibold text-text">{s.label}</span>
+                    {s.required && <span className="text-xs text-red uppercase font-bold">required</span>}
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className={`w-1.5 h-1.5 rounded-full ${isSet ? 'bg-green shadow-[0_0_4px_#00e676]' : 'bg-muted2'}`} />
-                    <span className={`text-[11px] ${isSet ? 'text-green' : 'text-muted'}`}>{isSet ? 'Set' : 'Not set'}</span>
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <span className={`w-1.5 h-1.5 rounded-full ${isSet ? 'bg-green' : 'bg-muted2'}`} />
+                    <span className={`text-sm ${isSet ? 'text-green' : 'text-muted'}`}>{isSet ? 'Set' : 'Not set'}</span>
                   </div>
-                  <p className="text-[10px] text-muted mt-1 leading-relaxed">{s.description}</p>
+                  <p className="text-xs text-muted leading-relaxed">{s.description}</p>
                 </div>
                 <div>
                   <input
@@ -94,7 +94,7 @@ export function ApiKeys() {
                     onChange={e => setValues(prev => ({ ...prev, [s.envKey]: e.target.value }))}
                   />
                   {result && (
-                    <p className={`text-[11px] mt-1.5 ${result.ok ? 'text-green' : 'text-red'}`}>
+                    <p className={`text-sm mt-2 ${result.ok ? 'text-green' : 'text-red'}`}>
                       {result.ok ? '✓' : '✗'} {result.message}
                     </p>
                   )}
@@ -103,7 +103,7 @@ export function ApiKeys() {
                   <button
                     disabled={!values[s.envKey]?.trim() || isSaving}
                     onClick={() => save(s.envKey)}
-                    className="px-3 py-1.5 text-[11px] border border-green text-green rounded hover:bg-green-dim disabled:opacity-25 disabled:cursor-default transition-colors whitespace-nowrap"
+                    className="px-4 py-2 text-sm border border-green text-green rounded-lg hover:bg-green-dim disabled:opacity-25 disabled:cursor-default transition-colors whitespace-nowrap font-medium"
                   >
                     {isSaving ? 'Saving...' : 'Save'}
                   </button>
@@ -111,7 +111,7 @@ export function ApiKeys() {
                     <button
                       disabled={!isSet || isTesting}
                       onClick={() => test(s.service, s.envKey)}
-                      className="px-3 py-1.5 text-[11px] border border-border text-muted rounded hover:border-white hover:text-white disabled:opacity-25 disabled:cursor-default transition-colors whitespace-nowrap"
+                      className="px-4 py-2 text-sm border border-border text-muted rounded-lg hover:border-muted2 hover:text-text disabled:opacity-25 disabled:cursor-default transition-colors whitespace-nowrap"
                     >
                       {isTesting ? '...' : 'Test'}
                     </button>

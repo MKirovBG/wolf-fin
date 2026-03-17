@@ -13,7 +13,7 @@ export function AgentStatusBadge({ status, showLabel = true }: Props) {
   return (
     <span className="flex items-center gap-1.5">
       <span className={`inline-block w-2 h-2 rounded-full ${dot} ${pulse ? 'animate-pulse' : ''}`} />
-      {showLabel && <span className="text-[10px] tracking-widest text-muted">{label}</span>}
+      {showLabel && <span className="text-xs font-medium text-muted">{label}</span>}
     </span>
   )
 }

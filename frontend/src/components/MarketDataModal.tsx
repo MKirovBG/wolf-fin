@@ -38,10 +38,10 @@ export function MarketDataModal({ market, symbol, onClose }: Props) {
         {/* Header */}
         <div className="flex justify-between items-center p-4 border-b border-border">
           <div>
-            <h2 className="text-white font-bold text-base">{symbol}</h2>
+            <h2 className="text-text font-bold text-base">{symbol}</h2>
             <span className="text-muted text-xs uppercase">{market} · live snapshot</span>
           </div>
-          <button onClick={onClose} className="text-muted hover:text-white text-lg leading-none">✕</button>
+          <button onClick={onClose} className="text-muted hover:text-text text-xl leading-none">✕</button>
         </div>
 
         <div className="p-4">
@@ -63,7 +63,7 @@ export function MarketDataModal({ market, symbol, onClose }: Props) {
                 ].map(({ label, val }) => (
                   <div key={label} className="bg-surface2 rounded p-3 text-center">
                     <div className="text-muted text-[10px] tracking-widest mb-1">{label}</div>
-                    <div className="text-white font-bold text-sm font-mono">{val}</div>
+                    <div className="text-text font-bold text-sm font-mono">{val}</div>
                   </div>
                 ))}
               </div>
@@ -72,9 +72,9 @@ export function MarketDataModal({ market, symbol, onClose }: Props) {
               <div className="grid grid-cols-4 gap-3">
                 {[
                   { label: '24H CHANGE', val: pct(data.stats24h.changePercent), color: data.stats24h.changePercent >= 0 ? 'text-green' : 'text-red' },
-                  { label: '24H HIGH',   val: fmt(data.stats24h.high), color: 'text-white' },
-                  { label: '24H LOW',    val: fmt(data.stats24h.low), color: 'text-white' },
-                  { label: 'VOLUME',     val: data.stats24h.volume > 1e6 ? `${(data.stats24h.volume / 1e6).toFixed(1)}M` : data.stats24h.volume.toFixed(0), color: 'text-white' },
+                  { label: '24H HIGH',   val: fmt(data.stats24h.high), color: 'text-text' },
+                  { label: '24H LOW',    val: fmt(data.stats24h.low), color: 'text-text' },
+                  { label: 'VOLUME',     val: data.stats24h.volume > 1e6 ? `${(data.stats24h.volume / 1e6).toFixed(1)}M` : data.stats24h.volume.toFixed(0), color: 'text-text' },
                 ].map(({ label, val, color }) => (
                   <div key={label} className="bg-surface2 rounded p-2">
                     <div className="text-muted text-[9px] tracking-widest mb-1">{label}</div>
@@ -91,18 +91,18 @@ export function MarketDataModal({ market, symbol, onClose }: Props) {
                     <AreaChart data={chartData}>
                       <defs>
                         <linearGradient id="priceGrad" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#00e676" stopOpacity={0.15} />
-                          <stop offset="95%" stopColor="#00e676" stopOpacity={0} />
+                          <stop offset="5%" stopColor="#22c55e" stopOpacity={0.15} />
+                          <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
                         </linearGradient>
                       </defs>
                       <XAxis dataKey="t" tick={{ fill: '#444', fontSize: 9 }} interval="preserveStartEnd" />
                       <YAxis domain={['auto', 'auto']} tick={{ fill: '#444', fontSize: 9 }} width={55} tickFormatter={v => fmt(v, 2)} />
                       <Tooltip
-                        contentStyle={{ background: '#1e1e1e', border: '1px solid #2a2a2a', borderRadius: 4, fontSize: 11 }}
-                        labelStyle={{ color: '#666' }}
-                        itemStyle={{ color: '#00e676' }}
+                        contentStyle={{ background: '#1a1a1f', border: '1px solid #2a2a32', borderRadius: 8, fontSize: 12, fontFamily: 'Inter' }}
+                        labelStyle={{ color: '#6b7280' }}
+                        itemStyle={{ color: '#22c55e' }}
                       />
-                      <Area type="monotone" dataKey="price" stroke="#00e676" strokeWidth={1.5} fill="url(#priceGrad)" dot={false} />
+                      <Area type="monotone" dataKey="price" stroke="#22c55e" strokeWidth={1.5} fill="url(#priceGrad)" dot={false} />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
@@ -113,12 +113,12 @@ export function MarketDataModal({ market, symbol, onClose }: Props) {
                 <div className="text-muted text-[10px] uppercase tracking-widest mb-2">Technical Indicators</div>
                 <div className="grid grid-cols-3 gap-2">
                   {[
-                    { label: 'RSI 14',   val: data.indicators.rsi14.toFixed(1), color: data.indicators.rsi14 > 70 ? 'text-red' : data.indicators.rsi14 < 30 ? 'text-green' : 'text-white' },
-                    { label: 'EMA 20',   val: fmt(data.indicators.ema20), color: 'text-white' },
-                    { label: 'EMA 50',   val: fmt(data.indicators.ema50), color: 'text-white' },
-                    { label: 'ATR 14',   val: fmt(data.indicators.atr14), color: 'text-white' },
-                    { label: 'VWAP',     val: fmt(data.indicators.vwap), color: 'text-white' },
-                    { label: 'BB WIDTH', val: fmt(data.indicators.bbWidth), color: 'text-white' },
+                    { label: 'RSI 14',   val: data.indicators.rsi14.toFixed(1), color: data.indicators.rsi14 > 70 ? 'text-red' : data.indicators.rsi14 < 30 ? 'text-green' : 'text-text' },
+                    { label: 'EMA 20',   val: fmt(data.indicators.ema20), color: 'text-text' },
+                    { label: 'EMA 50',   val: fmt(data.indicators.ema50), color: 'text-text' },
+                    { label: 'ATR 14',   val: fmt(data.indicators.atr14), color: 'text-text' },
+                    { label: 'VWAP',     val: fmt(data.indicators.vwap), color: 'text-text' },
+                    { label: 'BB WIDTH', val: fmt(data.indicators.bbWidth), color: 'text-text' },
                   ].map(({ label, val, color }) => (
                     <div key={label} className="bg-surface2 rounded p-2 flex justify-between items-center">
                       <span className="text-muted text-[10px]">{label}</span>
@@ -140,7 +140,7 @@ export function MarketDataModal({ market, symbol, onClose }: Props) {
                     ].map(({ label, val, color }) => (
                       <div key={label} className="bg-surface2 rounded p-2 flex justify-between items-center">
                         <span className="text-muted text-[10px]">{label}</span>
-                        <span className={`font-bold text-xs font-mono ${color ?? 'text-white'}`}>{val}</span>
+                        <span className={`font-bold text-xs font-mono ${color ?? 'text-text'}`}>{val}</span>
                       </div>
                     ))}
                   </div>
@@ -155,7 +155,7 @@ export function MarketDataModal({ market, symbol, onClose }: Props) {
                     {data.account.balances.map(b => (
                       <div key={b.asset} className="flex justify-between text-xs bg-surface2 rounded px-3 py-1.5">
                         <span className="text-muted">{b.asset}</span>
-                        <span className="text-white font-mono">{b.free.toFixed(4)} <span className="text-muted">free</span> · {b.locked.toFixed(4)} <span className="text-muted">locked</span></span>
+                        <span className="text-text font-mono">{b.free.toFixed(4)} <span className="text-muted">free</span> · {b.locked.toFixed(4)} <span className="text-muted">locked</span></span>
                       </div>
                     ))}
                   </div>

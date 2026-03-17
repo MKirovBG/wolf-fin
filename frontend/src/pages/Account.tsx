@@ -8,10 +8,6 @@ function usd(n: number, decimals = 2) {
   return n.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
 }
 
-function fmtTime(iso: string) {
-  return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-}
-
 function fmtTimestamp(ms: number) {
   return new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
@@ -20,13 +16,14 @@ function fmtTimestamp(ms: number) {
 
 function ModeBadge({ mode }: { mode: string }) {
   const styles: Record<string, string> = {
-    PAPER:   'bg-green-dim border-green-border text-green',
-    LIVE:    'bg-red-dim border-red-border text-red',
-    TESTNET: 'bg-yellow-dim border-yellow-border text-yellow',
+    PAPER:   'bg-green-dim border-green/30 text-green',
+    LIVE:    'bg-red-dim border-red/30 text-red',
+    DEMO:    'bg-yellow-dim border-yellow/30 text-yellow',
+    TESTNET: 'bg-yellow-dim border-yellow/30 text-yellow',
   }
   const cls = styles[mode] ?? 'bg-surface2 border-border text-muted'
   return (
-    <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold tracking-wide border ${cls}`}>
+    <span className={`inline-block px-2 py-0.5 rounded-md text-xs font-bold tracking-wide border ${cls}`}>
       {mode}
     </span>
   )
@@ -34,23 +31,23 @@ function ModeBadge({ mode }: { mode: string }) {
 
 function ConnectedDot({ ok, inactive }: { ok: boolean; inactive?: boolean }) {
   if (inactive) return (
-    <span className="flex items-center gap-1.5 text-[11px]">
+    <span className="flex items-center gap-1.5 text-sm">
       <span className="w-1.5 h-1.5 rounded-full bg-muted2" />
       <span className="text-muted">Inactive</span>
     </span>
   )
   return (
-    <span className="flex items-center gap-1.5 text-[11px]">
+    <span className="flex items-center gap-1.5 text-sm">
       <span className={`w-1.5 h-1.5 rounded-full ${ok ? 'bg-green' : 'bg-red'}`} />
       <span className={ok ? 'text-green' : 'text-red'}>{ok ? 'Connected' : 'Error'}</span>
     </span>
   )
 }
 
-function SummaryMetric({ label, value, color = 'text-white' }: { label: string; value: string; color?: string }) {
+function SummaryMetric({ label, value, color = 'text-text' }: { label: string; value: string; color?: string }) {
   return (
-    <div className="flex flex-col gap-0.5">
-      <span className="text-[10px] uppercase tracking-widest text-muted">{label}</span>
+    <div className="flex flex-col gap-1">
+      <span className="text-xs uppercase tracking-wider text-muted">{label}</span>
       <span className={`font-mono font-bold text-sm ${color}`}>{value}</span>
     </div>
   )
@@ -63,10 +60,10 @@ function Tabs({ tabs, active, onChange }: { tabs: string[]; active: string; onCh
         <button
           key={t}
           onClick={() => onChange(t)}
-          className={`px-4 py-2 text-xs font-medium transition-colors relative -mb-px ${
+          className={`px-4 py-2.5 text-sm font-medium transition-colors relative -mb-px ${
             active === t
               ? 'text-green border-b-2 border-green'
-              : 'text-muted hover:text-white'
+              : 'text-muted hover:text-text'
           }`}
         >
           {t}
@@ -79,21 +76,21 @@ function Tabs({ tabs, active, onChange }: { tabs: string[]; active: string; onCh
 function EmptyRow({ cols, label }: { cols: number; label: string }) {
   return (
     <tr>
-      <td colSpan={cols} className="py-10 text-center text-muted text-xs">{label}</td>
+      <td colSpan={cols} className="py-10 text-center text-muted text-sm">{label}</td>
     </tr>
   )
 }
 
 function Th({ children }: { children: string }) {
   return (
-    <th className="text-left text-[10px] uppercase tracking-wide text-muted py-2.5 px-3 font-medium">
+    <th className="text-left text-xs font-semibold uppercase tracking-wider text-muted py-3 px-3">
       {children}
     </th>
   )
 }
 
 function Td({ children, className = '' }: { children: React.ReactNode; className?: string }) {
-  return <td className={`py-2.5 px-3 text-xs ${className}`}>{children}</td>
+  return <td className={`py-3 px-3 text-sm ${className}`}>{children}</td>
 }
 
 function PnlSpan({ value }: { value: number }) {
@@ -116,28 +113,25 @@ function BinanceCard({ entry }: { entry: BinanceAccountEntry }) {
 
   return (
     <div className="bg-surface border border-border rounded-lg overflow-hidden">
-      {/* Card header */}
       <div className="px-5 py-4 border-b border-border flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <span className="text-white font-bold text-sm tracking-wide">BINANCE</span>
+          <span className="text-text font-bold text-sm">BINANCE</span>
           <ModeBadge mode={entry.mode} />
           <ConnectedDot ok={entry.connected} />
         </div>
         {entry.connected && (
-          <span className="text-[11px] text-muted">
+          <span className="text-sm text-muted">
             {balances.length} asset{balances.length !== 1 ? 's' : ''}
           </span>
         )}
       </div>
 
-      {/* Error state */}
       {!entry.connected && (
-        <div className="px-5 py-6 text-xs text-red font-mono">
-          ✗ {entry.error ?? 'Connection failed'}
+        <div className="px-5 py-6 text-sm text-red font-mono">
+          {entry.error ?? 'Connection failed'}
         </div>
       )}
 
-      {/* Summary metrics */}
       {entry.connected && (
         <div className="px-5 py-4 grid grid-cols-3 gap-4 border-b border-border">
           <SummaryMetric label="Stablecoin Balance" value={`$${usd(totalUsd)}`} />
@@ -146,15 +140,13 @@ function BinanceCard({ entry }: { entry: BinanceAccountEntry }) {
         </div>
       )}
 
-      {/* Tabs */}
       {entry.connected && (
         <div className="px-5 pt-4">
           <Tabs tabs={tabs} active={tab} onChange={setTab} />
 
-          {/* Holdings */}
           {tab === 'Holdings' && (
             <div className="overflow-x-auto mb-4">
-              <table className="w-full text-xs">
+              <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border">
                     {['Asset', 'Free', 'Locked', 'Total'].map(h => <Th key={h}>{h}</Th>)}
@@ -170,10 +162,9 @@ function BinanceCard({ entry }: { entry: BinanceAccountEntry }) {
             </div>
           )}
 
-          {/* Open Orders */}
           {tab === 'Open Orders' && (
             <div className="overflow-x-auto mb-4">
-              <table className="w-full text-xs">
+              <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border">
                     {['Time', 'Symbol', 'Side', 'Type', 'Price', 'Qty', 'Filled', 'Status'].map(h => <Th key={h}>{h}</Th>)}
@@ -198,22 +189,22 @@ function BinanceBalanceRow({ b }: { b: BinanceBalance }) {
   const total = b.free + b.locked
   const isStable = ['USDT', 'BUSD', 'USDC', 'DAI'].includes(b.asset)
   return (
-    <tr className="border-b border-[#1a1a1a] hover:bg-surface2 transition-colors">
+    <tr className="border-b border-border/50 hover:bg-surface2 transition-colors">
       <Td>
-        <span className={`font-bold ${isStable ? 'text-green' : 'text-white'}`}>{b.asset}</span>
+        <span className={`font-bold ${isStable ? 'text-green' : 'text-text'}`}>{b.asset}</span>
       </Td>
       <Td className="font-mono">{b.free.toLocaleString(undefined, { maximumFractionDigits: 8 })}</Td>
       <Td className="font-mono text-yellow">{b.locked > 0 ? b.locked.toLocaleString(undefined, { maximumFractionDigits: 8 }) : <span className="text-muted">—</span>}</Td>
-      <Td className="font-mono font-bold text-white">{total.toLocaleString(undefined, { maximumFractionDigits: 8 })}</Td>
+      <Td className="font-mono font-bold text-text">{total.toLocaleString(undefined, { maximumFractionDigits: 8 })}</Td>
     </tr>
   )
 }
 
 function BinanceOrderRow({ o }: { o: BinanceOpenOrder }) {
   return (
-    <tr className="border-b border-[#1a1a1a] hover:bg-surface2 transition-colors">
+    <tr className="border-b border-border/50 hover:bg-surface2 transition-colors">
       <Td className="text-muted whitespace-nowrap">{fmtTimestamp(o.time)}</Td>
-      <Td className="font-bold text-white">{o.symbol}</Td>
+      <Td className="font-bold text-text">{o.symbol}</Td>
       <Td>
         <span className={`font-bold ${o.side === 'BUY' ? 'text-green' : 'text-red'}`}>{o.side}</span>
       </Td>
@@ -222,7 +213,7 @@ function BinanceOrderRow({ o }: { o: BinanceOpenOrder }) {
       <Td className="font-mono">{o.origQty.toLocaleString(undefined, { maximumFractionDigits: 8 })}</Td>
       <Td className="font-mono text-muted">{o.executedQty.toLocaleString(undefined, { maximumFractionDigits: 8 })}</Td>
       <Td>
-        <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border border-border text-muted">
+        <span className="text-xs font-bold uppercase tracking-wider px-2 py-0.5 rounded border border-border text-muted">
           {o.status}
         </span>
       </Td>
@@ -240,38 +231,35 @@ function Mt5Card({ entry }: { entry: Mt5AccountEntry }) {
 
   return (
     <div className="bg-surface border border-border rounded-lg overflow-hidden">
-      {/* Card header */}
       <div className="px-5 py-4 border-b border-border flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <span className="text-white font-bold text-sm tracking-wide">METATRADER 5</span>
+          <span className="text-text font-bold text-sm">METATRADER 5</span>
           <ModeBadge mode={entry.mode} />
           <ConnectedDot ok={entry.connected} inactive={!entry.connected && entry.error?.startsWith('Not active')} />
         </div>
         {s && (
-          <span className="text-[11px] text-muted font-mono">
+          <span className="text-sm text-muted font-mono">
             #{s.login} @ {s.server}
           </span>
         )}
       </div>
 
-      {/* Inactive / error state */}
       {!entry.connected && (
-        <div className={`px-5 py-5 text-xs font-mono border-t border-border ${
+        <div className={`px-5 py-5 text-sm font-mono border-t border-border ${
           entry.error?.startsWith('Not active') ? 'text-muted' : 'text-red'
         }`}>
           {entry.error?.startsWith('Not active')
-            ? <span>⏸ {entry.error}</span>
-            : <span>✗ {entry.error ?? 'Bridge not running'}</span>
+            ? <span>{entry.error}</span>
+            : <span>{entry.error ?? 'Bridge not running'}</span>
           }
         </div>
       )}
 
-      {/* Summary metrics */}
       {s && (
         <div className="px-5 py-4 grid grid-cols-3 gap-4 border-b border-border">
           <SummaryMetric label="Balance" value={`$${usd(s.balance)}`} />
           <SummaryMetric label="Equity" value={`$${usd(s.equity)}`} />
-          <SummaryMetric label="Free Margin" value={`$${usd(s.freeMargin)}`} color="text-blue-400" />
+          <SummaryMetric label="Free Margin" value={`$${usd(s.freeMargin)}`} color="text-blue" />
           <SummaryMetric
             label="Margin Level"
             value={s.margin > 0 ? `${marginLevel.toFixed(1)}%` : '—'}
@@ -286,12 +274,11 @@ function Mt5Card({ entry }: { entry: Mt5AccountEntry }) {
         </div>
       )}
 
-      {/* Positions table */}
       {entry.connected && (
         <div className="px-5 pt-4">
-          <h3 className="text-[10px] uppercase tracking-widest text-muted mb-3">Positions</h3>
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted mb-3">Positions</h3>
           <div className="overflow-x-auto mb-4">
-            <table className="w-full text-xs">
+            <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border">
                   {['Symbol', 'Side', 'Volume', 'Open Price', 'Current', 'P&L', 'Swap', 'SL', 'TP'].map(h => <Th key={h}>{h}</Th>)}
@@ -313,8 +300,8 @@ function Mt5Card({ entry }: { entry: Mt5AccountEntry }) {
 
 function Mt5PositionRow({ p }: { p: Mt5Position }) {
   return (
-    <tr className="border-b border-[#1a1a1a] hover:bg-surface2 transition-colors">
-      <Td className="font-bold text-white">{p.symbol}</Td>
+    <tr className="border-b border-border/50 hover:bg-surface2 transition-colors">
+      <Td className="font-bold text-text">{p.symbol}</Td>
       <Td>
         <span className={`font-bold ${p.side === 'BUY' ? 'text-green' : 'text-red'}`}>{p.side}</span>
       </Td>
@@ -361,51 +348,46 @@ export function Account() {
 
   return (
     <div className="p-6">
-      {/* Header */}
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h1 className="text-sm font-bold tracking-widest text-white uppercase">Accounts</h1>
-          <p className="text-muted text-xs mt-1">Balances, holdings, and activity across all configured exchanges</p>
+          <h1 className="text-xl font-bold text-text">Accounts</h1>
+          <p className="text-muted text-sm mt-1">Balances, holdings, and activity across all configured exchanges</p>
         </div>
         <div className="flex items-center gap-3">
-          {lastUpdated && <span className="text-[11px] text-muted">Updated {lastUpdated}</span>}
+          {lastUpdated && <span className="text-sm text-muted">Updated {lastUpdated}</span>}
           <button
             onClick={load}
             disabled={loading}
-            className="px-3 py-1.5 text-xs border border-border text-muted rounded hover:border-muted hover:text-white transition-colors disabled:opacity-50"
+            className="px-3 py-1.5 text-sm border border-border text-muted rounded-lg hover:border-muted2 hover:text-text transition-colors disabled:opacity-50"
           >
             ↻ Refresh
           </button>
         </div>
       </div>
 
-      {/* Loading */}
       {loading && (
-        <div className="py-24 text-center text-muted text-xs">Loading account data...</div>
+        <div className="py-24 text-center text-muted text-sm">Loading account data...</div>
       )}
 
-      {/* Error fetching accounts */}
       {!loading && error && (
-        <div className="py-10 text-center text-red text-xs font-mono">
+        <div className="py-10 text-center text-red text-sm font-mono">
           Failed to load accounts: {error}
         </div>
       )}
 
-      {/* No accounts configured */}
       {!loading && !error && accounts.length === 0 && (
         <div className="py-16 text-center">
-          <div className="text-3xl mb-3">🔑</div>
+          <div className="text-4xl mb-4 opacity-30">◎</div>
           <p className="text-muted text-sm">No accounts configured.</p>
-          <p className="text-muted text-xs mt-1">
-            Add your Binance API keys or configure MT5 accounts in the <span className="text-white">API Keys</span> page.
+          <p className="text-muted text-sm mt-1">
+            Add your Binance API keys or configure MT5 accounts in the <span className="text-text">Integrations</span> page.
           </p>
         </div>
       )}
 
-      {/* Binance accounts */}
       {!loading && binanceAccounts.length > 0 && (
         <section className="mb-8">
-          <h2 className="text-[10px] uppercase tracking-[2px] text-muted mb-3">Crypto — Binance</h2>
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-muted mb-3">Crypto — Binance</h2>
           <div className="grid grid-cols-1 gap-5">
             {binanceAccounts.map(a => (
               <BinanceCard key={a.id} entry={a} />
@@ -414,10 +396,9 @@ export function Account() {
         </section>
       )}
 
-      {/* MT5 accounts */}
       {!loading && mt5Accounts.length > 0 && (
         <section className="mb-8">
-          <h2 className="text-[10px] uppercase tracking-[2px] text-muted mb-3">MetaTrader 5</h2>
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-muted mb-3">MetaTrader 5</h2>
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
             {mt5Accounts.map(a => (
               <Mt5Card key={a.id} entry={a} />

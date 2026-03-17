@@ -209,6 +209,16 @@ export async function startServer(): Promise<void> {
     return { ok: true }
   })
 
+  // ── System Prompt ────────────────────────────────────────────────────────────
+  app.get('/api/system-prompt/:key', async (req, reply) => {
+    const { key } = req.params as { key: string }
+    const agent = getAgent(key)
+    if (!agent) return reply.status(404).send({ error: 'Agent not found' })
+    const { buildSystemPrompt } = await import('../agent/index.js')
+    const prompt = buildSystemPrompt(agent.config, key)
+    return reply.send({ prompt })
+  })
+
   // ── Logs ────────────────────────────────────────────────────────────────────
   app.get('/api/logs', async (req) => {
     const { since, agent } = req.query as { since?: string; agent?: string }

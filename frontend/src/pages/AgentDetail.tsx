@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { getAgents, startAgent, pauseAgent, stopAgent, triggerAgent } from '../api/client.ts'
+import { getAgents, startAgent, pauseAgent, stopAgent, triggerAgent, updateAgentConfig } from '../api/client.ts'
 import type { AgentState } from '../types/index.ts'
 import { Badge, decisionVariant } from '../components/Badge.tsx'
 import { AgentStatusBadge } from '../components/AgentStatusBadge.tsx'
 import { SettingsPanel } from '../components/AgentCard.tsx'
-import { LogsGrid } from '../components/LogsGrid.tsx'
+import { ThreadedLogsPanel } from '../components/ThreadedLogsPanel.tsx'
+import { SystemPromptEditor } from '../components/SystemPromptEditor.tsx'
 import { MarketDataModal } from '../components/MarketDataModal.tsx'
 
 function rel(iso: string) {
@@ -31,11 +32,19 @@ export function AgentDetail() {
   const [loading, setLoading] = useState<string | null>(null)
   const [showMarket, setShowMarket] = useState(false)
   const [tab, setTab] = useState<Tab>('overview')
+  const [customPrompt, setCustomPrompt] = useState('')
 
   const load = useCallback(async () => {
     try {
       const all = await getAgents()
-      setAgent(all.find(a => `${a.config.market}:${a.config.symbol}` === agentKey) ?? null)
+      const found = all.find(a => {
+        const key = a.config.market === 'mt5' && a.config.mt5AccountId
+          ? `mt5:${a.config.symbol}:${a.config.mt5AccountId}`
+          : `${a.config.market}:${a.config.symbol}`
+        return key === agentKey
+      }) ?? null
+      setAgent(found)
+      if (found) setCustomPrompt(found.config.customPrompt ?? '')
     } catch { /* ignore */ }
   }, [agentKey])
 
@@ -50,11 +59,19 @@ export function AgentDetail() {
     try { await fn() } finally { setLoading(null); load() }
   }
 
+  const saveCustomPrompt = async (v: string) => {
+    if (!agent) return
+    setCustomPrompt(v)
+    try {
+      await updateAgentConfig(agentKey, { customPrompt: v || undefined })
+    } catch { /* ignore */ }
+  }
+
   if (!agent) {
     return (
       <div className="p-6">
-        <Link to="/agents" className="text-muted text-xs hover:text-white transition-colors">← Agents</Link>
-        <div className="mt-8 text-center text-muted text-sm">Agent not found.</div>
+        <Link to="/agents" className="text-muted text-sm hover:text-text transition-colors">← Agents</Link>
+        <div className="mt-8 text-center text-muted">Agent not found.</div>
       </div>
     )
   }
@@ -67,63 +84,73 @@ export function AgentDetail() {
     <div className="flex flex-col h-full" style={{ minHeight: 0 }}>
 
       {/* ── Fixed header ────────────────────────────────────────────────────── */}
-      <div className="px-6 pt-5 pb-0 shrink-0">
-        <Link to="/agents" className="text-muted text-xs hover:text-white transition-colors">← Agents</Link>
+      <div className="px-6 pt-5 pb-0 shrink-0 bg-bg border-b border-border">
+        <Link to="/agents" className="text-sm text-muted hover:text-text transition-colors">← Agents</Link>
 
         <div className="flex items-start justify-between mt-3 mb-4">
           <div>
-            <div className="flex items-center gap-2 mb-1.5">
-              <h1 className="text-white font-bold text-xl">{agent.config.symbol}</h1>
+            <div className="flex items-center gap-2.5 mb-1.5">
+              <h1 className="text-text font-bold text-2xl">{agent.config.symbol}</h1>
               <Badge label={agent.config.market.toUpperCase()} variant={agent.config.market} />
               {agent.config.leverage && (
-                <span className="text-[10px] text-muted border border-border rounded px-1.5 py-0.5">{agent.config.leverage}:1</span>
+                <span className="text-xs text-muted border border-border rounded-md px-2 py-0.5">{agent.config.leverage}:1</span>
               )}
             </div>
             <AgentStatusBadge status={agent.status} />
           </div>
 
           {/* Action buttons */}
-          <div className="flex flex-wrap gap-1.5">
-            <button disabled={!canStart || loading !== null}
+          <div className="flex flex-wrap gap-2">
+            <button
+              disabled={!canStart || loading !== null}
               onClick={() => act(() => startAgent(agentKey), 'start')}
-              className="px-3 py-1.5 text-xs border border-green-border text-green rounded hover:bg-green-dim disabled:opacity-25 transition-colors">
+              className="px-4 py-2 text-sm border border-green/40 text-green rounded-lg hover:bg-green-dim disabled:opacity-25 transition-colors"
+            >
               {loading === 'start' ? '...' : '▶ Start'}
             </button>
-            <button disabled={!canPause || loading !== null}
+            <button
+              disabled={!canPause || loading !== null}
               onClick={() => act(() => pauseAgent(agentKey), 'pause')}
-              className="px-3 py-1.5 text-xs border border-yellow/30 text-yellow rounded hover:bg-yellow-dim disabled:opacity-25 transition-colors">
+              className="px-4 py-2 text-sm border border-yellow/40 text-yellow rounded-lg hover:bg-yellow-dim disabled:opacity-25 transition-colors"
+            >
               {loading === 'pause' ? '...' : '⏸ Pause'}
             </button>
-            <button disabled={!canStop || loading !== null}
+            <button
+              disabled={!canStop || loading !== null}
               onClick={() => act(() => stopAgent(agentKey), 'stop')}
-              className="px-3 py-1.5 text-xs border border-red-border text-red rounded hover:bg-red-dim disabled:opacity-25 transition-colors">
+              className="px-4 py-2 text-sm border border-red/40 text-red rounded-lg hover:bg-red-dim disabled:opacity-25 transition-colors"
+            >
               {loading === 'stop' ? '...' : '■ Stop'}
             </button>
-            <button disabled={loading !== null}
+            <button
+              disabled={loading !== null}
               onClick={() => act(() => triggerAgent(agentKey), 'trigger')}
-              className="px-3 py-1.5 text-xs border border-blue-500/30 text-blue-400 rounded hover:bg-blue-900/20 disabled:opacity-25 transition-colors">
+              className="px-4 py-2 text-sm border border-blue/30 text-blue rounded-lg hover:bg-blue-dim disabled:opacity-25 transition-colors"
+            >
               {loading === 'trigger' ? 'Running...' : '⚡ Trigger'}
             </button>
-            <button onClick={() => setShowMarket(true)}
-              className="px-3 py-1.5 text-xs border border-border text-muted rounded hover:border-muted hover:text-white transition-colors">
-              📊 Market
+            <button
+              onClick={() => setShowMarket(true)}
+              className="px-4 py-2 text-sm border border-border text-muted rounded-lg hover:border-muted2 hover:text-text transition-colors"
+            >
+              Market
             </button>
           </div>
         </div>
 
         {/* Tab bar */}
-        <div className="flex gap-0 border-b border-border">
+        <div className="flex gap-0">
           {(['overview', 'logs'] as Tab[]).map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`px-5 py-2.5 text-xs font-medium tracking-wide transition-colors border-b-2 -mb-px ${
+              className={`px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
                 tab === t
-                  ? 'border-green text-white'
-                  : 'border-transparent text-muted hover:text-white'
+                  ? 'border-green text-text'
+                  : 'border-transparent text-muted hover:text-text'
               }`}
             >
-              {t === 'overview' ? '⚙ Overview' : '📋 Logs'}
+              {t === 'overview' ? 'Overview' : 'Logs'}
             </button>
           ))}
         </div>
@@ -134,63 +161,72 @@ export function AgentDetail() {
 
         {/* OVERVIEW TAB */}
         {tab === 'overview' && (
-          <div className="flex flex-col gap-4 max-w-4xl">
+          <div className="flex flex-col gap-5 max-w-4xl">
 
             {/* Stats + Last decision */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="bg-surface border border-border rounded-lg p-4">
-                <div className="text-[10px] font-bold tracking-widest text-muted uppercase mb-3">Stats</div>
-                <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
-                  <div className="text-muted">Cycles <span className="text-white font-bold ml-2">{agent.cycleCount}</span></div>
-                  <div className="text-muted">Mode <span className="text-white font-bold ml-2">{agent.config.fetchMode}</span></div>
+                <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-3">Stats</div>
+                <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+                  <div className="text-muted">Cycles <span className="text-text font-semibold ml-2">{agent.cycleCount}</span></div>
+                  <div className="text-muted">Mode <span className="text-text font-semibold ml-2">{agent.config.fetchMode}</span></div>
                   {agent.config.fetchMode !== 'manual' && (
-                    <div className="text-muted">Interval <span className="text-white font-bold ml-2">{iLabel(agent.config.scheduleIntervalSeconds)}</span></div>
+                    <div className="text-muted">Interval <span className="text-text font-semibold ml-2">{iLabel(agent.config.scheduleIntervalSeconds)}</span></div>
                   )}
                   {agent.startedAt && (
-                    <div className="text-muted">Started <span className="text-white font-bold ml-2">{rel(agent.startedAt)}</span></div>
+                    <div className="text-muted">Started <span className="text-text font-semibold ml-2">{rel(agent.startedAt)}</span></div>
                   )}
-                  <div className="text-muted">Max Loss <span className="text-white font-bold ml-2">${agent.config.maxLossUsd}</span></div>
+                  <div className="text-muted">Max Loss <span className="text-text font-semibold ml-2">${agent.config.maxLossUsd}</span></div>
                   {agent.config.leverage && (
-                    <div className="text-muted">Leverage <span className="text-white font-bold ml-2">{agent.config.leverage}:1</span></div>
+                    <div className="text-muted">Leverage <span className="text-text font-semibold ml-2">{agent.config.leverage}:1</span></div>
                   )}
                   {agent.config.market === 'mt5' && agent.config.mt5AccountId && (
                     <div className="text-muted col-span-2">
-                      MT5 Account <span className="text-white font-bold ml-2">#{agent.config.mt5AccountId}</span>
+                      MT5 Account <span className="text-text font-semibold ml-2">#{agent.config.mt5AccountId}</span>
                     </div>
                   )}
-                  <div className="text-muted">LLM <span className="text-white font-bold ml-2">{agent.config.llmProvider ?? 'anthropic'}</span></div>
+                  <div className="text-muted">LLM <span className="text-text font-semibold ml-2">{agent.config.llmProvider ?? 'anthropic'}</span></div>
                 </div>
               </div>
 
               <div className="bg-surface border border-border rounded-lg p-4">
-                <div className="text-[10px] font-bold tracking-widest text-muted uppercase mb-3">Last Decision</div>
+                <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-3">Last Decision</div>
                 {agent.lastCycle ? (
                   <>
                     <div className="flex items-center gap-2 mb-2">
                       <Badge label={agent.lastCycle.decision} variant={decisionVariant(agent.lastCycle.decision)} />
-                      <span className="text-muted text-[10px]">{rel(agent.lastCycle.time)}</span>
+                      <span className="text-muted text-xs">{rel(agent.lastCycle.time)}</span>
                     </div>
                     {agent.lastCycle.reason && (
-                      <p className="text-muted text-xs leading-relaxed">{agent.lastCycle.reason}</p>
+                      <p className="text-muted text-sm leading-relaxed">{agent.lastCycle.reason}</p>
                     )}
                     {agent.lastCycle.error && (
-                      <p className="text-red text-xs mt-1">Error: {agent.lastCycle.error}</p>
+                      <p className="text-red text-sm mt-1">Error: {agent.lastCycle.error}</p>
                     )}
                   </>
                 ) : (
-                  <p className="text-muted text-xs">No cycles run yet</p>
+                  <p className="text-muted text-sm">No cycles run yet</p>
                 )}
               </div>
             </div>
 
             {/* Config editor */}
             <div className="bg-surface border border-border rounded-lg p-4">
-              <div className="text-[10px] font-bold tracking-widest text-muted uppercase mb-1">Configuration</div>
+              <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-1">Configuration</div>
               <SettingsPanel
                 agent={agent}
                 agentKey={agentKey}
                 onSave={load}
-                onDelete={() => window.location.href = '/agents'}
+                onDelete={() => { window.location.href = '/agents' }}
+              />
+            </div>
+
+            {/* System Prompt */}
+            <div className="bg-surface border border-border rounded-lg p-4">
+              <SystemPromptEditor
+                agentKey={agentKey}
+                customPrompt={customPrompt}
+                onChange={saveCustomPrompt}
               />
             </div>
           </div>
@@ -199,7 +235,7 @@ export function AgentDetail() {
         {/* LOGS TAB */}
         {tab === 'logs' && (
           <div style={{ height: 'calc(100vh - 220px)' }}>
-            <LogsGrid agentKey={agentKey} />
+            <ThreadedLogsPanel agentKey={agentKey} />
           </div>
         )}
       </div>

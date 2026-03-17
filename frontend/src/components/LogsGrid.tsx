@@ -8,15 +8,15 @@ const EVENT_COLOR: Record<LogEvent, string> = {
   cycle_start:     'text-green',
   cycle_end:       'text-green',
   cycle_error:     'text-red',
-  tool_call:       'text-blue-400',
-  tool_result:     'text-cyan-400',
+  tool_call:       'text-blue',
+  tool_result:     'text-blue',
   tool_error:      'text-red',
   claude_thinking: 'text-yellow',
   decision:        'text-green',
   guardrail_block: 'text-red',
   session_skip:    'text-muted',
   cycle_skip:      'text-muted',
-  auto_execute:    'text-cyan-400',
+  auto_execute:    'text-blue',
   auto_execute_error: 'text-red',
 }
 
@@ -163,7 +163,7 @@ export function LogsGrid({ agentKey }: Props) {
         </button>
         <button
           onClick={clear}
-          className="px-2 py-0.5 text-[10px] rounded border border-border text-muted hover:text-red hover:border-red-border transition-colors"
+          className="px-2 py-0.5 text-[10px] rounded border border-border text-muted hover:text-red hover:border-red/40 transition-colors"
         >
           Clear All
         </button>
@@ -196,7 +196,7 @@ export function LogsGrid({ agentKey }: Props) {
         <LogPanel
           title="Tool Calls"
           icon="⚙"
-          color="text-blue-400"
+          color="text-blue"
           logs={logs}
           filter={e => e.event === 'tool_call' || e.event === 'tool_result' || e.event === 'auto_execute' || e.event === 'auto_execute_error'}
           emptyText="No tool calls yet"

@@ -55,7 +55,7 @@ export function Reports() {
     const winRate = data.totalCycles > 0 ? ((data.buys + data.sells) / data.totalCycles * 100).toFixed(0) : '0'
     return (
       <Card title={`${market.toUpperCase()} Summary`}>
-        <div className="grid grid-cols-3 gap-3 mb-3">
+        <div className="grid grid-cols-3 gap-3 mb-4">
           {[
             { label: 'Cycles', value: data.totalCycles },
             { label: 'Buys', value: data.buys },
@@ -64,22 +64,22 @@ export function Reports() {
             { label: 'Errors', value: data.errors },
             { label: 'Active %', value: `${winRate}%` },
           ].map(m => (
-            <div key={m.label} className="bg-surface2 rounded p-2 text-center">
-              <div className="text-[10px] text-muted uppercase tracking-wide mb-1">{m.label}</div>
-              <div className="text-sm font-bold">{m.value}</div>
+            <div key={m.label} className="bg-surface2 rounded-lg p-2.5 text-center">
+              <div className="text-xs text-muted uppercase tracking-wider mb-1">{m.label}</div>
+              <div className="text-sm font-bold text-text">{m.value}</div>
             </div>
           ))}
         </div>
         <div className="border-t border-border pt-3 space-y-2">
-          <div className="flex justify-between text-xs">
+          <div className="flex justify-between text-sm">
             <span className="text-muted">Daily P&L</span>
-            <span className={data.risk.dailyPnlUsd >= 0 ? 'text-green' : 'text-red'}>
+            <span className={`font-mono font-semibold ${data.risk.dailyPnlUsd >= 0 ? 'text-green' : 'text-red'}`}>
               {data.risk.dailyPnlUsd >= 0 ? '+' : ''}${data.risk.dailyPnlUsd.toFixed(2)}
             </span>
           </div>
-          <div className="flex justify-between text-xs">
+          <div className="flex justify-between text-sm">
             <span className="text-muted">Budget Left</span>
-            <span>${data.risk.remainingBudgetUsd.toFixed(2)}</span>
+            <span className="font-mono font-semibold">${data.risk.remainingBudgetUsd.toFixed(2)}</span>
           </div>
         </div>
       </Card>
@@ -91,9 +91,9 @@ export function Reports() {
   return (
     <div className="p-6">
       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-sm font-bold tracking-widest text-white uppercase">Reports</h1>
-        <button onClick={load} className="px-3 py-1.5 text-xs border border-border text-muted rounded hover:text-white hover:border-white transition-colors">
-          Refresh
+        <h1 className="text-xl font-bold text-text">Reports</h1>
+        <button onClick={load} className="px-3 py-1.5 text-sm border border-border text-muted rounded-lg hover:text-text hover:border-muted2 transition-colors">
+          ↻ Refresh
         </button>
       </div>
 
@@ -106,19 +106,19 @@ export function Reports() {
 
       <Card title="Cycle Activity" className="mb-4">
         {chartData.length < 2
-          ? <p className="text-muted text-xs">Not enough data for chart. Run a few cycles first.</p>
+          ? <p className="text-muted text-sm">Not enough data for chart. Run a few cycles first.</p>
           : (
             <ResponsiveContainer width="100%" height={200}>
               <LineChart data={chartData}>
-                <XAxis dataKey="time" stroke="#444" tick={{ fill: '#666', fontSize: 10 }} />
-                <YAxis stroke="#444" tick={{ fill: '#666', fontSize: 10 }} />
+                <XAxis dataKey="time" stroke="#2a2a32" tick={{ fill: '#6b7280', fontSize: 11, fontFamily: 'Inter' }} />
+                <YAxis stroke="#2a2a32" tick={{ fill: '#6b7280', fontSize: 10, fontFamily: 'Inter' }} />
                 <Tooltip
-                  contentStyle={{ background: '#161616', border: '1px solid #2a2a2a', borderRadius: 4, fontSize: 11 }}
-                  labelStyle={{ color: '#666' }}
+                  contentStyle={{ background: '#111113', border: '1px solid #2a2a32', borderRadius: 8, fontSize: 12, fontFamily: 'Inter' }}
+                  labelStyle={{ color: '#6b7280' }}
                 />
-                <Legend wrapperStyle={{ fontSize: 11, color: '#666' }} />
-                <Line type="monotone" dataKey="crypto" stroke="#448aff" strokeWidth={1.5} dot={false} />
-                <Line type="monotone" dataKey="mt5" stroke="#00e676" strokeWidth={1.5} dot={false} />
+                <Legend wrapperStyle={{ fontSize: 12, fontFamily: 'Inter', color: '#6b7280' }} />
+                <Line type="monotone" dataKey="crypto" stroke="#3b82f6" strokeWidth={1.5} dot={false} />
+                <Line type="monotone" dataKey="mt5" stroke="#22c55e" strokeWidth={1.5} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           )
@@ -131,26 +131,26 @@ export function Reports() {
             <button
               key={f}
               onClick={() => setFilter(f)}
-              className={`px-3 py-1 text-[11px] rounded border transition-colors ${
+              className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
                 filter === f
                   ? 'border-green text-green bg-green-dim'
-                  : 'border-border text-muted hover:text-white hover:border-muted'
+                  : 'border-border text-muted hover:text-text hover:border-muted2'
               }`}
             >
               {f.charAt(0).toUpperCase() + f.slice(1)}
             </button>
           ))}
-          <span className="ml-auto text-[11px] text-muted self-center">{filtered.length} records</span>
+          <span className="ml-auto text-sm text-muted self-center">{filtered.length} records</span>
         </div>
         {filtered.length === 0
-          ? <p className="text-muted text-xs">No cycles yet</p>
+          ? <p className="text-muted text-sm">No cycles yet</p>
           : (
             <div className="overflow-x-auto">
-              <table className="w-full text-xs">
+              <table className="w-full text-sm">
                 <thead>
                   <tr>
                     {['Time', 'Symbol', 'Market', 'Decision', 'Reason', 'Mode'].map(h => (
-                      <th key={h} className="text-left text-[10px] uppercase tracking-wide text-muted pb-2 pr-4 border-b border-border">{h}</th>
+                      <th key={h} className="text-left text-xs font-semibold uppercase tracking-wider text-muted pb-3 pr-4 border-b border-border">{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -159,15 +159,15 @@ export function Reports() {
                     <tr
                       key={i}
                       onClick={() => e.id != null && setSelectedCycleId(e.id)}
-                      className={`border-b border-[#1a1a1a] transition-colors ${e.id != null ? 'hover:bg-surface2 cursor-pointer' : ''}`}
+                      className={`border-b border-border/50 transition-colors ${e.id != null ? 'hover:bg-surface2 cursor-pointer' : ''}`}
                     >
-                      <td className="py-2 pr-4 text-muted whitespace-nowrap">{rel(e.time)}</td>
-                      <td className="py-2 pr-4 font-bold">{e.symbol}</td>
-                      <td className="py-2 pr-4"><Badge label={e.market} variant={e.market} /></td>
-                      <td className="py-2 pr-4"><Badge label={e.decision} variant={decisionVariant(e.decision)} /></td>
-                      <td className="py-2 pr-4 text-muted max-w-[280px] truncate">{e.reason || '—'}</td>
-                      <td className="py-2 pr-4"><Badge label={e.paper ? 'PAPER' : 'LIVE'} variant={e.paper ? 'paper' : 'live'} /></td>
-                      <td className="py-2 text-[9px] text-muted2">{e.id != null ? '→' : ''}</td>
+                      <td className="py-2.5 pr-4 text-muted whitespace-nowrap text-xs">{rel(e.time)}</td>
+                      <td className="py-2.5 pr-4 font-semibold">{e.symbol}</td>
+                      <td className="py-2.5 pr-4"><Badge label={e.market} variant={e.market} /></td>
+                      <td className="py-2.5 pr-4"><Badge label={e.decision} variant={decisionVariant(e.decision)} /></td>
+                      <td className="py-2.5 pr-4 text-muted max-w-[280px] truncate text-xs">{e.reason || '—'}</td>
+                      <td className="py-2.5 pr-4"><Badge label={e.paper ? 'PAPER' : 'LIVE'} variant={e.paper ? 'paper' : 'live'} /></td>
+                      <td className="py-2.5 text-xs text-muted2">{e.id != null ? '→' : ''}</td>
                     </tr>
                   ))}
                 </tbody>

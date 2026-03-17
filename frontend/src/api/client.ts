@@ -50,6 +50,10 @@ export const setKey = (key: string, value: string) =>
 export const testKey = (service: string) =>
   api<{ ok: boolean; message: string }>(`/api/keys/test/${service}`, { method: 'POST' })
 
+// ── System Prompt ─────────────────────────────────────────────────────────────
+export const getSystemPrompt = (key: string) =>
+  api<{ prompt: string }>(`/api/system-prompt/${encodeURIComponent(key)}`)
+
 // ── Logs ─────────────────────────────────────────────────────────────────────
 export const clearLogs = () =>
   api<{ ok: boolean; clearedAt: number }>('/api/logs/clear', { method: 'POST' })

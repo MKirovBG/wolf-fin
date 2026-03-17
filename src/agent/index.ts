@@ -81,7 +81,7 @@ function pipSize(symbol: string, point?: number): number {
 
 // ── System Prompt ─────────────────────────────────────────────────────────────
 
-function buildSystemPrompt(config: AgentConfig, agentKey: string): string {
+export function buildSystemPrompt(config: AgentConfig, agentKey: string): string {
   const { market, customPrompt } = config
   const mode = '[LIVE TRADING]'
   const maxSpreadPips = parseFloat(process.env.MAX_SPREAD_PIPS ?? '3')

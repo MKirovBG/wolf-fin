@@ -33,9 +33,9 @@ function Section({ title, icon, color = 'text-muted', children }: {
 }) {
   return (
     <div className="border border-border rounded-lg overflow-hidden">
-      <div className="flex items-center gap-2 px-4 py-2.5 bg-surface border-b border-border">
-        <span className={`text-[10px] font-bold ${color}`}>{icon}</span>
-        <span className={`text-[10px] font-bold tracking-widest uppercase ${color}`}>{title}</span>
+      <div className="flex items-center gap-2 px-4 py-2.5 bg-surface2 border-b border-border">
+        <span className={`text-xs font-bold ${color}`}>{icon}</span>
+        <span className={`text-xs font-semibold uppercase tracking-wider ${color}`}>{title}</span>
       </div>
       <div className="p-4">{children}</div>
     </div>
@@ -48,13 +48,13 @@ const EVENT_COLOR: Partial<Record<LogEvent, string>> = {
   cycle_start:        'text-green',
   cycle_end:          'text-green',
   cycle_error:        'text-red',
-  tool_call:          'text-blue-400',
-  tool_result:        'text-cyan-400',
+  tool_call:          'text-blue',
+  tool_result:        'text-blue',
   tool_error:         'text-red',
   claude_thinking:    'text-yellow',
   decision:           'text-green',
   guardrail_block:    'text-red',
-  auto_execute:       'text-cyan-400',
+  auto_execute:       'text-yellow',
   auto_execute_error: 'text-red',
 }
 
@@ -73,22 +73,22 @@ const EVENT_PREFIX: Partial<Record<LogEvent, string>> = {
 }
 
 function LogLine({ entry }: { entry: LogEntry }) {
-  const color = EVENT_COLOR[entry.event] ?? 'text-white'
+  const color = EVENT_COLOR[entry.event] ?? 'text-text'
   const prefix = EVENT_PREFIX[entry.event] ?? entry.event
   const isMultiLine = entry.message.includes('\n')
 
   return (
-    <div className="border-b border-[#1a1a1a] last:border-0 hover:bg-surface transition-colors">
+    <div className="border-b border-border/50 last:border-0 hover:bg-surface2 transition-colors">
       <div className="flex gap-2 items-start px-3 py-1.5">
-        <span className="text-muted2 text-[9px] whitespace-nowrap font-mono mt-0.5 shrink-0 w-14">
+        <span className="text-muted2 text-xs whitespace-nowrap font-mono mt-0.5 shrink-0 w-16">
           {timeStr(entry.time)}
         </span>
-        <span className={`text-[9px] font-bold whitespace-nowrap font-mono mt-0.5 w-16 shrink-0 ${color}`}>
+        <span className={`text-xs font-bold whitespace-nowrap font-mono mt-0.5 w-16 shrink-0 ${color}`}>
           {prefix}
         </span>
-        <div className={`text-[10px] font-mono leading-relaxed flex-1 min-w-0 ${color === 'text-yellow' ? 'text-[#ddd]' : color}`}>
+        <div className={`text-xs font-mono leading-relaxed flex-1 min-w-0 ${color}`}>
           {isMultiLine
-            ? <pre className="whitespace-pre-wrap break-words text-[10px] font-mono leading-relaxed">{entry.message}</pre>
+            ? <pre className="whitespace-pre-wrap break-words text-xs font-mono leading-relaxed">{entry.message}</pre>
             : <span className="break-words">{entry.message}</span>
           }
         </div>
@@ -115,11 +115,11 @@ function LogBlock({ logs, filter, emptyText }: {
 
 // ── Metric ──────────────────────────────────────────────────────────────────────
 
-function Meta({ label, value, color = 'text-white' }: { label: string; value: React.ReactNode; color?: string }) {
+function Meta({ label, value, color = 'text-text' }: { label: string; value: React.ReactNode; color?: string }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <span className="text-[9px] uppercase tracking-widest text-muted">{label}</span>
-      <span className={`text-xs font-mono font-bold ${color}`}>{value}</span>
+      <span className="text-xs uppercase tracking-wider text-muted">{label}</span>
+      <span className={`text-sm font-mono font-bold ${color}`}>{value}</span>
     </div>
   )
 }
@@ -168,11 +168,11 @@ export function CycleDetailModal({ cycleId, onClose }: Props) {
           <div className="flex items-center gap-2.5">
             {detail ? (
               <>
-                <span className="text-white font-bold text-base">{detail.cycle.symbol}</span>
+                <span className="text-text font-bold text-lg">{detail.cycle.symbol}</span>
                 <Badge label={detail.cycle.market.toUpperCase()} variant={detail.cycle.market} />
                 <Badge label={detail.cycle.decision} variant={decisionVariant(detail.cycle.decision)} />
                 {isActionable && (
-                  <span className="text-[10px] text-muted border border-border rounded px-1.5 py-0.5 font-mono">
+                  <span className="text-xs text-muted border border-border rounded-md px-2 py-0.5 font-mono">
                     {detail.cycle.pnlUsd != null
                       ? <span className={detail.cycle.pnlUsd >= 0 ? 'text-green' : 'text-red'}>
                           P&L {detail.cycle.pnlUsd >= 0 ? '+' : ''}${detail.cycle.pnlUsd.toFixed(2)}
@@ -187,7 +187,7 @@ export function CycleDetailModal({ cycleId, onClose }: Props) {
           </div>
           <button
             onClick={onClose}
-            className="text-muted hover:text-white transition-colors text-lg leading-none px-1"
+            className="text-muted hover:text-text transition-colors text-xl leading-none px-1"
           >
             ×
           </button>
@@ -207,10 +207,10 @@ export function CycleDetailModal({ cycleId, onClose }: Props) {
           {detail && (
             <>
               {/* ── Time + agent ──────────────────────────────────────────── */}
-              <div className="flex items-center justify-between text-[11px]">
+              <div className="flex items-center justify-between text-sm">
                 <span className="text-muted font-mono">{fmtTime(detail.cycle.time)}</span>
                 <span className="text-muted">
-                  Agent: <span className="text-white font-mono">{detail.cycle.agentKey}</span>
+                  Agent: <span className="text-text font-mono">{detail.cycle.agentKey}</span>
                 </span>
               </div>
 
@@ -224,7 +224,7 @@ export function CycleDetailModal({ cycleId, onClose }: Props) {
                     )}
                   </div>
                   {detail.cycle.reason && (
-                    <p className="text-sm text-[#d0d0d0] leading-relaxed font-mono whitespace-pre-wrap">
+                    <p className="text-sm text-text leading-relaxed font-mono whitespace-pre-wrap">
                       {detail.cycle.reason}
                     </p>
                   )}
@@ -233,7 +233,7 @@ export function CycleDetailModal({ cycleId, onClose }: Props) {
 
               {/* ── Agent Configuration ───────────────────────────────────── */}
               {detail.agent && (
-                <Section title="Agent Configuration" icon="⚙" color="text-blue-400">
+                <Section title="Agent Configuration" icon="⚙" color="text-blue">
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                     <Meta label="Market" value={detail.agent.config.market.toUpperCase()} />
                     <Meta label="Fetch Mode" value={detail.agent.config.fetchMode} />
@@ -266,8 +266,8 @@ export function CycleDetailModal({ cycleId, onClose }: Props) {
                   </div>
                   {detail.agent.config.customPrompt && (
                     <div className="mt-3 pt-3 border-t border-border">
-                      <p className="text-[9px] uppercase tracking-widest text-muted mb-1.5">Custom Prompt</p>
-                      <pre className="text-[10px] text-muted font-mono whitespace-pre-wrap leading-relaxed">
+                      <p className="text-xs uppercase tracking-wider text-muted mb-2">Custom Instructions</p>
+                      <pre className="text-xs text-muted font-mono whitespace-pre-wrap leading-relaxed">
                         {detail.agent.config.customPrompt}
                       </pre>
                     </div>
@@ -285,7 +285,7 @@ export function CycleDetailModal({ cycleId, onClose }: Props) {
               </Section>
 
               {/* ── Tool Calls ────────────────────────────────────────────── */}
-              <Section title="Tool Calls" icon="⚙" color="text-blue-400">
+              <Section title="Tool Calls" icon="⚙" color="text-blue">
                 <LogBlock
                   logs={detail.logs}
                   filter={e => e.event === 'tool_call' || e.event === 'tool_result' || e.event === 'tool_error' || e.event === 'auto_execute' || e.event === 'auto_execute_error'}

@@ -202,7 +202,6 @@ export function Dashboard() {
                   </div>
                   <div className="flex gap-1">
                     <Badge label={a.config.market.toUpperCase()} variant={a.config.market} />
-                    <Badge label={a.config.paper ? 'PAPER' : 'LIVE'} variant={a.config.paper ? 'paper' : 'live'} />
                   </div>
                   {a.lastCycle && (
                     <div className="flex items-center gap-1 mt-0.5">

@@ -536,7 +536,7 @@ export async function startServer() {
                 ...o,
                 agentKey: `${agent.config.market}:${agent.config.symbol}`,
                 market: agent.config.market,
-                paper: agent.config.paper,
+                paper: false,
             }));
         }));
         const positions = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
@@ -553,7 +553,7 @@ export async function startServer() {
                 ...f,
                 agentKey: `${agent.config.market}:${agent.config.symbol}`,
                 market: agent.config.market,
-                paper: agent.config.paper,
+                paper: false,
             }));
         }));
         const trades = results.flatMap(r => r.status === 'fulfilled' ? r.value : [])

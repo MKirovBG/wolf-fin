@@ -80,22 +80,6 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
 
   return (
     <form onSubmit={onSubmit} className="space-y-3 pt-2 border-t border-border mt-3">
-      {/* Paper / Live */}
-      <div>
-        <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">Mode</label>
-        <div className="flex gap-2">
-          {(['true', 'false'] as const).map(val => (
-            <label key={val} className="flex items-center gap-1.5 cursor-pointer">
-              <input type="radio" value={val} {...register('paper', { setValueAs: v => v === 'true' })}
-                className="!w-auto !border-none !bg-transparent !p-0" defaultChecked={String(agent.config.paper) === val} />
-              <span className={`text-xs ${val === 'true' ? 'text-yellow' : 'text-red'}`}>
-                {val === 'true' ? 'Paper' : 'Live'}
-              </span>
-            </label>
-          ))}
-        </div>
-      </div>
-
       {/* Fetch Mode */}
       <div>
         <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">Fetch Mode</label>
@@ -232,7 +216,6 @@ export function AgentCard({ agent, onRefresh }: Props) {
           <div className="flex items-center gap-2 mb-1">
             <span className="text-white font-bold text-base">{agent.config.symbol}</span>
             <Badge label={agent.config.market.toUpperCase()} variant={agent.config.market} />
-            <Badge label={agent.config.paper ? 'PAPER' : 'LIVE'} variant={agent.config.paper ? 'paper' : 'live'} />
           </div>
           <AgentStatusBadge status={agent.status} />
         </div>

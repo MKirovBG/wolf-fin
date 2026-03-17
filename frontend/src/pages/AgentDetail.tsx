@@ -75,7 +75,6 @@ export function AgentDetail() {
             <div className="flex items-center gap-2 mb-1.5">
               <h1 className="text-white font-bold text-xl">{agent.config.symbol}</h1>
               <Badge label={agent.config.market.toUpperCase()} variant={agent.config.market} />
-              <Badge label={agent.config.paper ? 'PAPER' : 'LIVE'} variant={agent.config.paper ? 'paper' : 'live'} />
               {agent.config.leverage && (
                 <span className="text-[10px] text-muted border border-border rounded px-1.5 py-0.5">{agent.config.leverage}:1</span>
               )}

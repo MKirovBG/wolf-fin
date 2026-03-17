@@ -581,7 +581,7 @@ export async function startServer(): Promise<void> {
           ...o,
           agentKey: `${agent.config.market}:${agent.config.symbol}`,
           market: agent.config.market,
-          paper: agent.config.paper,
+          paper: false,
         }))
       })
     )
@@ -600,7 +600,7 @@ export async function startServer(): Promise<void> {
           ...f,
           agentKey: `${agent.config.market}:${agent.config.symbol}`,
           market: agent.config.market,
-          paper: agent.config.paper,
+          paper: false,
         }))
       })
     )

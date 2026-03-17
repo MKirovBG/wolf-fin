@@ -27,8 +27,8 @@ function pipSize(symbol, point) {
 }
 // ── System Prompt ─────────────────────────────────────────────────────────────
 function buildSystemPrompt(config, agentKey) {
-    const { market, paper, customPrompt } = config;
-    const mode = paper ? '[PAPER TRADING — no real orders will be sent]' : '[LIVE TRADING]';
+    const { market, customPrompt } = config;
+    const mode = '[LIVE TRADING]';
     const maxSpreadPips = parseFloat(process.env.MAX_SPREAD_PIPS ?? '3');
     const sessionNote = market === 'forex'
         ? `\nCURRENT SESSION: ${sessionLabel()}\nFOREX SESSION RULES: Only trade during Tokyo, London, or New York sessions. Avoid Sydney-only hours. Reject entries when spread > ${maxSpreadPips} pips or sessionOpen is false.\nNOTE: Overnight swap rates are unavailable from the data provider — do not factor swap costs into hold decisions.`
@@ -116,7 +116,7 @@ function summariseToolResult(name, result) {
     }
 }
 // ── Tool Dispatcher ───────────────────────────────────────────────────────────
-async function dispatchTool(name, input, defaultMarket, paper, mt5AccountId) {
+async function dispatchTool(name, input, defaultMarket, mt5AccountId) {
     const market = input.market ?? defaultMarket;
     const adapter = getAdapter(market, mt5AccountId);
     switch (name) {
@@ -168,17 +168,9 @@ async function dispatchTool(name, input, defaultMarket, paper, mt5AccountId) {
                     ? params.price - params.stopPips * pipSz
                     : params.price + params.stopPips * pipSz;
             }
-            if (paper) {
-                log.info({ params }, '[PAPER] order simulated');
-                return { orderId: Date.now(), clientOrderId: `paper-${Date.now()}`, symbol: params.symbol, side: params.side, type: params.type, price: params.price ?? 0, origQty: params.quantity, status: 'PAPER_FILLED', transactTime: Date.now() };
-            }
             return adapter.placeOrder(params);
         }
         case 'cancel_order': {
-            if (paper) {
-                log.info({ orderId: input.orderId }, '[PAPER] cancel simulated');
-                return { cancelled: true };
-            }
             await adapter.cancelOrder(input.symbol, input.orderId);
             return { cancelled: true };
         }
@@ -188,7 +180,6 @@ async function dispatchTool(name, input, defaultMarket, paper, mt5AccountId) {
 }
 // ── Agent Cycle ───────────────────────────────────────────────────────────────
 export async function runAgentCycle(config) {
-    const paper = config.paper;
     const maxIterations = config.maxIterations;
     const agentKey = `${config.market}:${config.symbol}`;
     if (!tryAcquireCycleLock(agentKey)) {
@@ -197,8 +188,8 @@ export async function runAgentCycle(config) {
         return;
     }
     try {
-        logEvent(agentKey, 'info', 'cycle_start', `Starting cycle for ${config.symbol} (${config.market}) [${paper ? 'PAPER' : 'LIVE'}]`);
-        log.info({ symbol: config.symbol, market: config.market, paper }, 'agent cycle start');
+        logEvent(agentKey, 'info', 'cycle_start', `Starting cycle for ${config.symbol} (${config.market})`);
+        log.info({ symbol: config.symbol, market: config.market }, 'agent cycle start');
         if (isDailyLimitHitFor(config.market)) {
             logEvent(agentKey, 'warn', 'session_skip', 'Daily loss limit hit — skipping cycle');
             log.warn({ market: config.market }, 'daily loss limit hit — skipping cycle');
@@ -259,7 +250,7 @@ export async function runAgentCycle(config) {
                                 const result = await dispatchTool('place_order', {
                                     symbol: config.symbol, market: config.market,
                                     side, type: 'LIMIT', quantity: qty, price, stopPips: fallbackStop,
-                                }, config.market, paper, config.mt5AccountId);
+                                }, config.market, config.mt5AccountId);
                                 logEvent(agentKey, 'info', 'tool_result', `← auto place_order: ${summariseToolResult('place_order', result)}`);
                             }
                             catch (autoErr) {
@@ -271,7 +262,7 @@ export async function runAgentCycle(config) {
                             const orderId = parseInt(cancelMatch[1], 10);
                             logEvent(agentKey, 'warn', 'auto_execute', `Agent stated CANCEL without calling cancel_order — auto-executing`);
                             try {
-                                await dispatchTool('cancel_order', { symbol: config.symbol, market: config.market, orderId }, config.market, paper, config.mt5AccountId);
+                                await dispatchTool('cancel_order', { symbol: config.symbol, market: config.market, orderId }, config.market, config.mt5AccountId);
                                 logEvent(agentKey, 'info', 'tool_result', '← auto cancel_order: cancelled');
                             }
                             catch (autoErr) {
@@ -280,7 +271,7 @@ export async function runAgentCycle(config) {
                             }
                         }
                     }
-                    recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper, decision, reason, time: new Date().toISOString(), mt5AccountId: config.mt5AccountId });
+                    recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper: false, decision, reason, time: new Date().toISOString(), mt5AccountId: config.mt5AccountId });
                     break;
                 }
                 if (response.stop_reason === 'tool_use') {
@@ -297,7 +288,7 @@ export async function runAgentCycle(config) {
                             orderPlacedThisCycle = true;
                         let result;
                         try {
-                            result = await dispatchTool(block.name, block.input, config.market, paper, config.mt5AccountId);
+                            result = await dispatchTool(block.name, block.input, config.market, config.mt5AccountId);
                             const summary = summariseToolResult(block.name, result);
                             logEvent(agentKey, 'info', 'tool_result', `← ${block.name}: ${summary}`);
                         }
@@ -324,14 +315,14 @@ export async function runAgentCycle(config) {
             if (iterations >= maxIterations) {
                 logEvent(agentKey, 'warn', 'cycle_end', `Hit iteration limit (${maxIterations}) — cycle aborted`);
                 log.warn({ maxIterations }, 'agent cycle hit iteration limit');
-                recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper, decision: 'ABORTED', reason: `Hit iteration limit (${maxIterations})`, time: new Date().toISOString() });
+                recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper: false, decision: 'ABORTED', reason: `Hit iteration limit (${maxIterations})`, time: new Date().toISOString() });
             }
         }
         catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             logEvent(agentKey, 'error', 'cycle_error', `Cycle failed: ${msg}`);
             log.error({ err: msg }, 'agent cycle crashed');
-            recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper, decision: 'ERROR', reason: msg, time: new Date().toISOString(), error: msg });
+            recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper: false, decision: 'ERROR', reason: msg, time: new Date().toISOString(), error: msg });
         }
         logEvent(agentKey, 'info', 'cycle_end', `Cycle complete after ${iterations} iteration(s)`);
     }

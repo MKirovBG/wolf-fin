@@ -3,7 +3,6 @@ export type AgentStatus = 'idle' | 'running' | 'paused'
 export interface AgentConfig {
   symbol: string
   market: 'crypto' | 'forex' | 'mt5'
-  paper: boolean
   maxIterations: number
   fetchMode: 'manual' | 'scheduled' | 'autonomous'
   scheduleIntervalSeconds: number

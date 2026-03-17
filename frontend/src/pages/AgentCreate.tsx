@@ -127,7 +127,6 @@ export function AgentCreate() {
   // Form state
   const [market, setMarket] = useState<'crypto' | 'forex' | 'mt5'>('crypto')
   const [symbol, setSymbol] = useState('')
-  const [paper, setPaper] = useState(true)
   const [fetchMode, setFetchMode] = useState<'manual' | 'scheduled' | 'autonomous'>('scheduled')
   const [intervalSec, setIntervalSec] = useState(60)
   const [maxLossUsd, setMaxLossUsd] = useState(200)
@@ -181,7 +180,6 @@ export function AgentCreate() {
       const config: AgentConfig = {
         symbol: symbol.toUpperCase().trim(),
         market,
-        paper,
         fetchMode,
         scheduleIntervalSeconds: intervalSec,
         maxLossUsd,
@@ -215,22 +213,13 @@ export function AgentCreate() {
 
         {/* ── 1. Market & Account ──────────────────────────────────────────── */}
         <Section title="1 · Market & Broker">
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Market">
-              <select value={market} onChange={e => setMarket(e.target.value as typeof market)} className="w-full">
-                <option value="crypto">Crypto — Binance</option>
-                <option value="forex">Forex — Alpaca</option>
-                <option value="mt5">MetaTrader 5</option>
-              </select>
-            </Field>
-
-            <Field label="Trading Mode">
-              <select value={paper ? 'true' : 'false'} onChange={e => setPaper(e.target.value === 'true')} className="w-full">
-                <option value="true">Paper (simulated)</option>
-                <option value="false">Live (real money)</option>
-              </select>
-            </Field>
-          </div>
+          <Field label="Market">
+            <select value={market} onChange={e => setMarket(e.target.value as typeof market)} className="w-full">
+              <option value="crypto">Crypto — Binance</option>
+              <option value="forex">Forex — Alpaca</option>
+              <option value="mt5">MetaTrader 5</option>
+            </select>
+          </Field>
 
           {/* MT5 Account selector */}
           {market === 'mt5' && (

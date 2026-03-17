@@ -5,7 +5,7 @@ const MARKET_FIELD = {
     enum: ['crypto', 'forex', 'mt5'],
     description: 'Market type. "crypto" routes to Binance, "forex" routes to Alpaca, "mt5" routes to MetaTrader 5.',
 };
-export const TOOLS = [
+const ALL_TOOLS = [
     {
         name: 'get_snapshot',
         description: 'Fetch the current market snapshot for a symbol. Returns price, 24h stats, multi-timeframe candles, pre-computed technical indicators (RSI, EMA, ATR, VWAP, BB width), account balances, open orders, risk state, and market context enrichment.',
@@ -88,4 +88,11 @@ export const TOOLS = [
         },
     },
 ];
+/** Returns the tool list for the given market, excluding tools unsupported by that market. */
+export function getTools(market) {
+    // MT5 retail brokers (e.g. Equiti) do not publish DOM data — exclude get_order_book
+    if (market === 'mt5')
+        return ALL_TOOLS.filter(t => t.name !== 'get_order_book');
+    return ALL_TOOLS;
+}
 //# sourceMappingURL=definitions.js.map

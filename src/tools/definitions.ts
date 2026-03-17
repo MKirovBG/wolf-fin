@@ -10,7 +10,7 @@ const MARKET_FIELD = {
   description: 'Market type. "crypto" routes to Binance, "forex" routes to Alpaca, "mt5" routes to MetaTrader 5.',
 } as const
 
-export const TOOLS: Anthropic.Tool[] = [
+const ALL_TOOLS: Anthropic.Tool[] = [
   {
     name: 'get_snapshot',
     description:
@@ -98,6 +98,13 @@ export const TOOLS: Anthropic.Tool[] = [
     },
   },
 ]
+
+/** Returns the tool list for the given market, excluding tools unsupported by that market. */
+export function getTools(market: 'crypto' | 'forex' | 'mt5'): Anthropic.Tool[] {
+  // MT5 retail brokers (e.g. Equiti) do not publish DOM data — exclude get_order_book
+  if (market === 'mt5') return ALL_TOOLS.filter(t => t.name !== 'get_order_book')
+  return ALL_TOOLS
+}
 
 // ── Tool input types ──────────────────────────────────────────────────────────
 

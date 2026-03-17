@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
-export declare const TOOLS: Anthropic.Tool[];
+/** Returns the tool list for the given market, excluding tools unsupported by that market. */
+export declare function getTools(market: 'crypto' | 'forex' | 'mt5'): Anthropic.Tool[];
 export interface GetSnapshotInput {
     symbol: string;
     market: 'crypto' | 'forex' | 'mt5';

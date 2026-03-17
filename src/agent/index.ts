@@ -12,7 +12,7 @@ import { validateMt5Order } from '../guardrails/mt5.js'
 import { getForexContext, getMt5Context } from '../guardrails/riskStateStore.js'
 import { buildMarketContext } from './context.js'
 import { sessionLabel } from '../adapters/session.js'
-import { TOOLS } from '../tools/definitions.js'
+import { getTools } from '../tools/definitions.js'
 import { recordCycle, logEvent, tryAcquireCycleLock, releaseCycleLock } from '../server/state.js'
 import { dbGetAgentPerformance } from '../db/index.js'
 import type { AgentConfig } from '../types.js'
@@ -52,8 +52,7 @@ ROLE: Disciplined, risk-first algorithmic trader. Make exactly one trading decis
 
 PROCESS:
 1. Call get_snapshot to get price, indicators, balances, open orders, and risk state.
-2. Optionally call get_order_book to assess liquidity before sizing.
-3. Reason through the evidence: trend (EMA cross), momentum (RSI), volatility (ATR, BB width), context signals.
+${market !== 'mt5' ? '2. Optionally call get_order_book to assess liquidity before sizing.\n' : ''}3. Reason through the evidence: trend (EMA cross), momentum (RSI), volatility (ATR, BB width), context signals.
 4. Decide: HOLD / BUY qty @ price / SELL qty @ price / CANCEL orderId.
 5. Execute via place_order or cancel_order. Always prefer LIMIT orders.
 ${market === 'forex' || market === 'mt5' ? `6. ${market === 'mt5' ? 'MT5' : 'Forex'}: always include stopPips on every order (ATR-based distance).` : ''}
@@ -98,7 +97,7 @@ SIGNAL PRIORITY (evaluate in order):
 5. CONTEXT — Fear/Greed (crypto) or session quality (forex); skip if high-impact event imminent
 6. POSITION — manage any existing open position before entering a new one
 
-Use at most 3 tool calls per cycle. Call get_snapshot first. Only call get_order_book if actively sizing a new entry.`
+Use at most 3 tool calls per cycle. Call get_snapshot first.${config.market !== 'mt5' ? ' Only call get_order_book if actively sizing a new entry.' : ''}`
 }
 
 // ── Tool result summariser (keeps logs readable) ──────────────────────────────
@@ -249,7 +248,7 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
         model: llmModel,
         max_tokens: 4096,
         system: systemPrompt,
-        tools: TOOLS,
+        tools: getTools(config.market),
         messages,
       })
 

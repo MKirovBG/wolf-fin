@@ -2,8 +2,7 @@ export type AgentStatus = 'idle' | 'running' | 'paused'
 
 export interface AgentConfig {
   symbol: string
-  market: 'crypto' | 'forex' | 'mt5'
-  maxIterations: number
+  market: 'crypto' | 'mt5'
   fetchMode: 'manual' | 'scheduled' | 'autonomous'
   scheduleIntervalSeconds: number
   maxLossUsd: number
@@ -32,7 +31,7 @@ export interface AgentState {
 
 export interface CycleResult {
   symbol: string
-  market: 'crypto' | 'forex' | 'mt5'
+  market: 'crypto' | 'mt5'
   paper: boolean
   decision: string
   reason: string
@@ -96,7 +95,7 @@ export interface Order {
 export interface MarketSnapshot {
   symbol: string
   timestamp: number
-  market: 'crypto' | 'forex' | 'mt5'
+  market: 'crypto' | 'mt5'
   price: { bid: number; ask: number; last: number }
   stats24h: { volume: number; changePercent: number; high: number; low: number }
   candles: { m1: Candle[]; m15: Candle[]; h1: Candle[]; h4: Candle[] }
@@ -146,13 +145,13 @@ export interface Fill {
 
 export interface PositionEntry extends Order {
   agentKey: string
-  market: 'crypto' | 'forex' | 'mt5'
+  market: 'crypto' | 'mt5'
   paper: boolean
 }
 
 export interface FillEntry extends Fill {
   agentKey: string
-  market: 'crypto' | 'forex' | 'mt5'
+  market: 'crypto' | 'mt5'
   paper: boolean
 }
 
@@ -162,51 +161,10 @@ export interface KeysResponse {
 
 export interface ReportSummary {
   crypto: MarketSummary
-  forex: MarketSummary
+  mt5: MarketSummary
 }
 
 // ── Accounts ─────────────────────────────────────────────────────────────────
-
-export interface AlpacaAccountSummary {
-  equity: number
-  cash: number
-  buyingPower: number
-  portfolioValue: number
-  unrealizedPl: number
-  dayPl: number
-  status: string
-}
-
-export interface AlpacaPosition {
-  symbol: string
-  side: 'BUY' | 'SELL'
-  qty: number
-  avgEntry: number
-  currentPrice: number
-  marketValue: number
-  unrealizedPl: number
-  unrealizedPlPct: number
-  costBasis: number
-}
-
-export interface AlpacaFill {
-  symbol: string
-  side: 'BUY' | 'SELL'
-  qty: number
-  price: number
-  time: string
-}
-
-export interface AlpacaAccountEntry {
-  id: string
-  exchange: 'alpaca'
-  mode: 'PAPER' | 'LIVE'
-  connected: boolean
-  error?: string
-  summary?: AlpacaAccountSummary
-  positions?: AlpacaPosition[]
-  recentFills?: AlpacaFill[]
-}
 
 export interface BinanceBalance {
   asset: string
@@ -270,7 +228,7 @@ export interface Mt5AccountEntry {
   positions?: Mt5Position[]
 }
 
-export type AccountEntry = AlpacaAccountEntry | BinanceAccountEntry | Mt5AccountEntry
+export type AccountEntry = BinanceAccountEntry | Mt5AccountEntry
 
 export interface Mt5AccountInfo {
   login: number

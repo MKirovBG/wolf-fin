@@ -13,7 +13,7 @@ import type {
 } from './types.js'
 
 export interface IMarketAdapter {
-  readonly market: 'crypto' | 'forex' | 'mt5'
+  readonly market: 'crypto' | 'mt5'
 
   getSnapshot(symbol: string, riskState: RiskState): Promise<MarketSnapshot>
   getOrderBook(symbol: string, depth?: number): Promise<OrderBook>
@@ -24,7 +24,7 @@ export interface IMarketAdapter {
   placeOrder(params: OrderParams): Promise<OrderResult>
   cancelOrder(symbol: string, orderId: string | number): Promise<void>
 
-  // Forex-only — returns null for crypto adapters
+  // Optional — spread/session data used by MT5
   getSpread?(symbol: string): Promise<number | null>
   isMarketOpen?(symbol: string): Promise<boolean>
 }

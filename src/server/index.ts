@@ -25,7 +25,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const ENV_KEYS = [
   'ANTHROPIC_API_KEY', 'CLAUDE_MODEL',
   'OPENROUTER_API_KEY',
-  'ALPACA_API_KEY', 'ALPACA_API_SECRET', 'ALPACA_PAPER_KEY', 'ALPACA_PAPER_SECRET',
   'BINANCE_API_KEY', 'BINANCE_API_SECRET',
   'FINNHUB_KEY', 'TWELVE_DATA_KEY', 'COINGECKO_KEY',
 ] as const
@@ -65,37 +64,6 @@ async function testConnection(service: string): Promise<{ ok: boolean; message: 
         if (!r.ok) return { ok: false, message: `HTTP ${r.status}` }
         const data = await r.json() as { data: unknown[] }
         return { ok: true, message: `Connected — ${data.data.length} models available` }
-      }
-      case 'alpaca': {
-        const messages: string[] = []
-        // Test data API with live keys
-        if (process.env.ALPACA_API_KEY && process.env.ALPACA_API_SECRET) {
-          // Use a US stock snapshot — available on all account tiers, no subscription needed
-          const dr = await fetch('https://data.alpaca.markets/v2/stocks/AAPL/snapshot', {
-            headers: { 'APCA-API-KEY-ID': process.env.ALPACA_API_KEY, 'APCA-API-SECRET-KEY': process.env.ALPACA_API_SECRET },
-          })
-          if (dr.ok) {
-            const snap = await dr.json() as { latestTrade?: { p?: number } }
-            const price = snap?.latestTrade?.p
-            messages.push(price ? `Data API OK — AAPL $${price}` : 'Data API OK')
-          } else {
-            messages.push(`Data API HTTP ${dr.status}`)
-          }
-        }
-        // Test trading API (paper or live)
-        const paper = process.env.ALPACA_PAPER !== 'false'
-        const tradingBase = paper ? 'https://paper-api.alpaca.markets' : 'https://api.alpaca.markets'
-        const key = paper ? process.env.ALPACA_PAPER_KEY : process.env.ALPACA_API_KEY
-        const secret = paper ? process.env.ALPACA_PAPER_SECRET : process.env.ALPACA_API_SECRET
-        if (key && secret) {
-          const tr = await fetch(`${tradingBase}/v2/account`, {
-            headers: { 'APCA-API-KEY-ID': key, 'APCA-API-SECRET-KEY': secret },
-          })
-          messages.push(tr.ok ? (paper ? 'Paper trading OK' : 'Live trading OK') : `Trading API HTTP ${tr.status}`)
-        }
-        if (messages.length === 0) return { ok: false, message: 'No Alpaca keys set' }
-        const allOk = messages.every(m => m.includes('OK'))
-        return { ok: allOk, message: messages.join(' | ') }
       }
       case 'binance': {
         const binKey    = process.env.BINANCE_API_KEY?.trim()
@@ -259,11 +227,11 @@ export async function startServer(): Promise<void> {
   // ── Market Data (read-only snapshot, no agent/Claude involved) ───────────────
   app.get('/api/market/:market/:symbol', async (req, reply) => {
     const { market, symbol } = req.params as { market: string; symbol: string }
-    if (market !== 'crypto' && market !== 'forex' && market !== 'mt5') {
-      return reply.status(400).send({ error: 'market must be crypto, forex, or mt5' })
+    if (market !== 'crypto' && market !== 'mt5') {
+      return reply.status(400).send({ error: 'market must be crypto or mt5' })
     }
     try {
-      const adapter = getAdapter(market as 'crypto' | 'forex' | 'mt5')
+      const adapter = getAdapter(market as 'crypto' | 'mt5')
       const snapshot = await adapter.getSnapshot(symbol, getRiskState())
       return snapshot
     } catch (e) {
@@ -293,7 +261,7 @@ export async function startServer(): Promise<void> {
 
   // ── Reports ─────────────────────────────────────────────────────────────────
   app.get('/api/reports/summary', async () => {
-    const summary = (market: 'crypto' | 'forex' | 'mt5') => {
+    const summary = (market: 'crypto' | 'mt5') => {
       const events = dbGetCycleResults(market)
       return {
         totalCycles: events.length,
@@ -304,23 +272,15 @@ export async function startServer(): Promise<void> {
         risk: getRiskStateFor(market),
       }
     }
-    return { crypto: summary('crypto'), forex: summary('forex'), mt5: summary('mt5') }
+    return { crypto: summary('crypto'), mt5: summary('mt5') }
   })
 
   app.get('/api/reports/trades', async (req) => {
     const { market } = req.query as { market?: string }
-    return dbGetCycleResults(market as 'crypto' | 'forex' | 'mt5' | undefined)
+    return dbGetCycleResults(market as 'crypto' | 'mt5' | undefined)
   })
 
   // ── Accounts ─────────────────────────────────────────────────────────────────
-
-  type AlpacaAccountEntry = {
-    id: string; exchange: 'alpaca'; mode: 'PAPER' | 'LIVE'
-    connected: boolean; error?: string
-    summary?: { equity: number; cash: number; buyingPower: number; portfolioValue: number; unrealizedPl: number; dayPl: number; status: string }
-    positions?: Array<{ symbol: string; side: 'BUY' | 'SELL'; qty: number; avgEntry: number; currentPrice: number; marketValue: number; unrealizedPl: number; unrealizedPlPct: number; costBasis: number }>
-    recentFills?: Array<{ symbol: string; side: 'BUY' | 'SELL'; qty: number; price: number; time: string }>
-  }
 
   type BinanceAccountEntry = {
     id: string; exchange: 'binance'; mode: 'LIVE' | 'TESTNET'
@@ -336,52 +296,7 @@ export async function startServer(): Promise<void> {
     positions?: Array<{ ticket: number; symbol: string; side: 'BUY' | 'SELL'; volume: number; priceOpen: number; priceCurrent: number; profit: number; swap: number; sl: number; tp: number; time: string }>
   }
 
-  type AccountEntry = AlpacaAccountEntry | BinanceAccountEntry | Mt5AccountEntry
-
-  async function fetchAlpacaEntry(paper: boolean): Promise<AlpacaAccountEntry> {
-    const id = paper ? 'alpaca-paper' : 'alpaca-live'
-    const mode = paper ? 'PAPER' : 'LIVE'
-    const keyId  = paper ? (process.env.ALPACA_PAPER_KEY ?? '')   : (process.env.ALPACA_API_KEY ?? '')
-    const secret = paper ? (process.env.ALPACA_PAPER_SECRET ?? '') : (process.env.ALPACA_API_SECRET ?? '')
-    if (!keyId) throw new Error('Keys not configured')
-    const base = paper ? 'https://paper-api.alpaca.markets' : 'https://api.alpaca.markets'
-    const h = { 'APCA-API-KEY-ID': keyId, 'APCA-API-SECRET-KEY': secret }
-    const [acct, pos, acts] = await Promise.all([
-      fetch(`${base}/v2/account`, { headers: h }).then(r => { if (!r.ok) throw new Error(`account HTTP ${r.status}`); return r.json() as Promise<Record<string, string>> }),
-      fetch(`${base}/v2/positions`, { headers: h }).then(r => { if (!r.ok) return [] as unknown[]; return r.json() as Promise<Array<Record<string, string>>> }),
-      fetch(`${base}/v2/account/activities/FILL?page_size=30`, { headers: h }).then(r => { if (!r.ok) return [] as unknown[]; return r.json() as Promise<Array<Record<string, string>>> }),
-    ])
-    return {
-      id, exchange: 'alpaca', mode, connected: true,
-      summary: {
-        equity: parseFloat(acct.equity ?? '0'),
-        cash: parseFloat(acct.cash ?? '0'),
-        buyingPower: parseFloat(acct.buying_power ?? '0'),
-        portfolioValue: parseFloat(acct.portfolio_value ?? '0'),
-        unrealizedPl: parseFloat(acct.unrealized_pl ?? '0'),
-        dayPl: parseFloat(acct.pl ?? '0'),
-        status: acct.status ?? 'UNKNOWN',
-      },
-      positions: (pos as Array<Record<string, string>>).map(p => ({
-        symbol: p.symbol,
-        side: p.side === 'long' ? 'BUY' : 'SELL',
-        qty: Math.abs(parseFloat(p.qty ?? '0')),
-        avgEntry: parseFloat(p.avg_entry_price ?? '0'),
-        currentPrice: parseFloat(p.current_price ?? '0'),
-        marketValue: parseFloat(p.market_value ?? '0'),
-        unrealizedPl: parseFloat(p.unrealized_pl ?? '0'),
-        unrealizedPlPct: parseFloat(p.unrealized_plpc ?? '0') * 100,
-        costBasis: parseFloat(p.cost_basis ?? '0'),
-      })),
-      recentFills: (acts as Array<Record<string, string>>).map(a => ({
-        symbol: a.symbol,
-        side: a.side === 'buy' ? 'BUY' : 'SELL',
-        qty: parseFloat(a.qty ?? '0'),
-        price: parseFloat(a.price ?? '0'),
-        time: a.transaction_time,
-      })),
-    }
-  }
+  type AccountEntry = BinanceAccountEntry | Mt5AccountEntry
 
   async function fetchBinanceEntry(): Promise<BinanceAccountEntry> {
     const { createHmac } = await import('crypto')
@@ -468,12 +383,6 @@ export async function startServer(): Promise<void> {
     'VETUSDT','FILUSDT','THETAUSDT','AAVEUSDT','MKRUSDT','AXSUSDT','SANDUSDT','MANAUSDT',
     'DOGEUSDT','SHIBUSDT','TRXUSDT','NEARUSDT','FTMUSDT','HBARUSDT','ICPUSDT','EGLDUSDT',
   ]
-  const FOREX_SYMBOLS = [
-    'EUR_USD','GBP_USD','USD_JPY','USD_CHF','USD_CAD','AUD_USD','NZD_USD',
-    'EUR_GBP','EUR_JPY','GBP_JPY','AUD_JPY','CHF_JPY','EUR_CHF','EUR_CAD',
-    'GBP_CAD','AUD_CAD','NZD_JPY','EUR_AUD','GBP_AUD','EUR_NZD',
-  ]
-
   app.get('/api/symbols', async (req, reply) => {
     const { market, search = '', accountId } = req.query as { market?: string; search?: string; accountId?: string }
     const q = (search as string).toLowerCase()
@@ -496,11 +405,6 @@ export async function startServer(): Promise<void> {
     if (market === 'crypto') {
       const results = q ? CRYPTO_SYMBOLS.filter(s => s.toLowerCase().includes(q)) : CRYPTO_SYMBOLS
       return reply.send(results.map(s => ({ symbol: s, description: s.replace('USDT', ' / USDT') })))
-    }
-
-    if (market === 'forex') {
-      const results = q ? FOREX_SYMBOLS.filter(s => s.toLowerCase().includes(q)) : FOREX_SYMBOLS
-      return reply.send(results.map(s => ({ symbol: s, description: s.replace('_', ' / ') })))
     }
 
     return reply.send([])
@@ -559,8 +463,6 @@ export async function startServer(): Promise<void> {
 
   app.get('/api/accounts', async (_req, reply) => {
     const jobs: Array<Promise<AccountEntry>> = []
-    if (process.env.ALPACA_PAPER_KEY) jobs.push(fetchAlpacaEntry(true).catch(err => ({ id: 'alpaca-paper', exchange: 'alpaca' as const, mode: 'PAPER' as const, connected: false, error: String(err) })))
-    if (process.env.ALPACA_API_KEY)   jobs.push(fetchAlpacaEntry(false).catch(err => ({ id: 'alpaca-live',  exchange: 'alpaca' as const, mode: 'LIVE' as const,  connected: false, error: String(err) })))
     if (process.env.BINANCE_API_KEY)  jobs.push(fetchBinanceEntry().catch(err => ({ id: 'binance-main', exchange: 'binance' as const, mode: (process.env.BINANCE_TESTNET === 'true' ? 'TESTNET' : 'LIVE') as 'LIVE' | 'TESTNET', connected: false, error: String(err) })))
     // MT5 bridge — try all registered accounts; silently skip if bridge is not running
     const mt5Entries = await fetchMt5Entries().catch(() => [{ id: 'mt5-unknown', exchange: 'mt5' as const, mode: 'DEMO' as const, connected: false, error: 'Bridge not running' } as Mt5AccountEntry])
@@ -575,7 +477,7 @@ export async function startServer(): Promise<void> {
     if (agents.length === 0) return []
     const results = await Promise.allSettled(
       agents.map(async (agent) => {
-        const adapter = getAdapter(agent.config.market as 'crypto' | 'forex' | 'mt5')
+        const adapter = getAdapter(agent.config.market as 'crypto' | 'mt5')
         const orders = await adapter.getOpenOrders(agent.config.symbol)
         return orders.map(o => ({
           ...o,
@@ -594,7 +496,7 @@ export async function startServer(): Promise<void> {
     if (agents.length === 0) return []
     const results = await Promise.allSettled(
       agents.map(async (agent) => {
-        const adapter = getAdapter(agent.config.market as 'crypto' | 'forex' | 'mt5')
+        const adapter = getAdapter(agent.config.market as 'crypto' | 'mt5')
         const fills = await adapter.getTradeHistory(agent.config.symbol, 50)
         return fills.map(f => ({
           ...f,
@@ -630,7 +532,7 @@ export async function startServer(): Promise<void> {
   log.info({ port: PORT }, `server running at http://localhost:${PORT}`)
 
   // ── Startup connectivity checks ──────────────────────────────────────────────
-  const services = ['anthropic', 'alpaca', 'binance', 'finnhub', 'twelvedata', 'coingecko']
+  const services = ['anthropic', 'binance', 'finnhub', 'twelvedata', 'coingecko']
   log.info('checking service connectivity...')
   for (const service of services) {
     testConnection(service).then(result => {

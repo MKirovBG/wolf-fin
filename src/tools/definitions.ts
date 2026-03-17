@@ -6,8 +6,8 @@ import Anthropic from '@anthropic-ai/sdk'
 
 const MARKET_FIELD = {
   type: 'string',
-  enum: ['crypto', 'forex', 'mt5'],
-  description: 'Market type. "crypto" routes to Binance, "forex" routes to Alpaca, "mt5" routes to MetaTrader 5.',
+  enum: ['crypto', 'mt5'],
+  description: 'Market type. "crypto" routes to Binance, "mt5" routes to MetaTrader 5.',
 } as const
 
 const ALL_TOOLS: Anthropic.Tool[] = [
@@ -68,7 +68,7 @@ const ALL_TOOLS: Anthropic.Tool[] = [
   {
     name: 'place_order',
     description:
-      'Place a new order. Guardrails will validate the order against position limits and the daily loss budget before execution. Prefer LIMIT orders to control slippage. For forex, always specify stopPips.',
+      'Place a new order. Guardrails will validate the order against position limits and the daily loss budget before execution. Prefer LIMIT orders to control slippage. For MT5, always specify stopPips.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -76,10 +76,10 @@ const ALL_TOOLS: Anthropic.Tool[] = [
         market: MARKET_FIELD,
         side: { type: 'string', enum: ['BUY', 'SELL'], description: 'Order direction' },
         type: { type: 'string', enum: ['LIMIT', 'MARKET'], description: 'Order type. Use LIMIT unless speed is critical.' },
-        quantity: { type: 'number', description: 'Base asset quantity (units for forex, e.g. 1000 = micro-lot)' },
+        quantity: { type: 'number', description: 'Base asset quantity (crypto: units; MT5: lots, e.g. 0.01 = micro-lot)' },
         price: { type: 'number', description: 'Limit price (required for LIMIT orders)' },
         timeInForce: { type: 'string', enum: ['GTC', 'IOC', 'FOK'], description: 'Time in force for LIMIT orders (default GTC)' },
-        stopPips: { type: 'number', description: 'Forex only: stop-loss distance in pips. Required for forex orders.' },
+        stopPips: { type: 'number', description: 'MT5 only: stop-loss distance in pips. Required for MT5 orders.' },
       },
       required: ['symbol', 'market', 'side', 'type', 'quantity'],
     },
@@ -100,7 +100,7 @@ const ALL_TOOLS: Anthropic.Tool[] = [
 ]
 
 /** Returns the tool list for the given market, excluding tools unsupported by that market. */
-export function getTools(market: 'crypto' | 'forex' | 'mt5'): Anthropic.Tool[] {
+export function getTools(market: 'crypto' | 'mt5'): Anthropic.Tool[] {
   // MT5 retail brokers (e.g. Equiti) do not publish DOM data — exclude get_order_book
   if (market === 'mt5') return ALL_TOOLS.filter(t => t.name !== 'get_order_book')
   return ALL_TOOLS
@@ -110,29 +110,29 @@ export function getTools(market: 'crypto' | 'forex' | 'mt5'): Anthropic.Tool[] {
 
 export interface GetSnapshotInput {
   symbol: string
-  market: 'crypto' | 'forex' | 'mt5'
+  market: 'crypto' | 'mt5'
 }
 
 export interface GetOrderBookInput {
   symbol: string
-  market: 'crypto' | 'forex' | 'mt5'
+  market: 'crypto' | 'mt5'
   depth?: number
 }
 
 export interface GetRecentTradesInput {
   symbol: string
-  market: 'crypto' | 'forex' | 'mt5'
+  market: 'crypto' | 'mt5'
   limit?: number
 }
 
 export interface GetOpenOrdersInput {
   symbol?: string
-  market: 'crypto' | 'forex' | 'mt5'
+  market: 'crypto' | 'mt5'
 }
 
 export interface PlaceOrderInput {
   symbol: string
-  market: 'crypto' | 'forex' | 'mt5'
+  market: 'crypto' | 'mt5'
   side: 'BUY' | 'SELL'
   type: 'LIMIT' | 'MARKET'
   quantity: number
@@ -143,6 +143,6 @@ export interface PlaceOrderInput {
 
 export interface CancelOrderInput {
   symbol: string
-  market: 'crypto' | 'forex' | 'mt5'
+  market: 'crypto' | 'mt5'
   orderId: number
 }

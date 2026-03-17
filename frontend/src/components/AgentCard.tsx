@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { Badge, decisionVariant } from './Badge.tsx'
 import { AgentStatusBadge } from './AgentStatusBadge.tsx'
-import { MarketDataModal } from './MarketDataModal.tsx'
-import { startAgent, pauseAgent, stopAgent, triggerAgent, updateAgentConfig, deleteAgent, getOpenRouterModels } from '../api/client.ts'
+import { updateAgentConfig, deleteAgent, getOpenRouterModels } from '../api/client.ts'
 import type { AgentState, AgentConfig, OpenRouterModel } from '../types/index.ts'
+import { useToast } from './Toast.tsx'
 
 interface Props {
   agent: AgentState
@@ -32,14 +32,22 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
   onSave: () => void
   onDelete: () => void
 }) {
-  const { register, handleSubmit, watch } = useForm<AgentConfig>({
+  const { register, handleSubmit, watch, reset } = useForm<AgentConfig>({
     defaultValues: agent.config,
   })
+
+  // Re-sync form when agent config updates from the server (e.g. after save + reload)
+  useEffect(() => {
+    reset(agent.config)
+  }, [agent.config, reset])
+
   const fetchMode = watch('fetchMode')
   const llmProvider = watch('llmProvider')
+  const isRunning = agent.status === 'running'
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const toast = useToast()
   const [orModels, setOrModels] = useState<OpenRouterModel[]>([])
   const [orLoading, setOrLoading] = useState(false)
   const [orError, setOrError] = useState<string | null>(null)
@@ -58,14 +66,17 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
   const onSubmit = handleSubmit(async (data) => {
     setSaving(true)
     try {
-      await updateAgentConfig(agentKey, {
+      const saved: Partial<AgentConfig> = {
         ...data,
-        maxIterations: Number(data.maxIterations),
         scheduleIntervalSeconds: Number(data.scheduleIntervalSeconds),
         maxLossUsd: Number(data.maxLossUsd),
         leverage: data.leverage ? Number(data.leverage) : undefined,
-      })
+      }
+      await updateAgentConfig(agentKey, saved)
+      toast.success('Configuration saved')
       onSave()
+    } catch {
+      toast.error('Failed to save — check the server logs')
     } finally {
       setSaving(false)
     }
@@ -80,6 +91,12 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
 
   return (
     <form onSubmit={onSubmit} className="space-y-3 pt-2 border-t border-border mt-3">
+      {isRunning && (
+        <div className="text-[11px] text-yellow border border-yellow/30 bg-yellow-dim rounded px-3 py-2">
+          ⚠ Stop or pause the agent before editing its configuration.
+        </div>
+      )}
+      <fieldset disabled={isRunning || saving} style={{ border: 'none', padding: 0, margin: 0 }} className="space-y-3">
       {/* Fetch Mode */}
       <div>
         <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">Fetch Mode</label>
@@ -117,12 +134,6 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
           <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">Leverage</label>
           <input type="number" min="1" max="3000" placeholder="e.g. 100" {...register('leverage', { setValueAs: v => v === '' || v == null ? undefined : Number(v) })} />
         </div>
-      </div>
-
-      {/* Max iterations */}
-      <div>
-        <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">Max Iterations</label>
-        <input type="number" min="1" max="20" {...register('maxIterations')} />
       </div>
 
       {/* Custom prompt */}
@@ -169,11 +180,12 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
         </div>
       )}
 
+      </fieldset>
       {/* Save / Delete */}
       <div className="flex items-center justify-between pt-1">
         <button
           type="submit"
-          disabled={saving}
+          disabled={isRunning || saving}
           className="px-4 py-1.5 text-xs border border-green text-green rounded hover:bg-green-dim disabled:opacity-40 transition-colors"
         >
           {saving ? 'Saving...' : 'Save Changes'}
@@ -191,66 +203,46 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
   )
 }
 
-export function AgentCard({ agent, onRefresh }: Props) {
-  const [showSettings, setShowSettings] = useState(false)
-  const [showMarket, setShowMarket] = useState(false)
-  const [loading, setLoading] = useState<string | null>(null)
+export function AgentCard({ agent }: Props) {
   const navigate = useNavigate()
 
-  const key = `${agent.config.market}:${agent.config.symbol}`
-
-  const act = async (fn: () => Promise<unknown>, id: string) => {
-    setLoading(id)
-    try { await fn() } finally { setLoading(null); onRefresh() }
-  }
-
-  const canStart   = agent.status !== 'running'
-  const canPause   = agent.status === 'running'
-  const canStop    = agent.status !== 'idle'
-
   return (
-    <div className="bg-surface border border-border rounded-lg p-4 flex flex-col gap-3">
+    <div
+      className="bg-surface border border-border rounded-lg p-4 flex flex-col gap-3 cursor-pointer hover:border-muted transition-colors"
+      onClick={() => navigate(`/agents/${agent.config.market}/${agent.config.symbol}`)}
+    >
       {/* Header */}
       <div className="flex justify-between items-start">
         <div>
           <div className="flex items-center gap-2 mb-1">
             <span className="text-white font-bold text-base">{agent.config.symbol}</span>
             <Badge label={agent.config.market.toUpperCase()} variant={agent.config.market} />
+            {agent.config.leverage && (
+              <span className="text-[10px] text-muted border border-border rounded px-1.5 py-0.5">{agent.config.leverage}:1</span>
+            )}
           </div>
           <AgentStatusBadge status={agent.status} />
         </div>
-        <div className="flex items-center gap-1.5">
-          {/* Open agent page */}
-          <button
-            onClick={() => navigate(`/agents/${agent.config.market}/${agent.config.symbol}`)}
-            className="px-2.5 py-1 text-[11px] border border-border text-muted rounded hover:border-green hover:text-green transition-colors"
-            title="Open agent page"
-          >
-            Open →
-          </button>
-          <button
-            onClick={() => setShowSettings(s => !s)}
-            className={`text-lg leading-none transition-colors mt-0.5 ${showSettings ? 'text-green' : 'text-muted hover:text-white'}`}
-            title="Settings"
-          >
-            ⚙
-          </button>
-        </div>
+        <button
+          onClick={e => { e.stopPropagation(); navigate(`/agents/${agent.config.market}/${agent.config.symbol}`) }}
+          className="px-2.5 py-1 text-[11px] border border-border text-muted rounded hover:border-green hover:text-green transition-colors shrink-0"
+        >
+          Open →
+        </button>
       </div>
 
       {/* Stats */}
       <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-        <div className="text-muted">Cycles: <span className="text-white">{agent.cycleCount}</span></div>
-        <div className="text-muted">Mode: <span className="text-white">{agent.config.fetchMode}</span></div>
+        <div className="text-muted">Cycles <span className="text-white ml-1">{agent.cycleCount}</span></div>
+        <div className="text-muted">Mode <span className="text-white ml-1">{agent.config.fetchMode}</span></div>
         {agent.config.fetchMode !== 'manual' && (
-          <div className="text-muted">Interval: <span className="text-white">{intervalLabel(agent.config.scheduleIntervalSeconds)}</span></div>
+          <div className="text-muted">Interval <span className="text-white ml-1">{intervalLabel(agent.config.scheduleIntervalSeconds)}</span></div>
         )}
         {agent.startedAt && (
-          <div className="text-muted">Started: <span className="text-white">{rel(agent.startedAt)}</span></div>
+          <div className="text-muted">Started <span className="text-white ml-1">{rel(agent.startedAt)}</span></div>
         )}
-        {agent.config.leverage && (
-          <div className="text-muted">Leverage: <span className="text-white">{agent.config.leverage}:1</span></div>
-        )}
+        <div className="text-muted">Max Loss <span className="text-white ml-1">${agent.config.maxLossUsd}</span></div>
+        <div className="text-muted">LLM <span className="text-white ml-1">{agent.config.llmProvider ?? 'anthropic'}</span></div>
       </div>
 
       {/* Last decision */}
@@ -269,64 +261,6 @@ export function AgentCard({ agent, onRefresh }: Props) {
         </div>
       ) : (
         <div className="border border-border rounded p-2.5 bg-surface2 text-muted text-xs">No cycles run yet</div>
-      )}
-
-      {/* Action buttons */}
-      <div className="flex flex-wrap gap-1.5">
-        <button
-          disabled={!canStart || loading !== null}
-          onClick={() => act(() => startAgent(key), 'start')}
-          className="px-2.5 py-1 text-[11px] border border-green-border text-green rounded hover:bg-green-dim disabled:opacity-25 disabled:cursor-default transition-colors"
-        >
-          {loading === 'start' ? '...' : '▶ Start'}
-        </button>
-        <button
-          disabled={!canPause || loading !== null}
-          onClick={() => act(() => pauseAgent(key), 'pause')}
-          className="px-2.5 py-1 text-[11px] border border-yellow/30 text-yellow rounded hover:bg-yellow-dim disabled:opacity-25 disabled:cursor-default transition-colors"
-        >
-          {loading === 'pause' ? '...' : '⏸ Pause'}
-        </button>
-        <button
-          disabled={!canStop || loading !== null}
-          onClick={() => act(() => stopAgent(key), 'stop')}
-          className="px-2.5 py-1 text-[11px] border border-red-border text-red rounded hover:bg-red-dim disabled:opacity-25 disabled:cursor-default transition-colors"
-        >
-          {loading === 'stop' ? '...' : '■ Stop'}
-        </button>
-        <button
-          disabled={loading !== null}
-          onClick={() => act(() => triggerAgent(key), 'trigger')}
-          className="px-2.5 py-1 text-[11px] border border-blue-500/30 text-blue-400 rounded hover:bg-blue-900/20 disabled:opacity-25 disabled:cursor-default transition-colors"
-        >
-          {loading === 'trigger' ? 'Running...' : '⚡ Trigger'}
-        </button>
-        <button
-          disabled={loading !== null}
-          onClick={() => setShowMarket(true)}
-          className="px-2.5 py-1 text-[11px] border border-border text-muted rounded hover:border-muted hover:text-white transition-colors"
-        >
-          📊
-        </button>
-      </div>
-
-      {/* Settings panel */}
-      {showSettings && (
-        <SettingsPanel
-          agent={agent}
-          agentKey={key}
-          onSave={() => { setShowSettings(false); onRefresh() }}
-          onDelete={() => onRefresh()}
-        />
-      )}
-
-      {/* Market data modal */}
-      {showMarket && (
-        <MarketDataModal
-          market={agent.config.market}
-          symbol={agent.config.symbol}
-          onClose={() => setShowMarket(false)}
-        />
       )}
     </div>
   )

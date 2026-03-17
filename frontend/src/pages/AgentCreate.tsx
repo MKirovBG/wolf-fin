@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { addAgent, getMt5Accounts, getOpenRouterModels, searchSymbols } from '../api/client.ts'
 import type { AgentConfig, Mt5AccountInfo, OpenRouterModel } from '../types/index.ts'
+import { useToast } from '../components/Toast.tsx'
 
 // ── Interval helpers ───────────────────────────────────────────────────────────
 const INTERVALS = [2, 5, 10, 15, 20, 30, 60, 300, 900, 1800, 3600, 14400]
@@ -125,14 +126,14 @@ export function AgentCreate() {
   const navigate = useNavigate()
 
   // Form state
-  const [market, setMarket] = useState<'crypto' | 'forex' | 'mt5'>('crypto')
+  const toast = useToast()
+  const [market, setMarket] = useState<'crypto' | 'mt5'>('crypto')
   const [symbol, setSymbol] = useState('')
   const [fetchMode, setFetchMode] = useState<'manual' | 'scheduled' | 'autonomous'>('scheduled')
   const [intervalSec, setIntervalSec] = useState(60)
   const [maxLossUsd, setMaxLossUsd] = useState(200)
   const [leverage, setLeverage] = useState<number | ''>('')
-  const [maxIterations, setMaxIterations] = useState(10)
-  const [customPrompt, setCustomPrompt] = useState('')
+const [customPrompt, setCustomPrompt] = useState('')
   const [llmProvider, setLlmProvider] = useState<'anthropic' | 'openrouter'>('anthropic')
   const [llmModel, setLlmModel] = useState('')
   const [mt5AccountId, setMt5AccountId] = useState<number | undefined>()
@@ -184,7 +185,6 @@ export function AgentCreate() {
         scheduleIntervalSeconds: intervalSec,
         maxLossUsd,
         leverage: leverage !== '' ? Number(leverage) : undefined,
-        maxIterations,
         customPrompt: customPrompt || undefined,
         llmProvider,
         llmModel: llmModel || undefined,
@@ -192,6 +192,7 @@ export function AgentCreate() {
       }
       const res = await addAgent(config)
       if (!res.ok) { setErr('Failed to create agent'); return }
+      toast.success(`Agent ${symbol.toUpperCase().trim()} created`)
       navigate(`/agents/${market}/${symbol.toUpperCase().trim()}`)
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Unknown error')
@@ -216,7 +217,6 @@ export function AgentCreate() {
           <Field label="Market">
             <select value={market} onChange={e => setMarket(e.target.value as typeof market)} className="w-full">
               <option value="crypto">Crypto — Binance</option>
-              <option value="forex">Forex — Alpaca</option>
               <option value="mt5">MetaTrader 5</option>
             </select>
           </Field>
@@ -336,16 +336,6 @@ export function AgentCreate() {
               />
             </Field>
 
-            <Field label="Max Iterations / Cycle">
-              <input
-                type="number"
-                min="1"
-                max="20"
-                value={maxIterations}
-                onChange={e => setMaxIterations(Number(e.target.value))}
-                className="w-full"
-              />
-            </Field>
           </div>
           <p className="text-[10px] text-muted mt-2">
             Leverage is informational — the agent uses it for position sizing context. The global max-position guardrail is set via the <span className="text-white">MAX_POSITION_USD</span> environment variable.

@@ -5,11 +5,10 @@ import pino from 'pino'
 import { getLLMProvider, getModelForConfig } from '../llm/index.js'
 import { getAdapter } from '../adapters/registry.js'
 import { getRiskState, isDailyLimitHit } from '../guardrails/riskState.js'
-import { updatePositionNotionalFor, isDailyLimitHitFor, setForexContext, setMt5Context } from '../guardrails/riskStateStore.js'
+import { updatePositionNotionalFor, isDailyLimitHitFor, setMt5Context } from '../guardrails/riskStateStore.js'
 import { validateOrder } from '../guardrails/validate.js'
-import { validateForexOrder } from '../guardrails/forex.js'
 import { validateMt5Order } from '../guardrails/mt5.js'
-import { getForexContext, getMt5Context } from '../guardrails/riskStateStore.js'
+import { getMt5Context } from '../guardrails/riskStateStore.js'
 import { buildMarketContext } from './context.js'
 import { sessionLabel } from '../adapters/session.js'
 import { getTools } from '../tools/definitions.js'
@@ -40,11 +39,9 @@ function buildSystemPrompt(config: AgentConfig, agentKey: string): string {
   const mode = '[LIVE TRADING]'
   const maxSpreadPips = parseFloat(process.env.MAX_SPREAD_PIPS ?? '3')
   const sessionNote =
-    market === 'forex'
-      ? `\nCURRENT SESSION: ${sessionLabel()}\nFOREX SESSION RULES: Only trade during Tokyo, London, or New York sessions. Avoid Sydney-only hours. Reject entries when spread > ${maxSpreadPips} pips or sessionOpen is false.\nNOTE: Overnight swap rates are unavailable from the data provider — do not factor swap costs into hold decisions.`
-      : market === 'mt5'
-        ? `\nCURRENT SESSION: ${sessionLabel()}\nMT5 SESSION RULES: Only trade during Tokyo, London, or New York sessions. Reject entries when spread > ${maxSpreadPips} pips or sessionOpen is false.\nMT5 provides real swap rates in the snapshot — factor overnight costs into hold decisions for multi-day positions.`
-        : ''
+    market === 'mt5'
+      ? `\nCURRENT SESSION: ${sessionLabel()}\nMT5 SESSION RULES: Only trade during Tokyo, London, or New York sessions. Reject entries when spread > ${maxSpreadPips} pips or sessionOpen is false.\nMT5 provides real swap rates in the snapshot — factor overnight costs into hold decisions for multi-day positions.`
+      : ''
 
   const base = `You are Wolf-Fin, an autonomous trading agent. ${mode}
 
@@ -55,7 +52,7 @@ PROCESS:
 ${market !== 'mt5' ? '2. Optionally call get_order_book to assess liquidity before sizing.\n' : ''}3. Reason through the evidence: trend (EMA cross), momentum (RSI), volatility (ATR, BB width), context signals.
 4. Decide: HOLD / BUY qty @ price / SELL qty @ price / CANCEL orderId.
 5. Execute via place_order or cancel_order. Always prefer LIMIT orders.
-${market === 'forex' || market === 'mt5' ? `6. ${market === 'mt5' ? 'MT5' : 'Forex'}: always include stopPips on every order (ATR-based distance).` : ''}
+${market === 'mt5' ? `6. MT5: always include stopPips on every order (ATR-based distance).` : ''}
 ACCOUNT CONFIG:
 - Max daily loss: $${config.maxLossUsd}${config.leverage ? `\n- Leverage: ${config.leverage}:1 — factor this into position sizing and margin requirements` : ''}
 
@@ -97,7 +94,7 @@ SIGNAL PRIORITY (evaluate in order):
 2. TREND — EMA20 vs EMA50 direction (EMA20 > EMA50 = bullish bias)
 3. MOMENTUM — RSI14: <30 oversold watch, >70 overbought watch, 45-55 neutral
 4. VOLATILITY — ATR14 and BB width for stop sizing and breakout detection
-5. CONTEXT — Fear/Greed (crypto) or session quality (forex); skip if high-impact event imminent
+5. CONTEXT — Fear/Greed (crypto) or session quality (MT5); skip if high-impact event imminent
 6. POSITION — manage any existing open position before entering a new one
 
 Use at most 3 tool calls per cycle. Call get_snapshot first.${config.market !== 'mt5' ? ' Only call get_order_book if actively sizing a new entry.' : ''}`
@@ -133,10 +130,10 @@ function summariseToolResult(name: string, result: unknown): string {
 async function dispatchTool(
   name: string,
   input: Record<string, unknown>,
-  defaultMarket: 'crypto' | 'forex' | 'mt5',
+  defaultMarket: 'crypto' | 'mt5',
   mt5AccountId?: number,
 ): Promise<unknown> {
-  const market = (input.market as 'crypto' | 'forex' | 'mt5' | undefined) ?? defaultMarket
+  const market = (input.market as 'crypto' | 'mt5' | undefined) ?? defaultMarket
   const adapter = getAdapter(market, mt5AccountId)
 
   switch (name) {
@@ -148,9 +145,6 @@ async function dispatchTool(
         (sum, o) => sum + o.price * o.origQty, 0,
       )
       updatePositionNotionalFor(market, openNotional)
-      if (market === 'forex' && snap.forex) {
-        setForexContext({ spread: snap.forex.spread, sessionOpen: snap.forex.sessionOpen, pipValue: snap.forex.pipValue })
-      }
       if (market === 'mt5' && snap.forex) {
         const pt = snap.forex.point ?? 0.0001
         setMt5Context({ spread: snap.forex.spread, sessionOpen: snap.forex.sessionOpen, pipValue: snap.forex.pipValue, point: pt, digits: pt <= 0.001 ? 5 : 2 })
@@ -174,18 +168,16 @@ async function dispatchTool(
         stopPips: input.stopPips as number | undefined,
       }
       const validation =
-        market === 'forex'
-          ? (() => { const fx = getForexContext(); return validateForexOrder(params, fx.spread, fx.sessionOpen, fx.pipValue) })()
-          : market === 'mt5'
-            ? (() => { const ctx = getMt5Context(); return validateMt5Order(params, ctx.spread, ctx.sessionOpen, ctx.pipValue) })()
-            : validateOrder(params, params.price ?? 0)
+        market === 'mt5'
+          ? (() => { const ctx = getMt5Context(); return validateMt5Order(params, ctx.spread, ctx.sessionOpen, ctx.pipValue) })()
+          : validateOrder(params, params.price ?? 0)
       if (!validation.ok) {
         log.warn({ reason: validation.reason }, 'order blocked by guardrails')
         return { blocked: true, reason: validation.reason }
       }
-      // Compute absolute stop price for forex / MT5 bracket orders
-      if ((market === 'forex' || market === 'mt5') && params.stopPips != null && params.price != null) {
-        const ctxPoint = market === 'mt5' ? getMt5Context().point : undefined
+      // Compute absolute stop price for MT5 bracket orders
+      if (market === 'mt5' && params.stopPips != null && params.price != null) {
+        const ctxPoint = getMt5Context().point
         const pipSz = pipSize(params.symbol, ctxPoint)
         params.stopPrice = params.side === 'BUY'
           ? params.price - params.stopPips * pipSz
@@ -205,7 +197,6 @@ async function dispatchTool(
 // ── Agent Cycle ───────────────────────────────────────────────────────────────
 
 export async function runAgentCycle(config: AgentConfig): Promise<void> {
-  const maxIterations = config.maxIterations
   const agentKey = `${config.market}:${config.symbol}`
 
   if (!tryAcquireCycleLock(agentKey)) {
@@ -235,10 +226,10 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
   let orderPlacedThisCycle = false
 
   try {
-    while (iterations < maxIterations) {
+    while (true) {
       iterations++
       const providerLabel = config.llmProvider === 'openrouter' ? `OpenRouter/${llmModel}` : `Anthropic/${llmModel}`
-      logEvent(agentKey, 'debug', 'claude_thinking', `Sending to ${providerLabel} (iteration ${iterations}/${maxIterations})`)
+      logEvent(agentKey, 'debug', 'claude_thinking', `Sending to ${providerLabel} (iteration ${iterations})`)
 
       const response = await llmProvider.createMessage({
         model: llmModel,
@@ -354,12 +345,6 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
       logEvent(agentKey, 'warn', 'cycle_end', `Unexpected stop reason: ${response.stop_reason}`)
       log.warn({ stop_reason: response.stop_reason }, 'unexpected stop reason — aborting cycle')
       break
-    }
-
-    if (iterations >= maxIterations) {
-      logEvent(agentKey, 'warn', 'cycle_end', `Hit iteration limit (${maxIterations}) — cycle aborted`)
-      log.warn({ maxIterations }, 'agent cycle hit iteration limit')
-      recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper: false, decision: 'ABORTED', reason: `Hit iteration limit (${maxIterations})`, time: new Date().toISOString() })
     }
 
   } catch (err) {

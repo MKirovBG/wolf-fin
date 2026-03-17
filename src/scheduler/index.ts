@@ -47,8 +47,8 @@ export function startAgentSchedule(config: AgentConfig): void {
   const intervalMs = resolveIntervalMs(config)
 
   const handle = setInterval(async () => {
-    // Autonomous mode: skip if forex/mt5 market is closed
-    if (config.fetchMode === 'autonomous' && (config.market === 'forex' || config.market === 'mt5') && !isForexSessionOpen()) {
+    // Autonomous mode: skip if MT5 market is closed
+    if (config.fetchMode === 'autonomous' && config.market === 'mt5' && !isForexSessionOpen()) {
       log.debug({ key }, 'autonomous — market closed, skipping')
       return
     }

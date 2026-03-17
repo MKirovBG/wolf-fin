@@ -13,7 +13,7 @@ import { fetchUpcomingEvents } from '../adapters/calendar.js'
  */
 export async function buildMarketContext(
   symbol: string,
-  market: 'crypto' | 'forex' | 'mt5',
+  market: 'crypto' | 'mt5',
 ): Promise<MarketContext> {
   if (market === 'crypto') {
     const [fearGreed, cryptoMarket, news, upcomingEvents] = await Promise.all([

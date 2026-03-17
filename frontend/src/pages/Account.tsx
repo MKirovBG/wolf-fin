@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { getAccounts } from '../api/client.ts'
-import type { AccountEntry, AlpacaAccountEntry, BinanceAccountEntry, Mt5AccountEntry, AlpacaPosition, AlpacaFill, BinanceBalance, BinanceOpenOrder, Mt5Position } from '../types/index.ts'
+import type { AccountEntry, BinanceAccountEntry, Mt5AccountEntry, BinanceBalance, BinanceOpenOrder, Mt5Position } from '../types/index.ts'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -93,155 +93,6 @@ function Td({ children, className = '' }: { children: React.ReactNode; className
 function PnlSpan({ value }: { value: number }) {
   const color = value > 0 ? 'text-green' : value < 0 ? 'text-red' : 'text-muted'
   return <span className={`font-mono ${color}`}>{value >= 0 ? '+' : ''}${usd(value)}</span>
-}
-
-// ── Alpaca card ────────────────────────────────────────────────────────────────
-
-function AlpacaCard({ entry }: { entry: AlpacaAccountEntry }) {
-  const [tab, setTab] = useState('Positions')
-  const tabs = ['Positions', 'Activity']
-
-  const s = entry.summary
-  const positions = entry.positions ?? []
-  const fills = entry.recentFills ?? []
-
-  return (
-    <div className="bg-surface border border-border rounded-lg overflow-hidden">
-      {/* Card header */}
-      <div className="px-5 py-4 border-b border-border flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <span className="text-white font-bold text-sm tracking-wide">ALPACA</span>
-          <ModeBadge mode={entry.mode} />
-          <ConnectedDot ok={entry.connected} />
-        </div>
-        {s && (
-          <span className={`text-xs font-mono px-2 py-0.5 rounded border ${
-            s.status === 'ACTIVE'
-              ? 'text-green border-green-border bg-green-dim'
-              : 'text-yellow border-yellow-border bg-yellow-dim'
-          }`}>
-            {s.status}
-          </span>
-        )}
-      </div>
-
-      {/* Error state */}
-      {!entry.connected && (
-        <div className="px-5 py-6 text-xs text-red font-mono">
-          ✗ {entry.error ?? 'Connection failed'}
-        </div>
-      )}
-
-      {/* Summary metrics */}
-      {s && (
-        <div className="px-5 py-4 grid grid-cols-3 gap-4 border-b border-border">
-          <SummaryMetric label="Portfolio Value" value={`$${usd(s.portfolioValue)}`} />
-          <SummaryMetric label="Cash" value={`$${usd(s.cash)}`} />
-          <SummaryMetric
-            label="Buying Power"
-            value={`$${usd(s.buyingPower)}`}
-            color="text-blue-400"
-          />
-          <SummaryMetric
-            label="Equity"
-            value={`$${usd(s.equity)}`}
-          />
-          <SummaryMetric
-            label="Unrealised P&L"
-            value={`${s.unrealizedPl >= 0 ? '+' : ''}$${usd(s.unrealizedPl)}`}
-            color={s.unrealizedPl >= 0 ? 'text-green' : 'text-red'}
-          />
-          <SummaryMetric
-            label="Day P&L"
-            value={`${s.dayPl >= 0 ? '+' : ''}$${usd(s.dayPl)}`}
-            color={s.dayPl >= 0 ? 'text-green' : 'text-red'}
-          />
-        </div>
-      )}
-
-      {/* Tabs */}
-      {entry.connected && (
-        <div className="px-5 pt-4">
-          <Tabs tabs={tabs} active={tab} onChange={setTab} />
-
-          {/* Positions */}
-          {tab === 'Positions' && (
-            <div className="overflow-x-auto mb-4">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-border">
-                    {['Symbol', 'Side', 'Qty', 'Avg Entry', 'Current', 'Market Value', 'Cost Basis', 'Unrealised P&L', 'P&L %'].map(h => <Th key={h}>{h}</Th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {positions.length === 0
-                    ? <EmptyRow cols={9} label="No open positions" />
-                    : positions.map((p, i) => <AlpacaPositionRow key={i} p={p} />)
-                  }
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* Activity */}
-          {tab === 'Activity' && (
-            <div className="overflow-x-auto mb-4">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-border">
-                    {['Time', 'Symbol', 'Side', 'Qty', 'Price', 'Value'].map(h => <Th key={h}>{h}</Th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {fills.length === 0
-                    ? <EmptyRow cols={6} label="No recent fills" />
-                    : fills.map((f, i) => <AlpacaFillRow key={i} f={f} />)
-                  }
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function AlpacaPositionRow({ p }: { p: AlpacaPosition }) {
-  return (
-    <tr className="border-b border-[#1a1a1a] hover:bg-surface2 transition-colors">
-      <Td className="font-bold text-white">{p.symbol}</Td>
-      <Td>
-        <span className={`font-bold ${p.side === 'BUY' ? 'text-green' : 'text-red'}`}>{p.side}</span>
-      </Td>
-      <Td className="font-mono">{p.qty.toLocaleString(undefined, { maximumFractionDigits: 6 })}</Td>
-      <Td className="font-mono text-muted">{p.avgEntry.toFixed(5)}</Td>
-      <Td className="font-mono">{p.currentPrice.toFixed(5)}</Td>
-      <Td className="font-mono">${usd(p.marketValue)}</Td>
-      <Td className="font-mono text-muted">${usd(p.costBasis)}</Td>
-      <Td><PnlSpan value={p.unrealizedPl} /></Td>
-      <Td>
-        <span className={`font-mono text-[11px] ${p.unrealizedPlPct >= 0 ? 'text-green' : 'text-red'}`}>
-          {p.unrealizedPlPct >= 0 ? '+' : ''}{p.unrealizedPlPct.toFixed(3)}%
-        </span>
-      </Td>
-    </tr>
-  )
-}
-
-function AlpacaFillRow({ f }: { f: AlpacaFill }) {
-  return (
-    <tr className="border-b border-[#1a1a1a] hover:bg-surface2 transition-colors">
-      <Td className="text-muted whitespace-nowrap">{fmtTime(f.time)}</Td>
-      <Td className="font-bold text-white">{f.symbol}</Td>
-      <Td>
-        <span className={`font-bold ${f.side === 'BUY' ? 'text-green' : 'text-red'}`}>{f.side}</span>
-      </Td>
-      <Td className="font-mono">{f.qty.toLocaleString(undefined, { maximumFractionDigits: 6 })}</Td>
-      <Td className="font-mono">{f.price.toFixed(5)}</Td>
-      <Td className="font-mono text-white">${usd(f.qty * f.price)}</Td>
-    </tr>
-  )
 }
 
 // ── Binance card ───────────────────────────────────────────────────────────────
@@ -494,7 +345,6 @@ export function Account() {
     return () => clearInterval(id)
   }, [load])
 
-  const alpacaAccounts = accounts.filter((a): a is AlpacaAccountEntry => a.exchange === 'alpaca')
   const binanceAccounts = accounts.filter((a): a is BinanceAccountEntry => a.exchange === 'binance')
   const mt5Accounts = accounts.filter((a): a is Mt5AccountEntry => a.exchange === 'mt5')
 
@@ -536,21 +386,9 @@ export function Account() {
           <div className="text-3xl mb-3">🔑</div>
           <p className="text-muted text-sm">No accounts configured.</p>
           <p className="text-muted text-xs mt-1">
-            Add your Alpaca and Binance API keys in the <span className="text-white">API Keys</span> page.
+            Add your Binance API keys or configure MT5 accounts in the <span className="text-white">API Keys</span> page.
           </p>
         </div>
-      )}
-
-      {/* Alpaca accounts */}
-      {!loading && alpacaAccounts.length > 0 && (
-        <section className="mb-8">
-          <h2 className="text-[10px] uppercase tracking-[2px] text-muted mb-3">Forex — Alpaca</h2>
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-            {alpacaAccounts.map(a => (
-              <AlpacaCard key={a.id} entry={a} />
-            ))}
-          </div>
-        </section>
       )}
 
       {/* Binance accounts */}

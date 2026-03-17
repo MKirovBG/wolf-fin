@@ -4,8 +4,7 @@ export type AgentStatus = 'idle' | 'running' | 'paused'
 
 export interface AgentConfig {
   symbol: string
-  market: 'crypto' | 'forex' | 'mt5'
-  maxIterations: number
+  market: 'crypto' | 'mt5'
   fetchMode: 'manual' | 'scheduled' | 'autonomous'
   scheduleIntervalSeconds: number
   maxLossUsd: number
@@ -26,7 +25,7 @@ export interface AgentState {
 
 export interface CycleResult {
   symbol: string
-  market: 'crypto' | 'forex' | 'mt5'
+  market: 'crypto' | 'mt5'
   paper: boolean
   decision: string
   reason: string

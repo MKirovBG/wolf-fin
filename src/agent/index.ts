@@ -14,7 +14,7 @@ import { buildMarketContext } from './context.js'
 import { sessionLabel } from '../adapters/session.js'
 import { getTools } from '../tools/definitions.js'
 import { recordCycle, logEvent, tryAcquireCycleLock, releaseCycleLock } from '../server/state.js'
-import { dbGetAgentPerformance } from '../db/index.js'
+import { dbGetAgentPerformance, makeAgentKey } from '../db/index.js'
 import type { AgentConfig } from '../types.js'
 import type { OrderParams } from '../adapters/types.js'
 
@@ -208,7 +208,7 @@ async function dispatchTool(
 // ── Agent Cycle ───────────────────────────────────────────────────────────────
 
 export async function runAgentCycle(config: AgentConfig): Promise<void> {
-  const agentKey = `${config.market}:${config.symbol}`
+  const agentKey = makeAgentKey(config.market, config.symbol, config.mt5AccountId)
 
   if (!tryAcquireCycleLock(agentKey)) {
     logEvent(agentKey, 'warn', 'cycle_skip', 'Cycle already running — skipped duplicate trigger')

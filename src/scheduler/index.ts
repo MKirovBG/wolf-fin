@@ -7,6 +7,7 @@ import pino from 'pino'
 import { runAgentCycle } from '../agent/index.js'
 import { isForexSessionOpen } from '../adapters/session.js'
 import { setAgentStatus } from '../server/state.js'
+import { makeAgentKey } from '../db/index.js'
 import type { AgentConfig } from '../types.js'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
@@ -15,7 +16,7 @@ const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
 const tasks = new Map<string, ReturnType<typeof setInterval>>()
 
 function agentKey(config: AgentConfig): string {
-  return `${config.market}:${config.symbol}`
+  return makeAgentKey(config.market, config.symbol, config.mt5AccountId)
 }
 
 /** Backwards-compat: old DB records stored scheduleIntervalMinutes (number in minutes).

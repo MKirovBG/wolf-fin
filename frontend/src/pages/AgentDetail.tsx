@@ -24,8 +24,8 @@ function iLabel(s: number) {
 type Tab = 'overview' | 'logs'
 
 export function AgentDetail() {
-  const { market, symbol } = useParams<{ market: string; symbol: string }>()
-  const agentKey = `${market}:${symbol}`
+  const { market, symbol, accountId } = useParams<{ market: string; symbol: string; accountId?: string }>()
+  const agentKey = market === 'mt5' && accountId ? `mt5:${symbol}:${accountId}` : `${market}:${symbol}`
 
   const [agent, setAgent] = useState<AgentState | null>(null)
   const [loading, setLoading] = useState<string | null>(null)

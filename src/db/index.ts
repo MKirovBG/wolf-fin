@@ -79,8 +79,13 @@ export function dbGetAllAgents(): AgentState[] {
   }))
 }
 
+export function makeAgentKey(market: string, symbol: string, mt5AccountId?: number): string {
+  if (market === 'mt5' && mt5AccountId) return `mt5:${symbol}:${mt5AccountId}`
+  return `${market}:${symbol}`
+}
+
 export function dbUpsertAgent(agent: AgentState): void {
-  const key = `${agent.config.market}:${agent.config.symbol}`
+  const key = makeAgentKey(agent.config.market, agent.config.symbol, agent.config.mt5AccountId)
   db.prepare(`
     INSERT INTO agents (key, config, status, cycle_count, started_at, last_cycle)
     VALUES (?, ?, ?, ?, ?, ?)

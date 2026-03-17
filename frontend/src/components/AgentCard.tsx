@@ -205,18 +205,22 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
 
 export function AgentCard({ agent }: Props) {
   const navigate = useNavigate()
+  const { market, symbol, mt5AccountId } = agent.config
+  const agentPath = market === 'mt5' && mt5AccountId
+    ? `/agents/mt5/${symbol}/${mt5AccountId}`
+    : `/agents/${market}/${symbol}`
 
   return (
     <div
       className="bg-surface border border-border rounded-lg p-4 flex flex-col gap-3 cursor-pointer hover:border-muted transition-colors"
-      onClick={() => navigate(`/agents/${agent.config.market}/${agent.config.symbol}`)}
+      onClick={() => navigate(agentPath)}
     >
       {/* Header */}
       <div className="flex justify-between items-start">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-white font-bold text-base">{agent.config.symbol}</span>
-            <Badge label={agent.config.market.toUpperCase()} variant={agent.config.market} />
+            <span className="text-white font-bold text-base">{symbol}</span>
+            <Badge label={market.toUpperCase()} variant={market} />
             {agent.config.leverage && (
               <span className="text-[10px] text-muted border border-border rounded px-1.5 py-0.5">{agent.config.leverage}:1</span>
             )}
@@ -224,7 +228,7 @@ export function AgentCard({ agent }: Props) {
           <AgentStatusBadge status={agent.status} />
         </div>
         <button
-          onClick={e => { e.stopPropagation(); navigate(`/agents/${agent.config.market}/${agent.config.symbol}`) }}
+          onClick={e => { e.stopPropagation(); navigate(agentPath) }}
           className="px-2.5 py-1 text-[11px] border border-border text-muted rounded hover:border-green hover:text-green transition-colors shrink-0"
         >
           Open →

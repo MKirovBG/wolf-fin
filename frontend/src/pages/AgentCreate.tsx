@@ -192,8 +192,12 @@ const [customPrompt, setCustomPrompt] = useState('')
       }
       const res = await addAgent(config)
       if (!res.ok) { setErr('Failed to create agent'); return }
-      toast.success(`Agent ${symbol.toUpperCase().trim()} created`)
-      navigate(`/agents/${market}/${symbol.toUpperCase().trim()}`)
+      const sym = symbol.toUpperCase().trim()
+      toast.success(`Agent ${sym} created`)
+      const path = market === 'mt5' && mt5AccountId
+        ? `/agents/mt5/${sym}/${mt5AccountId}`
+        : `/agents/${market}/${sym}`
+      navigate(path)
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Unknown error')
     } finally {

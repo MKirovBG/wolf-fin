@@ -7,7 +7,7 @@ import { dirname, join } from 'path'
 import { existsSync, appendFileSync, readFileSync, writeFileSync } from 'fs'
 import pino from 'pino'
 import { getState, getAgent, upsertAgent, removeAgent, setAgentStatus, getLogs } from './state.js'
-import { dbGetCycleResults, dbGetCycleById, dbGetLogsForCycle, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor } from '../db/index.js'
+import { dbGetCycleResults, dbGetCycleById, dbGetLogsForCycle, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor, makeAgentKey } from '../db/index.js'
 import { getRiskState, MAX_DAILY_LOSS_USD } from '../guardrails/riskState.js'
 import { getRiskStateFor } from '../guardrails/riskStateStore.js'
 import { startAgentSchedule, pauseAgentSchedule, stopAgentSchedule } from '../scheduler/index.js'
@@ -151,7 +151,7 @@ export async function startServer(): Promise<void> {
 
   app.post('/api/agents', async (req) => {
     const body = req.body as AgentConfig
-    const key = `${body.market}:${body.symbol}`
+    const key = makeAgentKey(body.market, body.symbol, body.mt5AccountId)
     upsertAgent(defaultAgentState(body))
     return { ok: true, key }
   })
@@ -515,7 +515,7 @@ export async function startServer(): Promise<void> {
         const orders = await adapter.getOpenOrders(agent.config.symbol)
         return orders.map(o => ({
           ...o,
-          agentKey: `${agent.config.market}:${agent.config.symbol}`,
+          agentKey: makeAgentKey(agent.config.market, agent.config.symbol, agent.config.mt5AccountId),
           market: agent.config.market,
           paper: false,
         }))
@@ -534,7 +534,7 @@ export async function startServer(): Promise<void> {
         const fills = await adapter.getTradeHistory(agent.config.symbol, 50)
         return fills.map(f => ({
           ...f,
-          agentKey: `${agent.config.market}:${agent.config.symbol}`,
+          agentKey: makeAgentKey(agent.config.market, agent.config.symbol, agent.config.mt5AccountId),
           market: agent.config.market,
           paper: false,
         }))

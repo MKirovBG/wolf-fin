@@ -22,6 +22,52 @@ export type { AgentConfig } from '../types.js'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
 
+// ── Per-agent position tracker (in-memory, updated each cycle) ──────────────
+interface TrackedPosition { side: string; priceOpen: number; volume: number }
+const lastKnownPositions = new Map<string, Map<number, TrackedPosition>>()
+
+async function detectExternalCloses(
+  agentKey: string,
+  config: AgentConfig,
+  currentPositions: Array<{ ticket: number; side: string; priceOpen: number; volume: number }>,
+): Promise<string> {
+  const prev = lastKnownPositions.get(agentKey) ?? new Map<number, TrackedPosition>()
+  const current = new Map(currentPositions.map(p => [p.ticket, p]))
+  lastKnownPositions.set(agentKey, current)
+
+  const closed = [...prev.entries()].filter(([ticket]) => !current.has(ticket))
+  if (closed.length === 0) return ''
+
+  const notes: string[] = []
+  const bridge = `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`
+  const acctParam = config.mt5AccountId ? `&accountId=${config.mt5AccountId}` : ''
+
+  for (const [ticket, pos] of closed) {
+    let pnl: number | null = null
+    try {
+      const deals = await fetch(
+        `${bridge}/history/deals?symbol=${config.symbol}&days=1${acctParam}`,
+      ).then(r => r.json()) as Array<{ order: number; profit: number }>
+      const deal = deals.find(d => d.order === ticket)
+      if (deal) pnl = deal.profit
+    } catch { /* best-effort */ }
+
+    const pnlStr = pnl !== null ? ` P&L: $${pnl.toFixed(2)}.` : ''
+    logEvent(agentKey, 'warn', 'decision',
+      `EXTERNAL_CLOSE: Position #${ticket} (${pos.side} ${pos.volume} lot @ ${pos.priceOpen}) closed externally.${pnlStr}`)
+    recordCycle(agentKey, {
+      symbol: config.symbol, market: config.market, paper: false,
+      decision: 'EXTERNAL_CLOSE',
+      reason: `Position #${ticket} (${pos.side} ${pos.volume} @ ${pos.priceOpen}) closed externally.${pnlStr}`,
+      time: new Date().toISOString(),
+      ...(pnl !== null ? { pnlUsd: pnl } : {}),
+    })
+    notes.push(`Position #${ticket} (${pos.side} ${pos.volume} lot @ ${pos.priceOpen}) was closed externally since last cycle.${pnlStr}`)
+  }
+
+  return `\n\n⚠ EXTERNALLY CLOSED POSITIONS (since last cycle):\n${notes.join('\n')}\nDo NOT attempt to close these tickets — they no longer exist.`
+}
+
 /** Pip size for stop-price calculation — commodity-aware */
 function pipSize(symbol: string, point?: number): number {
   const s = symbol.toUpperCase()
@@ -41,7 +87,7 @@ function buildSystemPrompt(config: AgentConfig, agentKey: string): string {
   const maxSpreadPips = parseFloat(process.env.MAX_SPREAD_PIPS ?? '3')
   const sessionNote =
     market === 'mt5'
-      ? `\nCURRENT SESSION: ${sessionLabel()}\nMT5 SESSION RULES: Only trade during Tokyo, London, or New York sessions. Reject entries when spread > ${maxSpreadPips} pips or sessionOpen is false.\nMT5 provides real swap rates in the snapshot — factor overnight costs into hold decisions for multi-day positions.\n\nMT5 POSITION MANAGEMENT (critical):\n- Open positions have a ticket number (orderId in get_open_orders).\n- To CLOSE a position: call close_position(ticket) — NEVER place an opposite BUY/SELL.\n- Placing an opposite-side order does NOT close the existing position; it opens a second one.\n- Use cancel_order ONLY for pending limit/stop orders not yet filled.`
+      ? `\nCURRENT SESSION: ${sessionLabel()}\nMT5 SESSION RULES: Only trade during Tokyo, London, or New York sessions. Reject entries when spread > ${maxSpreadPips} pips or sessionOpen is false.\nMT5 provides real swap rates in the snapshot — factor overnight costs into hold decisions for multi-day positions.\n\nMT5 POSITION & ORDER MANAGEMENT (critical):\nThe snapshot contains TWO important arrays — read both before deciding:\n  positions[] — your currently open trades. Each has: ticket, side, volume, priceOpen, priceCurrent, profit (unrealised), sl, tp, swap.\n  pendingOrders[] — your pending limit/stop orders not yet filled. Each has: ticket, type (BUY_LIMIT/SELL_LIMIT/BUY_STOP/SELL_STOP), volume, priceTarget, sl, tp.\n\nRules:\n- To CLOSE an open position: call close_position(ticket). NEVER place an opposite-side order — it opens a second position.\n- To CANCEL a pending order: call cancel_order(ticket). Do this if the order is no longer valid given current price/indicators.\n- Do not open a new position if one is already open for this symbol (unless pyramiding is justified by strong signal).\n- Do not place a duplicate pending order if one already exists at the same price level.\n- If a position shows negative profit approaching sl: decide whether to close early or hold.\n- If pendingOrders is empty and price is near a key level, consider placing a limit order for better entry.`
       : ''
 
   const base = `You are Wolf-Fin, an autonomous trading agent. ${mode}
@@ -93,13 +139,14 @@ function buildCycleUserMessage(config: AgentConfig): string {
 
 SIGNAL PRIORITY (evaluate in order):
 1. RISK GATE — if remainingBudgetUsd = 0, output HOLD immediately without further tool calls
-2. TREND — EMA20 vs EMA50 direction (EMA20 > EMA50 = bullish bias)
-3. MOMENTUM — RSI14: <30 oversold watch, >70 overbought watch, 45-55 neutral
-4. VOLATILITY — ATR14 and BB width for stop sizing and breakout detection
-5. CONTEXT — Fear/Greed (crypto) or session quality (MT5); skip if high-impact event imminent
-6. POSITION — manage any existing open position before entering a new one
+2. OPEN POSITIONS — check positions[] in snapshot first. If a position is open, evaluate: hold, add to, or close it before considering a new entry. Review unrealised P&L, sl/tp levels, and swap cost.
+3. PENDING ORDERS — check pendingOrders[] in snapshot. Cancel any pending order that is no longer valid (price has moved past it, signal reversed). Avoid placing duplicates.
+4. TREND — EMA20 vs EMA50 direction (EMA20 > EMA50 = bullish bias)
+5. MOMENTUM — RSI14: <30 oversold watch, >70 overbought watch, 45-55 neutral
+6. VOLATILITY — ATR14 and BB width for stop sizing and breakout detection
+7. CONTEXT — Fear/Greed (crypto) or session quality (MT5); skip if high-impact event imminent
 
-Use at most 3 tool calls per cycle. Call get_snapshot first.${config.market !== 'mt5' ? ' Only call get_order_book if actively sizing a new entry.' : ''}`
+Use at most 4 tool calls per cycle. Call get_snapshot first.${config.market !== 'mt5' ? ' Only call get_order_book if actively sizing a new entry.' : ''}`
 }
 
 // ── Tool result summariser (keeps logs readable) ──────────────────────────────
@@ -356,9 +403,21 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
 
           // Strip raw candles from snapshot before adding to message history —
           // indicators are already derived from them, so candles just waste tokens.
-          const resultForHistory = block.name === 'get_snapshot' && result != null
+          let resultForHistory: unknown = block.name === 'get_snapshot' && result != null
             ? { ...(result as Record<string, unknown>), candles: undefined }
             : result
+
+          // ── Detect externally closed MT5 positions (piggybacked on get_snapshot) ──
+          if (block.name === 'get_snapshot' && config.market === 'mt5' && result != null) {
+            const snap = result as { positions?: Array<{ ticket: number; side: string; priceOpen: number; volume: number }> }
+            if (Array.isArray(snap.positions)) {
+              const externalNote = await detectExternalCloses(agentKey, config, snap.positions)
+              if (externalNote) {
+                resultForHistory = { ...(resultForHistory as Record<string, unknown>), _externalCloses: externalNote.trim() }
+              }
+            }
+          }
+
           toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(resultForHistory) })
         }
 

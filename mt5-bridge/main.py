@@ -332,6 +332,10 @@ def get_snapshot(symbol: str, accountId: Optional[int] = None) -> dict:
     positions = mt5.positions_get(symbol=mt5_sym)
     pos_list = [map_position(p) for p in positions] if positions else []
 
+    # Pending orders for this symbol (BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, etc.)
+    pending = mt5.orders_get(symbol=mt5_sym)
+    pending_list = [map_order(o) for o in pending] if pending else []
+
     # Candles — 4 timeframes
     timeframes = {
         "m1": mt5.TIMEFRAME_M1,
@@ -376,6 +380,7 @@ def get_snapshot(symbol: str, accountId: Optional[int] = None) -> dict:
             "server": acct.server if acct else "",
         },
         "positions": pos_list,
+        "pending_orders": pending_list,
     }
 
 

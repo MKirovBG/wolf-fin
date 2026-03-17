@@ -128,6 +128,7 @@ interface BridgeSnapshot {
     server: string
   }
   positions: BridgePosition[]
+  pending_orders: BridgePendingOrder[]
 }
 
 interface BridgeAccount {
@@ -143,6 +144,19 @@ interface BridgeAccount {
   currency: string
   name: string
   company: string
+}
+
+interface BridgePendingOrder {
+  ticket: number
+  symbol: string
+  type: string       // BUY_LIMIT | SELL_LIMIT | BUY_STOP | SELL_STOP | BUY_STOP_LIMIT | SELL_STOP_LIMIT
+  volume_initial: number
+  price_open: number
+  sl: number
+  tp: number
+  price_current: number
+  comment: string
+  time: string
 }
 
 interface BridgeDeal {
@@ -238,7 +252,7 @@ export class MT5Adapter implements IMarketAdapter {
       { asset: 'FREE_MARGIN', free: snap.account.free_margin, locked: 0 },
     ]
 
-    // Map positions to open orders
+    // Map positions to open orders (generic interface)
     const openOrders: Order[] = snap.positions.map(p => ({
       orderId: p.ticket,
       clientOrderId: `mt5-${p.ticket}`,
@@ -252,6 +266,34 @@ export class MT5Adapter implements IMarketAdapter {
       timeInForce: 'GTC',
       time: new Date(p.time).getTime(),
       updateTime: Date.now(),
+    }))
+
+    // Rich MT5 position detail — includes sl/tp/currentProfit for LLM reasoning
+    const positions = snap.positions.map(p => ({
+      ticket: p.ticket,
+      symbol: p.symbol,
+      side: p.side,
+      volume: p.volume,
+      priceOpen: p.priceOpen,
+      priceCurrent: p.priceCurrent,
+      profit: p.profit,
+      swap: p.swap,
+      sl: p.sl > 0 ? p.sl : null,
+      tp: p.tp > 0 ? p.tp : null,
+      comment: p.comment,
+    }))
+
+    // Pending limit/stop orders for this symbol
+    const pendingOrders = snap.pending_orders.map(o => ({
+      ticket: o.ticket,
+      symbol: o.symbol,
+      type: o.type,           // BUY_LIMIT | SELL_LIMIT | BUY_STOP | SELL_STOP
+      volume: o.volume_initial,
+      priceTarget: o.price_open,
+      priceCurrent: o.price_current,
+      sl: o.sl > 0 ? o.sl : null,
+      tp: o.tp > 0 ? o.tp : null,
+      comment: o.comment,
     }))
 
     // Pip value: for standard forex, point * contract_size
@@ -273,6 +315,8 @@ export class MT5Adapter implements IMarketAdapter {
       candles: { m1, m15, h1, h4 },
       indicators: computeIndicators(h1),
       account: { balances, openOrders },
+      positions,       // rich MT5 position detail (sl, tp, profit, priceCurrent, swap)
+      pendingOrders,   // pending limit/stop orders not yet filled
       risk: riskState,
       forex: {
         spread: info.spread * point / pipSizeHeuristic(symbol, point),

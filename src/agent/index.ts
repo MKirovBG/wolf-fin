@@ -111,7 +111,10 @@ function summariseToolResult(name: string, result: unknown): string {
     }
     if (name === 'get_order_book') {
       const b = result as { bids?: [number, number][]; asks?: [number, number][] }
-      return `best bid=${b.bids?.[0]?.[0]} ask=${b.asks?.[0]?.[0]}`
+      const bid = b.bids?.[0]?.[0]
+      const ask = b.asks?.[0]?.[0]
+      if (bid === undefined && ask === undefined) return 'no DOM data (broker does not publish order book)'
+      return `best bid=${bid} ask=${ask}`
     }
     if (name === 'place_order') {
       const o = result as { status?: string; orderId?: number; blocked?: boolean; reason?: string }

@@ -7,7 +7,7 @@ import { dirname, join } from 'path'
 import { existsSync, appendFileSync, readFileSync, writeFileSync } from 'fs'
 import pino from 'pino'
 import { getState, getAgent, upsertAgent, removeAgent, setAgentStatus, getLogs } from './state.js'
-import { dbGetCycleResults, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor } from '../db/index.js'
+import { dbGetCycleResults, dbGetCycleById, dbGetLogsForCycle, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor } from '../db/index.js'
 import { getRiskState, MAX_DAILY_LOSS_USD } from '../guardrails/riskState.js'
 import { getRiskStateFor } from '../guardrails/riskStateStore.js'
 import { startAgentSchedule, pauseAgentSchedule, stopAgentSchedule } from '../scheduler/index.js'
@@ -278,6 +278,21 @@ export async function startServer(): Promise<void> {
   app.get('/api/reports/trades', async (req) => {
     const { market } = req.query as { market?: string }
     return dbGetCycleResults(market as 'crypto' | 'mt5' | undefined)
+  })
+
+  // ── Cycle detail — full context for a single cycle ───────────────────────────
+  app.get('/api/cycles/:id', async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const cycle = dbGetCycleById(parseInt(id, 10))
+    if (!cycle) return reply.status(404).send({ error: 'Cycle not found' })
+
+    // Fetch the agent config for context
+    const agentState = getAgent(cycle.agentKey)
+
+    // Fetch all log entries that occurred during this cycle's execution window
+    const logs = dbGetLogsForCycle(cycle.agentKey, cycle.time)
+
+    return reply.send({ cycle, agent: agentState ?? null, logs })
   })
 
   // ── Accounts ─────────────────────────────────────────────────────────────────

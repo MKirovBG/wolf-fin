@@ -4,6 +4,7 @@ import { getReportSummary, getReportTrades } from '../api/client.ts'
 import type { ReportSummary, CycleResult } from '../types/index.ts'
 import { Card } from '../components/Card.tsx'
 import { Badge, decisionVariant } from '../components/Badge.tsx'
+import { CycleDetailModal } from '../components/CycleDetailModal.tsx'
 
 function rel(iso: string) {
   const d = Date.now() - new Date(iso).getTime()
@@ -15,17 +16,14 @@ function rel(iso: string) {
 function buildChartData(events: CycleResult[]) {
   const sorted = [...events].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime())
   let cryptoPnl = 0
-  let forexPnl = 0
+  let mt5Pnl = 0
   return sorted.map(e => {
-    const isBuy = e.decision.toUpperCase().startsWith('BUY')
-    const isSell = e.decision.toUpperCase().startsWith('SELL')
-    // No real P&L data without fill prices — just show cycle counts as proxy
-    if (e.market === 'crypto' && isBuy) cryptoPnl += 0
-    if (e.market === 'forex' && isBuy) forexPnl += 0
+    if (e.market === 'crypto') cryptoPnl += e.pnlUsd ?? 0
+    if (e.market === 'mt5') mt5Pnl += e.pnlUsd ?? 0
     return {
       time: new Date(e.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       crypto: parseFloat(cryptoPnl.toFixed(2)),
-      forex: parseFloat(forexPnl.toFixed(2)),
+      mt5: parseFloat(mt5Pnl.toFixed(2)),
     }
   })
 }
@@ -33,7 +31,8 @@ function buildChartData(events: CycleResult[]) {
 export function Reports() {
   const [summary, setSummary] = useState<ReportSummary | null>(null)
   const [trades, setTrades] = useState<CycleResult[]>([])
-  const [filter, setFilter] = useState<'all' | 'crypto' | 'forex'>('all')
+  const [filter, setFilter] = useState<'all' | 'crypto' | 'mt5'>('all')
+  const [selectedCycleId, setSelectedCycleId] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
@@ -101,7 +100,7 @@ export function Reports() {
       {summary && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <StatCard market="crypto" data={summary.crypto} />
-          <StatCard market="forex" data={summary.forex} />
+          <StatCard market="mt5" data={summary.mt5} />
         </div>
       )}
 
@@ -119,7 +118,7 @@ export function Reports() {
                 />
                 <Legend wrapperStyle={{ fontSize: 11, color: '#666' }} />
                 <Line type="monotone" dataKey="crypto" stroke="#448aff" strokeWidth={1.5} dot={false} />
-                <Line type="monotone" dataKey="forex" stroke="#00e676" strokeWidth={1.5} dot={false} />
+                <Line type="monotone" dataKey="mt5" stroke="#00e676" strokeWidth={1.5} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           )
@@ -128,7 +127,7 @@ export function Reports() {
 
       <Card title="Trade History">
         <div className="flex gap-2 mb-4">
-          {(['all', 'crypto', 'forex'] as const).map(f => (
+          {(['all', 'crypto', 'mt5'] as const).map(f => (
             <button
               key={f}
               onClick={() => setFilter(f)}
@@ -157,13 +156,18 @@ export function Reports() {
                 </thead>
                 <tbody>
                   {filtered.map((e, i) => (
-                    <tr key={i} className="hover:bg-surface2 border-b border-[#1a1a1a]">
+                    <tr
+                      key={i}
+                      onClick={() => e.id != null && setSelectedCycleId(e.id)}
+                      className={`border-b border-[#1a1a1a] transition-colors ${e.id != null ? 'hover:bg-surface2 cursor-pointer' : ''}`}
+                    >
                       <td className="py-2 pr-4 text-muted whitespace-nowrap">{rel(e.time)}</td>
                       <td className="py-2 pr-4 font-bold">{e.symbol}</td>
                       <td className="py-2 pr-4"><Badge label={e.market} variant={e.market} /></td>
                       <td className="py-2 pr-4"><Badge label={e.decision} variant={decisionVariant(e.decision)} /></td>
                       <td className="py-2 pr-4 text-muted max-w-[280px] truncate">{e.reason || '—'}</td>
-                      <td className="py-2"><Badge label={e.paper ? 'PAPER' : 'LIVE'} variant={e.paper ? 'paper' : 'live'} /></td>
+                      <td className="py-2 pr-4"><Badge label={e.paper ? 'PAPER' : 'LIVE'} variant={e.paper ? 'paper' : 'live'} /></td>
+                      <td className="py-2 text-[9px] text-muted2">{e.id != null ? '→' : ''}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -172,6 +176,13 @@ export function Reports() {
           )
         }
       </Card>
+
+      {selectedCycleId != null && (
+        <CycleDetailModal
+          cycleId={selectedCycleId}
+          onClose={() => setSelectedCycleId(null)}
+        />
+      )}
     </div>
   )
 }

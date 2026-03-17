@@ -30,6 +30,8 @@ export interface AgentState {
 }
 
 export interface CycleResult {
+  id?: number       // DB row id — present on list/detail responses
+  agentKey?: string // "market:symbol" — present on list/detail responses
   symbol: string
   market: 'crypto' | 'mt5'
   paper: boolean
@@ -37,6 +39,13 @@ export interface CycleResult {
   reason: string
   time: string
   error?: string
+  pnlUsd?: number
+}
+
+export interface CycleDetail {
+  cycle: CycleResult & { id: number; agentKey: string }
+  agent: AgentState | null
+  logs: LogEntry[]
 }
 
 export interface RiskState {

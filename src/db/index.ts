@@ -164,21 +164,57 @@ export function dbGetAgentPerformance(agentKey: string, limit = 10): AgentPerfor
   }
 }
 
-export function dbGetCycleResults(market?: string, limit = 500): CycleResult[] {
-  const rows = market
-    ? db.prepare('SELECT * FROM cycle_results WHERE market = ? ORDER BY id DESC LIMIT ?').all(market, limit)
-    : db.prepare('SELECT * FROM cycle_results ORDER BY id DESC LIMIT ?').all(limit)
-  return (rows as {
-    symbol: string; market: string; paper: number
-    decision: string; reason: string; time: string; error: string | null
-  }[]).map(r => ({
+type CycleRow = {
+  id: number; agent_key: string; symbol: string; market: string; paper: number
+  decision: string; reason: string; time: string; error: string | null; pnl_usd: number | null
+}
+
+function rowToCycle(r: CycleRow): CycleResult & { id: number; agentKey: string } {
+  return {
+    id: r.id,
+    agentKey: r.agent_key,
     symbol: r.symbol,
-    market: r.market as 'crypto' | 'forex' | 'mt5',
+    market: r.market as 'crypto' | 'mt5',
     paper: r.paper === 1,
     decision: r.decision,
     reason: r.reason,
     time: r.time,
+    pnlUsd: r.pnl_usd ?? undefined,
     ...(r.error ? { error: r.error } : {}),
+  }
+}
+
+export function dbGetCycleResults(market?: string, limit = 500): Array<CycleResult & { id: number; agentKey: string }> {
+  const rows = market
+    ? db.prepare('SELECT * FROM cycle_results WHERE market = ? ORDER BY id DESC LIMIT ?').all(market, limit)
+    : db.prepare('SELECT * FROM cycle_results ORDER BY id DESC LIMIT ?').all(limit)
+  return (rows as CycleRow[]).map(rowToCycle)
+}
+
+export function dbGetCycleById(id: number): (CycleResult & { id: number; agentKey: string }) | null {
+  const row = db.prepare('SELECT * FROM cycle_results WHERE id = ?').get(id) as CycleRow | undefined
+  return row ? rowToCycle(row) : null
+}
+
+export function dbGetLogsForCycle(agentKey: string, cycleEndTime: string): LogEntry[] {
+  // Return all log entries for this agent in the 15-minute window ending at cycleEndTime + 30s
+  const rows = db.prepare(`
+    SELECT * FROM log_entries
+    WHERE agent_key = ?
+      AND time >= datetime(?, '-15 minutes')
+      AND time <= datetime(?, '+30 seconds')
+    ORDER BY id ASC
+  `).all(agentKey, cycleEndTime, cycleEndTime) as Array<{
+    id: number; time: string; agent_key: string; level: string; event: string; message: string; data: string | null
+  }>
+  return rows.map(r => ({
+    id: r.id,
+    time: r.time,
+    agentKey: r.agent_key,
+    level: r.level as LogEntry['level'],
+    event: r.event as LogEntry['event'],
+    message: r.message,
+    data: r.data ? JSON.parse(r.data) as Record<string, unknown> : undefined,
   }))
 }
 

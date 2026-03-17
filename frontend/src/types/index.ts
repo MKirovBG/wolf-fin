@@ -8,7 +8,7 @@ export interface AgentConfig {
   fetchMode: 'manual' | 'scheduled' | 'autonomous'
   scheduleIntervalSeconds: number
   maxLossUsd: number
-  maxPositionUsd: number
+  leverage?: number
   customPrompt?: string
   mt5AccountId?: number
   llmProvider?: 'anthropic' | 'openrouter'
@@ -115,10 +115,11 @@ export interface MarketSnapshot {
 
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug'
 export type LogEvent =
-  | 'cycle_start' | 'cycle_end' | 'cycle_error'
+  | 'cycle_start' | 'cycle_end' | 'cycle_error' | 'cycle_skip'
   | 'tool_call' | 'tool_result' | 'tool_error'
   | 'claude_thinking' | 'decision'
   | 'guardrail_block' | 'session_skip'
+  | 'auto_execute' | 'auto_execute_error'
 
 export interface LogEntry {
   id: number

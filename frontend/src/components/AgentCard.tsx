@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { Badge, decisionVariant } from './Badge.tsx'
 import { AgentStatusBadge } from './AgentStatusBadge.tsx'
@@ -63,7 +63,7 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
         maxIterations: Number(data.maxIterations),
         scheduleIntervalSeconds: Number(data.scheduleIntervalSeconds),
         maxLossUsd: Number(data.maxLossUsd),
-        maxPositionUsd: Number(data.maxPositionUsd),
+        leverage: data.leverage ? Number(data.leverage) : undefined,
       })
       onSave()
     } finally {
@@ -111,7 +111,7 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
         </div>
       </div>
 
-      {/* Schedule interval (shown unless manual) */}
+      {/* Interval */}
       {fetchMode !== 'manual' && (
         <div>
           <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">Interval</label>
@@ -123,15 +123,15 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
         </div>
       )}
 
-      {/* Risk overrides */}
+      {/* Risk */}
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">Max Loss $</label>
+          <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">Max Daily Loss $</label>
           <input type="number" step="1" {...register('maxLossUsd')} />
         </div>
         <div>
-          <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">Max Position $</label>
-          <input type="number" step="1" {...register('maxPositionUsd')} />
+          <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">Leverage</label>
+          <input type="number" min="1" max="3000" placeholder="e.g. 100" {...register('leverage', { setValueAs: v => v === '' || v == null ? undefined : Number(v) })} />
         </div>
       </div>
 
@@ -147,8 +147,8 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
         <textarea
           {...register('customPrompt')}
           placeholder="Additional instructions appended to the system prompt..."
-          rows={8}
-          style={{ background: '#1e1e1e', border: '1px solid #2a2a2a', color: '#e0e0e0', borderRadius: 4, padding: '8px 10px', fontFamily: 'Courier New, monospace', fontSize: 11, lineHeight: '1.6', outline: 'none', width: '100%', resize: 'vertical', minHeight: 140 }}
+          rows={6}
+          style={{ background: '#1e1e1e', border: '1px solid #2a2a2a', color: '#e0e0e0', borderRadius: 4, padding: '8px 10px', fontFamily: 'Courier New, monospace', fontSize: 11, lineHeight: '1.6', outline: 'none', width: '100%', resize: 'vertical', minHeight: 100 }}
         />
       </div>
 
@@ -161,7 +161,6 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
         </select>
       </div>
 
-      {/* OpenRouter model — shown only when provider = openrouter */}
       {llmProvider === 'openrouter' && (
         <div>
           <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">OpenRouter Model</label>
@@ -174,8 +173,7 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
               <option value="">— Select model —</option>
               {orModels.map(m => (
                 <option key={m.id} value={m.id}>
-                  {m.name}
-                  {m.contextLength ? ` · ${(m.contextLength / 1000).toFixed(0)}k ctx` : ''}
+                  {m.name}{m.contextLength ? ` · ${(m.contextLength / 1000).toFixed(0)}k ctx` : ''}
                   {m.promptCost ? ` · $${(parseFloat(m.promptCost) * 1e6).toFixed(2)}/M` : ''}
                 </option>
               ))}
@@ -213,6 +211,7 @@ export function AgentCard({ agent, onRefresh }: Props) {
   const [showSettings, setShowSettings] = useState(false)
   const [showMarket, setShowMarket] = useState(false)
   const [loading, setLoading] = useState<string | null>(null)
+  const navigate = useNavigate()
 
   const key = `${agent.config.market}:${agent.config.symbol}`
 
@@ -231,24 +230,29 @@ export function AgentCard({ agent, onRefresh }: Props) {
       <div className="flex justify-between items-start">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <Link
-              to={`/agents/${agent.config.market}/${agent.config.symbol}`}
-              className="text-white font-bold text-base hover:text-green transition-colors"
-            >
-              {agent.config.symbol}
-            </Link>
+            <span className="text-white font-bold text-base">{agent.config.symbol}</span>
             <Badge label={agent.config.market.toUpperCase()} variant={agent.config.market} />
             <Badge label={agent.config.paper ? 'PAPER' : 'LIVE'} variant={agent.config.paper ? 'paper' : 'live'} />
           </div>
           <AgentStatusBadge status={agent.status} />
         </div>
-        <button
-          onClick={() => setShowSettings(s => !s)}
-          className={`text-lg leading-none transition-colors mt-0.5 ${showSettings ? 'text-green' : 'text-muted hover:text-white'}`}
-          title="Settings"
-        >
-          ⚙
-        </button>
+        <div className="flex items-center gap-1.5">
+          {/* Open agent page */}
+          <button
+            onClick={() => navigate(`/agents/${agent.config.market}/${agent.config.symbol}`)}
+            className="px-2.5 py-1 text-[11px] border border-border text-muted rounded hover:border-green hover:text-green transition-colors"
+            title="Open agent page"
+          >
+            Open →
+          </button>
+          <button
+            onClick={() => setShowSettings(s => !s)}
+            className={`text-lg leading-none transition-colors mt-0.5 ${showSettings ? 'text-green' : 'text-muted hover:text-white'}`}
+            title="Settings"
+          >
+            ⚙
+          </button>
+        </div>
       </div>
 
       {/* Stats */}
@@ -260,6 +264,9 @@ export function AgentCard({ agent, onRefresh }: Props) {
         )}
         {agent.startedAt && (
           <div className="text-muted">Started: <span className="text-white">{rel(agent.startedAt)}</span></div>
+        )}
+        {agent.config.leverage && (
+          <div className="text-muted">Leverage: <span className="text-white">{agent.config.leverage}:1</span></div>
         )}
       </div>
 
@@ -316,7 +323,7 @@ export function AgentCard({ agent, onRefresh }: Props) {
           onClick={() => setShowMarket(true)}
           className="px-2.5 py-1 text-[11px] border border-border text-muted rounded hover:border-muted hover:text-white transition-colors"
         >
-          📊 Market Data
+          📊
         </button>
       </div>
 

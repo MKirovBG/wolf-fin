@@ -56,6 +56,9 @@ ${market !== 'mt5' ? '2. Optionally call get_order_book to assess liquidity befo
 4. Decide: HOLD / BUY qty @ price / SELL qty @ price / CANCEL orderId.
 5. Execute via place_order or cancel_order. Always prefer LIMIT orders.
 ${market === 'forex' || market === 'mt5' ? `6. ${market === 'mt5' ? 'MT5' : 'Forex'}: always include stopPips on every order (ATR-based distance).` : ''}
+ACCOUNT CONFIG:
+- Max daily loss: $${config.maxLossUsd}${config.leverage ? `\n- Leverage: ${config.leverage}:1 — factor this into position sizing and margin requirements` : ''}
+
 RISK RULES (non-negotiable):
 - If the daily loss limit is hit (remainingBudgetUsd = 0), HOLD unconditionally.
 - Size so that a stop-out costs at most 1% of NAV.

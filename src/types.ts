@@ -10,7 +10,7 @@ export interface AgentConfig {
   fetchMode: 'manual' | 'scheduled' | 'autonomous'
   scheduleIntervalSeconds: number
   maxLossUsd: number
-  maxPositionUsd: number
+  leverage?: number              // Account leverage — used in agent context for position sizing
   customPrompt?: string
   mt5AccountId?: number          // Which MT5 account this agent trades with
   llmProvider?: 'anthropic' | 'openrouter'  // defaults to 'anthropic'

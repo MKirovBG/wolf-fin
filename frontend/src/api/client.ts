@@ -76,3 +76,8 @@ export const getReportTrades = (market?: string) =>
 export const getAccounts = () => api<AccountEntry[]>('/api/accounts')
 export const getMt5Accounts = () => api<Mt5AccountInfo[]>('/api/mt5-accounts')
 export const getOpenRouterModels = () => api<OpenRouterModel[]>('/api/openrouter/models')
+export const searchSymbols = (market: string, search: string, accountId?: number) => {
+  const p = new URLSearchParams({ market, search })
+  if (accountId) p.set('accountId', String(accountId))
+  return api<Array<{ symbol: string; description: string }>>(`/api/symbols?${p}`)
+}

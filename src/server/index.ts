@@ -461,6 +461,51 @@ export async function startServer(): Promise<void> {
     )
   }
 
+  // ── Symbol search ────────────────────────────────────────────────────────────
+  const CRYPTO_SYMBOLS = [
+    'BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOTUSDT',
+    'LINKUSDT','LTCUSDT','MATICUSDT','UNIUSDT','ATOMUSDT','ETCUSDT','XLMUSDT','ALGOUSDT',
+    'VETUSDT','FILUSDT','THETAUSDT','AAVEUSDT','MKRUSDT','AXSUSDT','SANDUSDT','MANAUSDT',
+    'DOGEUSDT','SHIBUSDT','TRXUSDT','NEARUSDT','FTMUSDT','HBARUSDT','ICPUSDT','EGLDUSDT',
+  ]
+  const FOREX_SYMBOLS = [
+    'EUR_USD','GBP_USD','USD_JPY','USD_CHF','USD_CAD','AUD_USD','NZD_USD',
+    'EUR_GBP','EUR_JPY','GBP_JPY','AUD_JPY','CHF_JPY','EUR_CHF','EUR_CAD',
+    'GBP_CAD','AUD_CAD','NZD_JPY','EUR_AUD','GBP_AUD','EUR_NZD',
+  ]
+
+  app.get('/api/symbols', async (req, reply) => {
+    const { market, search = '', accountId } = req.query as { market?: string; search?: string; accountId?: string }
+    const q = (search as string).toLowerCase()
+
+    if (market === 'mt5') {
+      const bridgeBase = `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`
+      try {
+        const params = new URLSearchParams()
+        if (q) params.set('search', q)
+        if (accountId) params.set('accountId', accountId)
+        const res = await fetch(`${bridgeBase}/symbols?${params}`)
+        if (!res.ok) return reply.status(502).send({ error: 'MT5 bridge error' })
+        const data = await res.json() as Array<{ name: string; description: string }>
+        return reply.send(data.slice(0, 100).map(s => ({ symbol: s.name, description: s.description })))
+      } catch {
+        return reply.status(502).send({ error: 'MT5 bridge unavailable' })
+      }
+    }
+
+    if (market === 'crypto') {
+      const results = q ? CRYPTO_SYMBOLS.filter(s => s.toLowerCase().includes(q)) : CRYPTO_SYMBOLS
+      return reply.send(results.map(s => ({ symbol: s, description: s.replace('USDT', ' / USDT') })))
+    }
+
+    if (market === 'forex') {
+      const results = q ? FOREX_SYMBOLS.filter(s => s.toLowerCase().includes(q)) : FOREX_SYMBOLS
+      return reply.send(results.map(s => ({ symbol: s, description: s.replace('_', ' / ') })))
+    }
+
+    return reply.send([])
+  })
+
   // ── OpenRouter models ─────────────────────────────────────────────────────
   app.get('/api/openrouter/models', async (_req, reply) => {
     const key = process.env.OPENROUTER_API_KEY

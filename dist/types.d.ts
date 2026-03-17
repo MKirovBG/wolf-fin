@@ -7,7 +7,7 @@ export interface AgentConfig {
     fetchMode: 'manual' | 'scheduled' | 'autonomous';
     scheduleIntervalSeconds: number;
     maxLossUsd: number;
-    maxPositionUsd: number;
+    leverage?: number;
     customPrompt?: string;
     mt5AccountId?: number;
     llmProvider?: 'anthropic' | 'openrouter';

@@ -86,8 +86,6 @@ export function LogsTerminal({ agentKey, maxHeight = 480 }: Props) {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [paused, setPaused] = useState(false)
   const [filter, setFilter] = useState<string>('all')
-  const [autoScroll, setAutoScroll] = useState(true)
-  const bottomRef = useRef<HTMLDivElement>(null)
   const lastIdRef = useRef<number>(0)
 
   const fetchLogs = useCallback(async () => {
@@ -95,10 +93,10 @@ export function LogsTerminal({ agentKey, maxHeight = 480 }: Props) {
     try {
       const fresh = await getLogs(lastIdRef.current || undefined, agentKey)
       if (fresh.length === 0) return
-      // fresh is newest-first from server; we want oldest-first in terminal
+      // fresh is newest-first; prepend to keep newest at top
       setLogs(prev => {
-        const combined = [...fresh.reverse(), ...prev].slice(0, 500)
-        if (fresh.length > 0) lastIdRef.current = Math.max(...combined.map(l => l.id))
+        const combined = [...fresh, ...prev].slice(0, 500)
+        lastIdRef.current = Math.max(...combined.map(l => l.id))
         return combined
       })
     } catch { /* ignore */ }
@@ -107,9 +105,8 @@ export function LogsTerminal({ agentKey, maxHeight = 480 }: Props) {
   // Initial load
   useEffect(() => {
     getLogs(undefined, agentKey).then(initial => {
-      const ordered = [...initial].reverse()
-      setLogs(ordered)
-      if (ordered.length > 0) lastIdRef.current = Math.max(...ordered.map(l => l.id))
+      setLogs(initial) // already newest-first from server
+      if (initial.length > 0) lastIdRef.current = Math.max(...initial.map(l => l.id))
     }).catch(() => {})
   }, [agentKey])
 
@@ -119,12 +116,7 @@ export function LogsTerminal({ agentKey, maxHeight = 480 }: Props) {
     return () => clearInterval(id)
   }, [fetchLogs])
 
-  // Auto-scroll to bottom
-  useEffect(() => {
-    if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [logs, autoScroll])
-
-  const filteredLogs = filter === 'all'
+const filteredLogs = filter === 'all'
     ? logs
     : logs.filter(l => {
         if (filter === 'decisions') return l.event === 'decision'
@@ -176,15 +168,6 @@ export function LogsTerminal({ agentKey, maxHeight = 480 }: Props) {
           {paused ? '▶ Resume' : '⏸ Pause'}
         </button>
 
-        <button
-          onClick={() => setAutoScroll(a => !a)}
-          className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${
-            autoScroll ? 'border-green text-green bg-green-dim' : 'border-border text-muted'
-          }`}
-        >
-          ↓ Auto
-        </button>
-
         <button onClick={clear} className="px-2 py-0.5 text-[10px] rounded border border-border text-muted hover:text-red hover:border-red-border transition-colors">
           Clear
         </button>
@@ -199,7 +182,6 @@ export function LogsTerminal({ agentKey, maxHeight = 480 }: Props) {
         ) : (
           filteredLogs.map(entry => <LogLine key={entry.id} entry={entry} />)
         )}
-        <div ref={bottomRef} />
       </div>
     </div>
   )

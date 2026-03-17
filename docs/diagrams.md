@@ -325,20 +325,15 @@ colorMode bold
 styleMode shadow
 typeface clean
 
-// ─── Windows Machine ──────────────────────────────────────────────────────────
+// ─── Windows Machine (flat — all nodes one level deep) ────────────────────────
 WindowsMachine [color: gray] {
-
-  MT5Layer [color: orange] {
-    MT5Terminal [icon: monitor, color: orange, label: "MetaTrader 5\nTerminal"]
-    PyBridge [icon: terminal, color: orange, label: "Python FastAPI\nuvicorn :8000\nmt5-bridge/main.py"]
-  }
-
-  NodeApp [color: green] {
-    NodeServer [icon: server, color: green, label: "Node.js :3000\nFastify Backend\nnpm start"]
-    NodeDB [icon: database, color: green, label: "SQLite\ndata/wolf-fin.db"]
-    FrontendDist [icon: globe, color: blue, label: "React SPA\nfrontend-dist/\nserved by Fastify"]
-  }
-
+  MT5Terminal [icon: monitor, color: orange, label: "MetaTrader 5\nTerminal"]
+  PyBridge [icon: terminal, color: orange, label: "Python FastAPI\nuvicorn :8000\nmt5-bridge/main.py"]
+  NodeServer [icon: server, color: green, label: "Node.js :3000\nFastify Backend\nnpm start"]
+  NodeDB [icon: database, color: green, label: "SQLite\ndata/wolf-fin.db"]
+  FrontendDist [icon: globe, color: blue, label: "React SPA\nfrontend-dist/\nserved by Fastify"]
+  EnvFile [icon: file, color: gray, label: ".env\nAPI Keys & Config"]
+  AccountsFile [icon: file, color: gray, label: "mt5_accounts.json\nRegistered MT5 accounts"]
 }
 
 // ─── Browser ──────────────────────────────────────────────────────────────────
@@ -358,23 +353,19 @@ Broker [icon: server, color: orange, label: "Equiti Broker\nequitibrokerage.com\
 
 // ─── Connections ──────────────────────────────────────────────────────────────
 Browser <> FrontendDist: localhost:3000
-Browser <> NodeServer: HTTP /api/*
+Browser <> NodeServer: HTTP REST
 
 NodeServer <> NodeDB: better-sqlite3
 NodeServer > PyBridge: HTTP 127.0.0.1:8000
 NodeServer > AnthropicCloud: HTTPS Claude API
 NodeServer > OpenRouterCloud: HTTPS OpenAI-compat
-NodeServer > BinanceCloud: HTTPS REST + WS
+NodeServer > BinanceCloud: HTTPS REST
 NodeServer > AlpacaCloud: HTTPS REST
 NodeServer > DataAPIs: HTTPS REST
 
-PyBridge <> MT5Terminal: Python MetaTrader5 lib (IPC)
-MT5Terminal <> Broker: MT5 Protocol (encrypted)
+PyBridge <> MT5Terminal: MetaTrader5 IPC
+MT5Terminal <> Broker: MT5 Protocol
 
-// ─── Config files ─────────────────────────────────────────────────────────────
-EnvFile [icon: file, color: gray, label: ".env\nAPI Keys & Config"]
-AccountsFile [icon: file, color: gray, label: "mt5_accounts.json\nRegistered MT5 accounts"]
-
-EnvFile --> NodeServer: process.env.*
-AccountsFile --> PyBridge: load_accounts_config()
+EnvFile > NodeServer: process.env
+AccountsFile > PyBridge: load_accounts_config
 ```

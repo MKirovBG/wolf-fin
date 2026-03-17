@@ -42,17 +42,14 @@ async function mt5Post<T>(path: string, body: Record<string, unknown>): Promise<
 }
 
 // ── Symbol conversion ────────────────────────────────────────────────────────
+//
+// Broker symbols are used exactly as-is — no mapping, no suffix manipulation.
+// The agent-create UI loads symbols directly from the connected broker so the
+// stored symbol is always the exact name the broker recognises.
 
 function toMt5Symbol(s: string): string {
+  // Strip any legacy underscores (e.g. EUR_USD typed manually) and uppercase.
   return s.toUpperCase().replace(/_/g, '')
-}
-
-function fromMt5Symbol(s: string): string {
-  // 6-char all-alpha → forex pair: EURUSD → EUR_USD
-  if (s.length === 6 && /^[A-Z]{6}$/.test(s)) {
-    return `${s.slice(0, 3)}_${s.slice(3)}`
-  }
-  return s
 }
 
 // ── Pip helpers (use MT5 symbol info when available, fallback to heuristic) ──
@@ -263,7 +260,7 @@ export class MT5Adapter implements IMarketAdapter {
     const pipValue = point * contractSize
 
     return {
-      symbol: fromMt5Symbol(snap.symbol) || symbol,
+      symbol: snap.symbol || symbol,
       timestamp: Date.now(),
       market: 'mt5',
       price: { bid, ask, last: mid },
@@ -328,7 +325,7 @@ export class MT5Adapter implements IMarketAdapter {
     return positions.map(p => ({
       orderId: p.ticket,
       clientOrderId: `mt5-${p.ticket}`,
-      symbol: fromMt5Symbol(p.symbol),
+      symbol: p.symbol,
       side: p.side,
       type: 'MARKET',
       price: p.priceOpen,
@@ -346,7 +343,7 @@ export class MT5Adapter implements IMarketAdapter {
       this.buildUrl(`/history/deals?symbol=${toMt5Symbol(symbol)}&limit=${limit}`),
     )
     return deals.map(d => ({
-      symbol: fromMt5Symbol(d.symbol),
+      symbol: d.symbol,
       id: d.ticket,
       orderId: d.order,
       price: d.price,

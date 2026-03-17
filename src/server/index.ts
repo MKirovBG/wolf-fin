@@ -152,7 +152,6 @@ export async function startServer(): Promise<void> {
   app.post('/api/agents', async (req) => {
     const body = req.body as AgentConfig
     const key = `${body.market}:${body.symbol}`
-    if (getAgent(key)) return { ok: false, message: 'Agent already exists' }
     upsertAgent(defaultAgentState(body))
     return { ok: true, key }
   })

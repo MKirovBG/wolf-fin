@@ -83,47 +83,20 @@ def ensure_account(account_id: Optional[int] = None) -> None:
 
 
 # ── Symbol helpers ────────────────────────────────────────────────────────────
-
-# Optional broker-specific suffix mapping.  If your broker appends a suffix
-# (e.g. "EURUSDm", "EURUSD."), add entries here.
-SYMBOL_MAP: dict[str, str] = {
-    # ── Equiti STP/SD account — broker appends .sd suffix ──────────────────
-    "BTCUSD": "BTCUSD.lv",
-    "EURUSD":  "EURUSD",
-    "GBPUSD":  "GBPUSD",
-    "USDJPY":  "USDJPY.sd",
-    "USDCHF":  "USDCHF.sd",
-    "AUDUSD":  "AUDUSD.sd",
-    "NZDUSD":  "NZDUSD.sd",
-    "USDCAD":  "USDCAD.sd",
-    "EURGBP":  "EURGBP.sd",
-    "EURJPY":  "EURJPY.sd",
-    "GBPJPY":  "GBPJPY.sd",
-    "XAUUSD":  "XAUUSD.sd",   # Gold vs USD
-    "XAGUSD":  "XAGUSD.sd",   # Silver vs USD
-    "XAUUSD.SD": "XAUUSD.sd", # normalise case variants
-    # ── Add non-.sd broker symbols below if needed ─────────────────────────
-    # "BTCUSD": "BTCUSD",
-}
+#
+# No SYMBOL_MAP — broker symbols are used exactly as returned by the /symbols
+# endpoint.  When creating an agent the UI loads available symbols directly from
+# the connected broker, so what the user selects is what gets stored and used.
 
 
 def normalize_symbol(symbol: str) -> str:
-    """Convert wolf-fin format (EUR_USD) to MT5 format (EURUSD)."""
-    clean = symbol.upper().replace("_", "")
-    return SYMBOL_MAP.get(clean, clean)
+    """Pass the symbol through unchanged (strip underscores for safety only)."""
+    return symbol.upper().replace("_", "")
 
 
 def to_wolfin_symbol(symbol: str) -> str:
-    """Convert MT5 format (EURUSD) back to wolf-fin format (EUR_USD)."""
-    # Strip any broker suffix first
-    for wf, mt in SYMBOL_MAP.items():
-        if symbol == mt:
-            symbol = wf
-            break
-    s = symbol.upper()
-    if len(s) == 6 and s.isalpha():
-        return f"{s[:3]}_{s[3:]}"
-    return s
+    """Return the broker symbol name unchanged."""
+    return symbol
 
 
 # ── Candle mapper ─────────────────────────────────────────────────────────────

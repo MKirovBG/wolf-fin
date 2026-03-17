@@ -10,7 +10,7 @@ const DEFAULT_CONFIG: AgentConfig = {
   paper: true,
   maxIterations: 10,
   fetchMode: 'scheduled',
-  scheduleIntervalMinutes: 15,
+  scheduleIntervalSeconds: 60,
   maxLossUsd: 200,
   maxPositionUsd: 1000,
   customPrompt: '',
@@ -18,7 +18,13 @@ const DEFAULT_CONFIG: AgentConfig = {
   llmModel: '',
 }
 
-const INTERVALS = [1, 5, 15, 30, 60, 240]
+// Intervals in seconds — sub-minute for speed testing, minute+ for production
+const INTERVALS = [2, 5, 10, 15, 20, 30, 60, 300, 900, 1800, 3600, 14400]
+function intervalLabel(s: number): string {
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${s / 60} min`
+  return `${s / 3600}h`
+}
 
 function AddAgentForm({ onAdded }: { onAdded: () => void }) {
   const { register, handleSubmit, watch, reset, formState: { errors } } = useForm<AgentConfig>({
@@ -59,7 +65,7 @@ function AddAgentForm({ onAdded }: { onAdded: () => void }) {
         ...data,
         symbol: data.symbol.toUpperCase().trim(),
         maxIterations: Number(data.maxIterations),
-        scheduleIntervalMinutes: Number(data.scheduleIntervalMinutes),
+        scheduleIntervalSeconds: Number(data.scheduleIntervalSeconds),
         maxLossUsd: Number(data.maxLossUsd),
         maxPositionUsd: Number(data.maxPositionUsd),
         mt5AccountId: data.mt5AccountId ? Number(data.mt5AccountId) : undefined,
@@ -170,8 +176,8 @@ function AddAgentForm({ onAdded }: { onAdded: () => void }) {
         {fetchMode !== 'manual' && (
           <div>
             <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">Interval</label>
-            <select {...register('scheduleIntervalMinutes')}>
-              {INTERVALS.map(m => <option key={m} value={m}>{m < 60 ? `${m} min` : `${m / 60}h`}</option>)}
+            <select {...register('scheduleIntervalSeconds')}>
+              {INTERVALS.map(s => <option key={s} value={s}>{intervalLabel(s)}</option>)}
             </select>
           </div>
         )}

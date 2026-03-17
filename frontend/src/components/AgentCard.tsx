@@ -19,7 +19,12 @@ function rel(iso: string) {
   return `${Math.floor(d / 3600000)}h ago`
 }
 
-const INTERVALS = [1, 5, 15, 30, 60, 240]
+const INTERVALS = [2, 5, 10, 15, 20, 30, 60, 300, 900, 1800, 3600, 14400]
+function intervalLabel(s: number): string {
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${s / 60} min`
+  return `${s / 3600}h`
+}
 
 export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
   agent: AgentState
@@ -56,7 +61,7 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
       await updateAgentConfig(agentKey, {
         ...data,
         maxIterations: Number(data.maxIterations),
-        scheduleIntervalMinutes: Number(data.scheduleIntervalMinutes),
+        scheduleIntervalSeconds: Number(data.scheduleIntervalSeconds),
         maxLossUsd: Number(data.maxLossUsd),
         maxPositionUsd: Number(data.maxPositionUsd),
       })
@@ -110,9 +115,9 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
       {fetchMode !== 'manual' && (
         <div>
           <label className="text-[10px] text-muted uppercase tracking-wide block mb-1.5">Interval</label>
-          <select {...register('scheduleIntervalMinutes')} className="!w-full">
-            {INTERVALS.map(m => (
-              <option key={m} value={m}>{m < 60 ? `${m}m` : `${m / 60}h`}</option>
+          <select {...register('scheduleIntervalSeconds')} className="!w-full">
+            {INTERVALS.map(s => (
+              <option key={s} value={s}>{intervalLabel(s)}</option>
             ))}
           </select>
         </div>
@@ -251,7 +256,7 @@ export function AgentCard({ agent, onRefresh }: Props) {
         <div className="text-muted">Cycles: <span className="text-white">{agent.cycleCount}</span></div>
         <div className="text-muted">Mode: <span className="text-white">{agent.config.fetchMode}</span></div>
         {agent.config.fetchMode !== 'manual' && (
-          <div className="text-muted">Interval: <span className="text-white">{agent.config.scheduleIntervalMinutes}m</span></div>
+          <div className="text-muted">Interval: <span className="text-white">{intervalLabel(agent.config.scheduleIntervalSeconds)}</span></div>
         )}
         {agent.startedAt && (
           <div className="text-muted">Started: <span className="text-white">{rel(agent.startedAt)}</span></div>

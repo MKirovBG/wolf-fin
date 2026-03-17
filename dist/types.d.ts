@@ -5,7 +5,7 @@ export interface AgentConfig {
     paper: boolean;
     maxIterations: number;
     fetchMode: 'manual' | 'scheduled' | 'autonomous';
-    scheduleIntervalMinutes: number;
+    scheduleIntervalSeconds: number;
     maxLossUsd: number;
     maxPositionUsd: number;
     customPrompt?: string;

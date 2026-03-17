@@ -119,7 +119,7 @@ export function AgentDetail() {
             <div className="text-muted">Cycles <span className="text-white font-bold ml-2">{agent.cycleCount}</span></div>
             <div className="text-muted">Mode <span className="text-white font-bold ml-2">{agent.config.fetchMode}</span></div>
             {agent.config.fetchMode !== 'manual' && (
-              <div className="text-muted">Interval <span className="text-white font-bold ml-2">{agent.config.scheduleIntervalMinutes}m</span></div>
+              <div className="text-muted">Interval <span className="text-white font-bold ml-2">{(() => { const s = agent.config.scheduleIntervalSeconds; return s < 60 ? `${s}s` : s < 3600 ? `${s/60} min` : `${s/3600}h` })()}</span></div>
             )}
             {agent.startedAt && (
               <div className="text-muted">Started <span className="text-white font-bold ml-2">{rel(agent.startedAt)}</span></div>

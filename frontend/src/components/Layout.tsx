@@ -5,7 +5,7 @@ const links = [
   { to: '/', label: 'Dashboard' },
   { to: '/agents', label: 'Agents' },
   { to: '/positions', label: 'Positions' },
-  { to: '/keys', label: 'API Keys' },
+  { to: '/keys', label: 'Integrations' },
   { to: '/reports', label: 'Reports' },
   { to: '/account', label: 'Account' },
 ]

@@ -336,27 +336,46 @@ export async function startServer(): Promise<void> {
 
   async function fetchMt5Entries(): Promise<Mt5AccountEntry[]> {
     const base = `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`
+
+    // Identify the currently active account — MT5 only supports one active connection at a time
+    type HealthData = { connected: boolean; account?: { login: number; server: string; trade_mode: number } }
+    const health = await fetch(`${base}/health`)
+      .then(r => r.ok ? r.json() as Promise<HealthData> : { connected: false } as HealthData)
+      .catch(() => ({ connected: false } as HealthData))
+    const activeLogin = (health as HealthData).account?.login
+
     // Get registered accounts list
     const accountsRes = await fetch(`${base}/accounts`)
     if (!accountsRes.ok) throw new Error(`MT5 bridge HTTP ${accountsRes.status}`)
     const accountsData = await accountsRes.json() as { accounts: Array<{ login: number; name?: string; server?: string }> }
 
     if (accountsData.accounts.length === 0) {
-      // No registered accounts — fall back to currently active account
-      const health = await fetch(`${base}/health`).then(r => r.json() as Promise<{ connected: boolean; account?: { login: number; server: string; trade_mode: number } }>)
-      const fullAcct = await fetch(`${base}/account`).then(r => r.json() as Promise<BridgeAcctData>).catch(() => null)
-      const positions = await fetch(`${base}/positions`).then(r => r.json() as Promise<BridgePosition[]>).catch(() => [])
+      // No registered accounts — return the currently active account only
+      const fullAcct = await fetch(`${base}/account`).then(r => r.ok ? r.json() as Promise<BridgeAcctData> : null).catch(() => null)
+      const positions = await fetch(`${base}/positions`).then(r => r.ok ? r.json() as Promise<BridgePosition[]> : [] as BridgePosition[]).catch(() => [] as BridgePosition[])
       const mode = fullAcct?.trade_mode === 2 ? 'LIVE' : 'DEMO'
       return [{
-        id: `mt5-${health.account?.login ?? 'unknown'}`,
-        exchange: 'mt5', mode, connected: health.connected,
+        id: `mt5-${activeLogin ?? 'unknown'}`,
+        exchange: 'mt5', mode, connected: (health as HealthData).connected,
         summary: fullAcct ? { balance: fullAcct.balance, equity: fullAcct.equity, margin: fullAcct.margin, freeMargin: fullAcct.free_margin, profit: fullAcct.profit, leverage: fullAcct.leverage, login: fullAcct.login, server: fullAcct.server } : undefined,
         positions,
       }]
     }
 
-    return Promise.all(
-      accountsData.accounts.map(async (acc) => {
+    // MT5 can only serve the currently active account — fetch data only for that account.
+    // Other registered accounts are shown as inactive (no error — just not connected right now).
+    const results = await Promise.all(
+      accountsData.accounts.map(async (acc): Promise<Mt5AccountEntry> => {
+        // If this account is NOT the active one, show it as inactive rather than trying to fetch
+        if (activeLogin !== undefined && acc.login !== activeLogin) {
+          return {
+            id: `mt5-${acc.login}`,
+            exchange: 'mt5' as const,
+            mode: 'DEMO' as const,
+            connected: false,
+            error: 'Not active — MT5 supports one connection at a time. Switch accounts in the MT5 bridge to view this account.',
+          }
+        }
         try {
           const [acctData, positions] = await Promise.all([
             fetch(`${base}/account?accountId=${acc.login}`).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() as Promise<BridgeAcctData> }),
@@ -374,6 +393,7 @@ export async function startServer(): Promise<void> {
         }
       })
     )
+    return results
   }
 
   // ── Symbol search ────────────────────────────────────────────────────────────

@@ -63,8 +63,8 @@ export function ApiKeys() {
 
   return (
     <div className="p-6">
-      <h1 className="text-sm font-bold tracking-widest text-white uppercase mb-2">API Keys</h1>
-      <p className="text-muted text-xs mb-6">Keys are saved to your .env file and applied immediately. Values you type are never shown after saving.</p>
+      <h1 className="text-sm font-bold tracking-widest text-white uppercase mb-2">Integrations</h1>
+      <p className="text-muted text-xs mb-6">API keys and provider credentials — saved to your .env file and applied immediately. Values are never shown after saving.</p>
 
       <Card title="Service Credentials">
         <div className="space-y-5">

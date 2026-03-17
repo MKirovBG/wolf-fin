@@ -172,16 +172,6 @@ export function LogsGrid({ agentKey }: Props) {
       {/* 2 × 2 grid */}
       <div className="grid grid-cols-2 gap-3 flex-1" style={{ minHeight: 0 }}>
 
-        {/* Thinking */}
-        <LogPanel
-          title="Thinking"
-          icon="💭"
-          color="text-yellow"
-          logs={logs}
-          filter={e => e.event === 'claude_thinking'}
-          emptyText="No thinking logs yet"
-        />
-
         {/* Decisions */}
         <LogPanel
           title="Decisions"
@@ -190,6 +180,16 @@ export function LogsGrid({ agentKey }: Props) {
           logs={logs}
           filter={e => e.event === 'decision' || e.event === 'cycle_start' || e.event === 'cycle_end'}
           emptyText="No decisions yet"
+        />
+
+        {/* Thinking */}
+        <LogPanel
+          title="Thinking"
+          icon="💭"
+          color="text-yellow"
+          logs={logs}
+          filter={e => e.event === 'claude_thinking'}
+          emptyText="No thinking logs yet"
         />
 
         {/* Tools */}

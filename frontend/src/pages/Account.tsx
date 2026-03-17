@@ -32,7 +32,13 @@ function ModeBadge({ mode }: { mode: string }) {
   )
 }
 
-function ConnectedDot({ ok }: { ok: boolean }) {
+function ConnectedDot({ ok, inactive }: { ok: boolean; inactive?: boolean }) {
+  if (inactive) return (
+    <span className="flex items-center gap-1.5 text-[11px]">
+      <span className="w-1.5 h-1.5 rounded-full bg-muted2" />
+      <span className="text-muted">Inactive</span>
+    </span>
+  )
   return (
     <span className="flex items-center gap-1.5 text-[11px]">
       <span className={`w-1.5 h-1.5 rounded-full ${ok ? 'bg-green' : 'bg-red'}`} />
@@ -239,7 +245,7 @@ function Mt5Card({ entry }: { entry: Mt5AccountEntry }) {
         <div className="flex items-center gap-3">
           <span className="text-white font-bold text-sm tracking-wide">METATRADER 5</span>
           <ModeBadge mode={entry.mode} />
-          <ConnectedDot ok={entry.connected} />
+          <ConnectedDot ok={entry.connected} inactive={!entry.connected && entry.error?.startsWith('Not active')} />
         </div>
         {s && (
           <span className="text-[11px] text-muted font-mono">
@@ -248,10 +254,15 @@ function Mt5Card({ entry }: { entry: Mt5AccountEntry }) {
         )}
       </div>
 
-      {/* Error state */}
+      {/* Inactive / error state */}
       {!entry.connected && (
-        <div className="px-5 py-6 text-xs text-red font-mono">
-          ✗ {entry.error ?? 'Bridge not running'}
+        <div className={`px-5 py-5 text-xs font-mono border-t border-border ${
+          entry.error?.startsWith('Not active') ? 'text-muted' : 'text-red'
+        }`}>
+          {entry.error?.startsWith('Not active')
+            ? <span>⏸ {entry.error}</span>
+            : <span>✗ {entry.error ?? 'Bridge not running'}</span>
+          }
         </div>
       )}
 

@@ -86,7 +86,7 @@ const ALL_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'cancel_order',
-    description: 'Cancel an existing open order by orderId.',
+    description: 'Cancel a pending limit or stop order by orderId. For MT5: use this ONLY for pending orders (visible in the Orders tab). To close an already-open position use close_position instead.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -97,13 +97,34 @@ const ALL_TOOLS: Anthropic.Tool[] = [
       required: ['symbol', 'market', 'orderId'],
     },
   },
+  {
+    name: 'close_position',
+    description:
+      'MT5 only — close an open position by its ticket number. Use this to take profit, cut a loss, or exit any open trade. ' +
+      'Get the ticket from get_open_orders (the orderId field). ' +
+      'NEVER use place_order with the opposite side to close a position — that opens a second trade instead of closing the existing one. ' +
+      'Optionally specify volume for a partial close.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        ticket:  { type: 'number', description: 'Position ticket number (orderId from get_open_orders)' },
+        market:  MARKET_FIELD,
+        volume:  { type: 'number', description: 'Volume to close in lots (omit to close the full position)' },
+      },
+      required: ['ticket', 'market'],
+    },
+  },
 ]
 
 /** Returns the tool list for the given market, excluding tools unsupported by that market. */
 export function getTools(market: 'crypto' | 'mt5'): Anthropic.Tool[] {
-  // MT5 retail brokers (e.g. Equiti) do not publish DOM data — exclude get_order_book
-  if (market === 'mt5') return ALL_TOOLS.filter(t => t.name !== 'get_order_book')
-  return ALL_TOOLS
+  if (market === 'mt5') {
+    // Exclude order_book (MT5 retail brokers don't publish DOM)
+    // Include close_position (MT5 uses ticket-based closes, NOT opposite-side orders)
+    return ALL_TOOLS.filter(t => t.name !== 'get_order_book')
+  }
+  // Crypto: exclude close_position (use place_order sell to exit a long)
+  return ALL_TOOLS.filter(t => t.name !== 'close_position')
 }
 
 // ── Tool input types ──────────────────────────────────────────────────────────
@@ -145,4 +166,10 @@ export interface CancelOrderInput {
   symbol: string
   market: 'crypto' | 'mt5'
   orderId: number
+}
+
+export interface ClosePositionInput {
+  ticket: number
+  market: 'crypto' | 'mt5'
+  volume?: number
 }

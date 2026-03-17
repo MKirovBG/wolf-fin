@@ -40,7 +40,7 @@ function buildSystemPrompt(config: AgentConfig, agentKey: string): string {
   const maxSpreadPips = parseFloat(process.env.MAX_SPREAD_PIPS ?? '3')
   const sessionNote =
     market === 'mt5'
-      ? `\nCURRENT SESSION: ${sessionLabel()}\nMT5 SESSION RULES: Only trade during Tokyo, London, or New York sessions. Reject entries when spread > ${maxSpreadPips} pips or sessionOpen is false.\nMT5 provides real swap rates in the snapshot — factor overnight costs into hold decisions for multi-day positions.`
+      ? `\nCURRENT SESSION: ${sessionLabel()}\nMT5 SESSION RULES: Only trade during Tokyo, London, or New York sessions. Reject entries when spread > ${maxSpreadPips} pips or sessionOpen is false.\nMT5 provides real swap rates in the snapshot — factor overnight costs into hold decisions for multi-day positions.\n\nMT5 POSITION MANAGEMENT (critical):\n- Open positions have a ticket number (orderId in get_open_orders).\n- To CLOSE a position: call close_position(ticket) — NEVER place an opposite BUY/SELL.\n- Placing an opposite-side order does NOT close the existing position; it opens a second one.\n- Use cancel_order ONLY for pending limit/stop orders not yet filled.`
       : ''
 
   const base = `You are Wolf-Fin, an autonomous trading agent. ${mode}
@@ -50,9 +50,9 @@ ROLE: Disciplined, risk-first algorithmic trader. Make exactly one trading decis
 PROCESS:
 1. Call get_snapshot to get price, indicators, balances, open orders, and risk state.
 ${market !== 'mt5' ? '2. Optionally call get_order_book to assess liquidity before sizing.\n' : ''}3. Reason through the evidence: trend (EMA cross), momentum (RSI), volatility (ATR, BB width), context signals.
-4. Decide: HOLD / BUY qty @ price / SELL qty @ price / CANCEL orderId.
-5. Execute via place_order or cancel_order. Always prefer LIMIT orders.
-${market === 'mt5' ? `6. MT5: always include stopPips on every order (ATR-based distance).` : ''}
+4. Decide: HOLD / BUY qty @ price / SELL qty @ price / CLOSE ticket / CANCEL orderId.
+5. Execute via place_order, close_position, or cancel_order. Always prefer LIMIT orders for entries.
+${market === 'mt5' ? `6. MT5: always include stopPips on every new order (ATR-based distance).` : ''}
 ACCOUNT CONFIG:
 - Max daily loss: $${config.maxLossUsd}${config.leverage ? `\n- Leverage: ${config.leverage}:1 — factor this into position sizing and margin requirements` : ''}
 
@@ -71,13 +71,14 @@ ${sessionNote}`
     : ''
 
   const decisionFormat = `\n\nEXECUTION RULES (mandatory — the DECISION line does NOT trigger a trade by itself):
-- If BUY or SELL: you MUST call place_order FIRST, then write the DECISION line.
-- If CANCEL: you MUST call cancel_order FIRST, then write the DECISION line.
-- If HOLD: do NOT call place_order. Just write the DECISION line.
+- If BUY or SELL: call place_order FIRST, then write the DECISION line.
+- If CLOSE: call close_position(ticket) FIRST, then write the DECISION line.
+- If CANCEL: call cancel_order FIRST, then write the DECISION line.
+- If HOLD: do NOT call any order tool. Just write the DECISION line.
 - Always include stopPips on place_order (use ATR14 × 1.5 as minimum distance).
 
 DECISION FORMAT (write AFTER executing the tool call):
-DECISION: [HOLD | BUY <qty> @ <price> | SELL <qty> @ <price> | CANCEL <orderId>]
+DECISION: [HOLD | BUY <qty> @ <price> | SELL <qty> @ <price> | CLOSE <ticket> | CANCEL <orderId>]
 REASON: <1-2 sentences of evidence>`
 
   const full = base + perfSection + decisionFormat
@@ -121,6 +122,10 @@ function summariseToolResult(name: string, result: unknown): string {
       return `status=${o.status} orderId=${o.orderId}`
     }
     if (name === 'cancel_order') return 'cancelled'
+    if (name === 'close_position') {
+      const o = result as { closed?: boolean; ticket?: number }
+      return o.closed ? `closed ticket=${o.ticket}` : 'close failed'
+    }
     return JSON.stringify(result).slice(0, 120)
   } catch { return '(unparseable)' }
 }
@@ -188,6 +193,11 @@ async function dispatchTool(
     case 'cancel_order': {
       await adapter.cancelOrder(input.symbol as string, input.orderId as number)
       return { cancelled: true }
+    }
+    case 'close_position': {
+      const mt5 = adapter as import('../adapters/mt5.js').MT5Adapter
+      if (typeof mt5.closePosition !== 'function') throw new Error('close_position is only supported for MT5')
+      return mt5.closePosition(input.ticket as number, input.volume as number | undefined)
     }
     default:
       throw new Error(`Unknown tool: ${name}`)
@@ -272,7 +282,7 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
             const side  = buyMatch ? 'BUY' : 'SELL'
             const qty   = parseFloat(match[1])
             const price = parseFloat(match[2])
-            const ctx   = config.market === 'mt5' ? getMt5Context() : getForexContext()
+            const ctx   = getMt5Context()
             // ATR-based fallback stop: use MIN_STOP_PIPS * 2 or 20 pips minimum
             const fallbackStop = Math.max(parseFloat(process.env.MIN_STOP_PIPS ?? '10') * 2, 20)
             logEvent(agentKey, 'warn', 'auto_execute', `Agent stated ${side} without calling place_order — auto-executing via text decision`)
@@ -296,6 +306,19 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
               const msg = autoErr instanceof Error ? autoErr.message : String(autoErr)
               logEvent(agentKey, 'error', 'auto_execute_error', `Auto-cancel failed: ${msg}`)
             }
+          } else {
+            const closeMatch = decision.match(/^CLOSE\s+(\d+)/i)
+            if (closeMatch) {
+              const ticket = parseInt(closeMatch[1], 10)
+              logEvent(agentKey, 'warn', 'auto_execute', `Agent stated CLOSE without calling close_position — auto-executing ticket ${ticket}`)
+              try {
+                const result = await dispatchTool('close_position', { ticket, market: config.market }, config.market, config.mt5AccountId)
+                logEvent(agentKey, 'info', 'tool_result', `← auto close_position: ${summariseToolResult('close_position', result)}`)
+              } catch (autoErr) {
+                const msg = autoErr instanceof Error ? autoErr.message : String(autoErr)
+                logEvent(agentKey, 'error', 'auto_execute_error', `Auto-close failed: ${msg}`)
+              }
+            }
           }
         }
 
@@ -316,7 +339,7 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
           logEvent(agentKey, 'info', 'tool_call', `→ ${block.name}(${inputSummary})`)
           log.info({ tool: block.name, input: block.input }, 'tool call')
 
-          if (block.name === 'place_order' || block.name === 'cancel_order') orderPlacedThisCycle = true
+          if (block.name === 'place_order' || block.name === 'cancel_order' || block.name === 'close_position') orderPlacedThisCycle = true
 
           let result: unknown
           try {

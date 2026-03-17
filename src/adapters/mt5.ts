@@ -400,17 +400,22 @@ export class MT5Adapter implements IMarketAdapter {
   }
 
   async cancelOrder(_symbol: string, orderId: string | number): Promise<void> {
-    // Try closing as position first, then as pending order
-    const closeBody: Record<string, unknown> = { ticket: Number(orderId) }
-    if (this.accountId) closeBody.accountId = this.accountId
-    const cancelBody: Record<string, unknown> = { ticket: Number(orderId) }
-    if (this.accountId) cancelBody.accountId = this.accountId
-
+    // For pending orders: try cancel first, fall back to close
+    const body: Record<string, unknown> = { ticket: Number(orderId) }
+    if (this.accountId) body.accountId = this.accountId
     try {
-      await mt5Post('/order/close', closeBody)
+      await mt5Post('/order/cancel', body)
     } catch {
-      await mt5Post('/order/cancel', cancelBody)
+      await mt5Post('/order/close', body)
     }
+  }
+
+  async closePosition(ticket: number, volume?: number): Promise<{ closed: boolean; ticket: number }> {
+    const body: Record<string, unknown> = { ticket }
+    if (this.accountId) body.accountId = this.accountId
+    if (volume != null) body.volume = volume
+    await mt5Post<BridgeOrderResult>('/order/close', body)
+    return { closed: true, ticket }
   }
 
   async getSpread(symbol: string): Promise<number | null> {

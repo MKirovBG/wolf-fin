@@ -277,48 +277,42 @@ Dashboard > End
 typeface clean
 colorMode bold
 
-// ─── Entities ─────────────────────────────────────────────────────────────────
-
-agents [color: green, label: "agents"] {
-  key [pk, label: "key TEXT PK\n(market:symbol)"]
-  config [label: "config TEXT (JSON)"]
-  status [label: "status TEXT\nidle|running|paused"]
-  cycle_count [label: "cycle_count INTEGER"]
-  started_at [label: "started_at TEXT (ISO)"]
-  last_cycle [label: "last_cycle TEXT (JSON)"]
+agents [color: green] {
+  key [pk]
+  config
+  status
+  cycle_count
+  started_at
+  last_cycle
 }
 
-cycle_results [color: blue, label: "cycle_results"] {
-  id [pk, label: "id INTEGER PK AUTOINCREMENT"]
-  agent_key [fk, label: "agent_key TEXT (FK)"]
-  symbol [label: "symbol TEXT"]
-  market [label: "market TEXT\ncrypto|forex|mt5"]
-  paper [label: "paper INTEGER (0|1)"]
-  decision [label: "decision TEXT"]
-  reason [label: "reason TEXT"]
-  time [label: "time TEXT (ISO)"]
-  error [label: "error TEXT NULL"]
-  pnl_usd [label: "pnl_usd REAL NULL"]
+cycle_results [color: blue] {
+  id [pk]
+  agent_key [ref: > agents.key]
+  symbol
+  market
+  paper
+  decision
+  reason
+  time
+  error
+  pnl_usd
 }
 
-log_entries [color: purple, label: "log_entries"] {
-  id [pk, label: "id INTEGER PK AUTOINCREMENT"]
-  time [label: "time TEXT (ISO)"]
-  agent_key [fk, label: "agent_key TEXT (FK)"]
-  level [label: "level TEXT\ninfo|warn|error|debug"]
-  event [label: "event TEXT"]
-  message [label: "message TEXT"]
-  data [label: "data TEXT (JSON) NULL"]
+log_entries [color: purple] {
+  id [pk]
+  time
+  agent_key [ref: > agents.key]
+  level
+  event
+  message
+  data
 }
 
-settings [color: orange, label: "settings"] {
-  key [pk, label: "key TEXT PK"]
-  value [label: "value TEXT"]
+settings [color: orange] {
+  key [pk]
+  value
 }
-
-// ─── Relationships ─────────────────────────────────────────────────────────────
-agents.key - cycle_results.agent_key: one to many
-agents.key - log_entries.agent_key: one to many
 ```
 
 ---

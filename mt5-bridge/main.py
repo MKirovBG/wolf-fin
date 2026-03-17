@@ -179,11 +179,19 @@ def map_deal(deal: Any) -> dict:
     }
 
 
+ORDER_TYPE_NAMES = {
+    0: "BUY", 1: "SELL",
+    2: "BUY_LIMIT", 3: "SELL_LIMIT",
+    4: "BUY_STOP", 5: "SELL_STOP",
+    6: "BUY_STOP_LIMIT", 7: "SELL_STOP_LIMIT",
+    8: "CLOSE_BY",
+}
+
 def map_order(order: Any) -> dict:
     return {
         "ticket": order.ticket,
         "symbol": to_wolfin_symbol(order.symbol),
-        "type": order.type,
+        "type": ORDER_TYPE_NAMES.get(order.type, str(order.type)),
         "volume_initial": order.volume_initial,
         "volume_current": order.volume_current,
         "price_open": order.price_open,
@@ -491,8 +499,9 @@ def get_recent_trades(symbol: str, count: int = Query(50, ge=1, le=500), account
     mt5_sym = normalize_symbol(symbol)
     mt5.symbol_select(mt5_sym, True)
 
-    ticks = mt5.copy_ticks_from_pos(mt5_sym, 0, count, mt5.COPY_TICKS_TRADE)
-    if ticks is None:
+    from_time = datetime.now(tz=timezone.utc) - timedelta(hours=4)
+    ticks = mt5.copy_ticks_from(mt5_sym, from_time, count, mt5.COPY_TICKS_TRADE)
+    if ticks is None or len(ticks) == 0:
         return {"symbol": to_wolfin_symbol(mt5_sym), "trades": []}
 
     trades = []
@@ -766,6 +775,13 @@ def close_position(req: CloseRequest) -> dict:
     if result.retcode != mt5.TRADE_RETCODE_DONE:
         raise HTTPException(502, detail=f"Close rejected: {result.retcode} — {result.comment}")
 
+    # Look up the resulting deal to get realised P&L
+    pnl: Optional[float] = None
+    if result.deal:
+        deals = mt5.history_deals_get(ticket=result.deal)
+        if deals and len(deals) > 0:
+            pnl = deals[0].profit
+
     return {
         "retcode": result.retcode,
         "deal": result.deal,
@@ -773,6 +789,7 @@ def close_position(req: CloseRequest) -> dict:
         "volume": result.volume,
         "price": result.price,
         "comment": result.comment,
+        "pnl": pnl,  # realised profit/loss in account currency
     }
 
 

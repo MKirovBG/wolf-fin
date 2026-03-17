@@ -48,6 +48,24 @@ You should get `"connected": true`. If you get a connection error, the bridge is
 | `10027 — AutoTrading disabled` | Click AutoTrading button in MT5 toolbar (must be green) |
 | `Could not switch to account X` | Log into that account in MT5 terminal first |
 
+#OUTPUT
+```json
+{
+    "connected": true,
+    "terminal": {
+        "build": 5687,
+        "connected": true
+    },
+    "account": {
+        "login": 1111343,
+        "server": "EquitiBrokerageSC-Demo",
+        "trade_mode": 0,
+        "leverage": 500,
+        "balance": 10000.86
+    }
+}
+```
+
 ---
 
 Set a Postman Collection Variable: `baseUrl = http://127.0.0.1:8000`
@@ -75,6 +93,15 @@ POST {{baseUrl}}/health/reconnect
 ```
 **Expect:** `{ "connected": true }` — use this if MT5 terminal was restarted
 
+URL: http://127.0.0.1:8000/health/reconnect
+TODO:
+Response
+```json
+{
+    "detail": "Method Not Allowed"
+}
+```
+
 ---
 
 ## 2. Account Management
@@ -88,15 +115,29 @@ GET {{baseUrl}}/accounts
 ---
 
 ### 2.2 Register a new account
-```
+
 POST {{baseUrl}}/accounts/register
 Content-Type: application/json
-
+```json
 {
-  "login": 9999999,
-  "password": "",
-  "server": "Broker-Server",
-  "name": "Test Account"
+    "current_login": 1111343,
+    "accounts": [
+        {
+            "login": 1013336511,
+            "server": "EquitiBrokerageSC-Live",
+            "name": "EUR Live"
+        },
+        {
+            "login": 1511022881,
+            "server": "FTMO-Demo",
+            "name": "FTMO Demo"
+        },
+        {
+            "login": 1111343,
+            "server": "EquitiBrokerageSC-Demo",
+            "name": "EUR Demo"
+        }
+    ]
 }
 ```
 **Expect:** `{ "message": "Account registered", "login": 9999999 }`
@@ -111,6 +152,13 @@ POST {{baseUrl}}/accounts/switch?login=1111343
 
 > Note: Only works for accounts already logged into MT5 terminal
 
+TODO:
+URL: http://127.0.0.1:8000/accounts/switch?login=1111343
+```json
+{
+    "detail": "Method Not Allowed"
+}
+```
 ---
 
 ## 3. Symbol Information
@@ -121,13 +169,15 @@ GET {{baseUrl}}/symbols
 ```
 **Expect:** Array of all symbols — look for `XAUUSD.sd`, `EURUSD`, `GBPUSD`
 
+[Example](./json-files/mt5-symbols.json)
+
 ---
 
 ### 3.2 Search symbols
 ```
 GET {{baseUrl}}/symbols?search=XAU
 ```
-**Expect:** Filtered list containing `XAUUSD.sd`
+**Expect:** Filtered list containing all `XAU` pairs available with the broker
 
 ---
 
@@ -145,6 +195,26 @@ GET {{baseUrl}}/symbol-info/XAUUSD?accountId=1111343
 - `swap_long: negative` (cost to hold longs overnight)
 - `swap_short: positive` (credit for holding shorts)
 
+```json
+{
+    "symbol": "XAU_USD",
+    "point": 0.01,
+    "digits": 2,
+    "spread": 34,
+    "spread_float": 0.34,
+    "swap_long": -11.41,
+    "swap_short": 6.427,
+    "trade_mode": 4,
+    "trade_contract_size": 100.0,
+    "volume_min": 0.01,
+    "volume_max": 100.0,
+    "volume_step": 0.01,
+    "currency_base": "XAU",
+    "currency_profit": "USD",
+    "currency_margin": "XAU",
+    "description": "Gold vs US Dollar"
+}
+```
 ---
 
 ### 3.4 Symbol info — EURUSD
@@ -160,6 +230,27 @@ GET {{baseUrl}}/symbol-info/EURUSD?accountId=1111343
 GET {{baseUrl}}/symbol-info/XAUUSD
 ```
 **Expect:** Same response using whichever account is currently active in MT5
+
+```json
+{
+    "symbol": "EUR_USD",
+    "point": 0.00001,
+    "digits": 5,
+    "spread": 13,
+    "spread_float": 0.00013000000000000002,
+    "swap_long": -8.207,
+    "swap_short": 4.327,
+    "trade_mode": 0,
+    "trade_contract_size": 100000.0,
+    "volume_min": 0.01,
+    "volume_max": 150.0,
+    "volume_step": 0.01,
+    "currency_base": "EUR",
+    "currency_profit": "USD",
+    "currency_margin": "EUR",
+    "description": "Euro vs US Dollar"
+}
+```
 
 ---
 
@@ -179,6 +270,23 @@ GET {{baseUrl}}/account?accountId=1111343
 ```
 **Expect:** Info for account `1111343` — should show $10,000 demo balance
 
+```json
+{
+    "login": 1111343,
+    "server": "EquitiBrokerageSC-Demo",
+    "trade_mode": 0,
+    "balance": 10000.86,
+    "equity": 10000.86,
+    "margin": 0.0,
+    "free_margin": 10000.86,
+    "profit": 0.0,
+    "leverage": 500,
+    "currency": "USD",
+    "name": "Miroslav Valentinov Kirov",
+    "company": "Equiti Brokerage (Seychelles) Limited"
+}
+```
+
 ---
 
 ### 4.3 Live account info
@@ -186,6 +294,25 @@ GET {{baseUrl}}/account?accountId=1111343
 GET {{baseUrl}}/account?accountId=1013336511
 ```
 **Expect:** Info for Live account (only works if authorised in terminal)
+
+During my testing i've discovered that when we make request and the account becomes active on the MT5 platform. The request above to /switch was not working during testing
+
+```json
+{
+    "login": 1013336511,
+    "server": "EquitiBrokerageSC-Live",
+    "trade_mode": 2,
+    "balance": 1.22,
+    "equity": 1.22,
+    "margin": 0.0,
+    "free_margin": 1.22,
+    "profit": 0.0,
+    "leverage": 2000,
+    "currency": "USD",
+    "name": "Miroslav Kirov",
+    "company": "Equiti Brokerage (Seychelles) Limited"
+}
+```
 
 ---
 
@@ -205,6 +332,9 @@ GET {{baseUrl}}/snapshot/XAUUSD?accountId=1111343
 - `account.balance: 10000`
 - `positions: []` (empty if no open trades)
 
+Again when i made the request this account became the current openned account on the MT5 platform and retrived the data
+
+[Example](./json-files/mt5-symbol-candles.json)
 ---
 
 ### 5.2 Full snapshot — EURUSD
@@ -221,6 +351,7 @@ GET {{baseUrl}}/candles/XAUUSD?timeframe=M1&count=50&accountId=1111343
 ```
 **Expect:** Array of 50 candles `{openTime, open, high, low, close, volume, closeTime}`
 
+[Example](./json-files/mt5-1m-candles.json)
 ---
 
 ### 5.4 Candles — H4 (100 bars)
@@ -245,6 +376,16 @@ GET {{baseUrl}}/orderbook/XAUUSD?depth=10&accountId=1111343
 ```
 **Expect:** `bids: []`, `asks: []` — most retail brokers return empty DOM. Not an error.
 
+
+TODO: Why this is empty reponse and how if any data is rpesent is used?
+```json
+{
+    "symbol": "XAU_USD",
+    "bids": [],
+    "asks": [],
+    "timestamp": 1773735373786
+}
+```
 ---
 
 ### 5.7 Recent trades (tick tape)
@@ -252,6 +393,103 @@ GET {{baseUrl}}/orderbook/XAUUSD?depth=10&accountId=1111343
 GET {{baseUrl}}/trades/XAUUSD?count=20&accountId=1111343
 ```
 **Expect:** Array of recent ticks `{price, volume, time, isBuyerMaker}` — or error 500 if tick history unavailable for this symbol (normal for some accounts)
+
+TODO: Investigate the ERROR
+
+Defaulting to user installation because normal site-packages is not writeable
+Requirement already satisfied: MetaTrader5>=5.0.45 in C:\Users\User\AppData\Roaming\Python\Python313\site-packages (from -r requirements.txt (line 1)) (5.0.5640)
+Requirement already satisfied: fastapi>=0.115.0 in C:\Users\User\AppData\Roaming\Python\Python313\site-packages (from -r requirements.txt (line 2)) (0.135.1)
+Requirement already satisfied: uvicorn>=0.34.0 in C:\Users\User\AppData\Roaming\Python\Python313\site-packages (from -r requirements.txt (line 3)) (0.42.0)
+Requirement already satisfied: numpy>=1.7 in C:\Users\User\AppData\Roaming\Python\Python313\site-packages (from MetaTrader5>=5.0.45->-r requirements.txt (line 1)) (2.4.3)
+Requirement already satisfied: starlette>=0.46.0 in C:\Users\User\AppData\Roaming\Python\Python313\site-packages (from fastapi>=0.115.0->-r requirements.txt (line 2)) (0.52.1)
+Requirement already satisfied: pydantic>=2.7.0 in C:\Users\User\AppData\Roaming\Python\Python313\site-packages (from fastapi>=0.115.0->-r requirements.txt (line 2)) (2.12.5)
+Requirement already satisfied: typing-extensions>=4.8.0 in C:\Users\User\AppData\Roaming\Python\Python313\site-packages (from fastapi>=0.115.0->-r requirements.txt (line 2)) (4.15.0)
+Requirement already satisfied: typing-inspection>=0.4.2 in C:\Users\User\AppData\Roaming\Python\Python313\site-packages (from fastapi>=0.115.0->-r requirements.txt (line 2)) (0.4.2)
+Requirement already satisfied: annotated-doc>=0.0.2 in C:\Users\User\AppData\Roaming\Python\Python313\site-packages (from fastapi>=0.115.0->-r requirements.txt (line 2)) (0.0.4)
+Requirement already satisfied: click>=7.0 in C:\Users\User\AppData\Roaming\Python\Python313\site-packages (from uvicorn>=0.34.0->-r requirements.txt (line 3)) (8.3.1)
+Requirement already satisfied: h11>=0.8 in C:\Users\User\AppData\Roaming\Python\Python313\site-packages (from uvicorn>=0.34.0->-r requirements.txt (line 3)) (0.16.0)
+Requirement already satisfied: colorama in C:\Users\User\AppData\Roaming\Python\Python313\site-packages (from click>=7.0->uvicorn>=0.34.0->-r requirements.txt (line 3)) (0.4.6)
+Requirement already satisfied: annotated-types>=0.6.0 in C:\Users\User\AppData\Roaming\Python\Python313\site-packages (from pydantic>=2.7.0->fastapi>=0.115.0->-r requirements.txt (line 2)) (0.7.0)
+Requirement already satisfied: pydantic-core==2.41.5 in C:\Users\User\AppData\Roaming\Python\Python313\site-packages (from pydantic>=2.7.0->fastapi>=0.115.0->-r requirements.txt (line 2)) (2.41.5)
+Requirement already satisfied: anyio<5,>=3.6.2 in C:\Users\User\AppData\Roaming\Python\Python313\site-packages (from starlette>=0.46.0->fastapi>=0.115.0->-r requirements.txt (line 2)) (4.12.1)
+Requirement already satisfied: idna>=2.8 in C:\Users\User\AppData\Roaming\Python\Python313\site-packages (from anyio<5,>=3.6.2->starlette>=0.46.0->fastapi>=0.115.0->-r requirements.txt (line 2)) (3.11)
+INFO:     Started server process [28616]
+INFO:     Waiting for application startup.
+[mt5-bridge] Connected — login 1111343 on EquitiBrokerageSC-Demo
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)      
+INFO:     127.0.0.1:63574 - "GET /trades/XAUUSD?count=20&accountId=1111343 HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\uvicorn\protocols\http\h11_impl.py", line 410, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self.scope, self.receive, self.send
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\uvicorn\middleware\proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\fastapi\applications.py", line 1160, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\starlette\applications.py", line 107, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)   
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\starlette\routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\fastapi\routing.py", line 130, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)     
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\fastapi\routing.py", line 116, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\fastapi\routing.py", line 670, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\fastapi\routing.py", line 326, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\starlette\concurrency.py", line 32, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\anyio\to_thread.py", line 63, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        func, args, abandon_on_cancel=abandon_on_cancel, limiter=limiter       
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^       
+    )
+    ^
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\anyio\_backends\_asyncio.py", line 2502, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Roaming\Python\Python313\site-packages\anyio\_backends\_asyncio.py", line 986, in run
+    result = context.run(func, *args)
+  File "D:\User\Desktop\wolf-fin\wolf-fin\mt5-bridge\main.py", line 494, in get_recent_trades
+    ticks = mt5.copy_ticks_from_pos(mt5_sym, 0, count, mt5.COPY_TICKS_TRADE)   
+            ^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: module 'MetaTrader5' has no attribute 'copy_ticks_from_pos'. Did you mean: 'copy_rates_from_pos'?
 
 ---
 
@@ -262,6 +500,26 @@ GET {{baseUrl}}/trades/XAUUSD?count=20&accountId=1111343
 GET {{baseUrl}}/positions?accountId=1111343
 ```
 **Expect:** Empty array `[]` if no open trades, or array of positions if trades are open
+
+```json
+[
+    {
+        "ticket": 107309560,
+        "symbol": "XAU_USD",
+        "side": "BUY",
+        "volume": 0.01,
+        "priceOpen": 5023.63,
+        "priceCurrent": 5023.44,
+        "profit": -0.19,
+        "swap": 0.0,
+        "sl": 0.0,
+        "tp": 0.0,
+        "magic": 0,
+        "comment": "",
+        "time": "2026-03-17T11:23:41+00:00"
+    }
+]
+```
 
 ---
 
@@ -278,6 +536,26 @@ GET {{baseUrl}}/positions?symbol=XAUUSD&accountId=1111343
 GET {{baseUrl}}/orders?accountId=1111343
 ```
 **Expect:** Empty array if no pending limit/stop orders
+
+```json
+[
+    {
+        "ticket": 107310348,
+        "symbol": "XAU_USD",
+        "type": 3,
+        "volume_initial": 0.01,
+        "volume_current": 0.01,
+        "price_open": 5043.11,
+        "sl": 5045.11,
+        "tp": 5004.09,
+        "price_current": 5021.56,
+        "state": 1,
+        "magic": 0,
+        "comment": "",
+        "time": "2026-03-17T11:25:43+00:00"
+    }
+]
+```
 
 ---
 
@@ -297,6 +575,23 @@ GET {{baseUrl}}/history/deals?days=7&limit=50&accountId=1111343
 ```
 **Expect:** Array of closed deals `{ticket, symbol, type, volume, price, profit, commission, time}`
 
+```json
+{
+        "ticket": 97673728,
+        "order": 107146592,
+        "symbol": "XAU_USD",
+        "type": 1,
+        "volume": 0.01,
+        "price": 5017.91,
+        "profit": 0.86,
+        "commission": 0.0,
+        "swap": 0.0,
+        "fee": 0.0,
+        "magic": 0,
+        "comment": "",
+        "time": "2026-03-16T23:13:56+00:00"
+    }
+```
 ---
 
 ### 7.2 Gold trade history — last 30 days
@@ -330,6 +625,23 @@ Content-Type: application/json
 }
 ```
 **Expect:** `{ "retcode": 10009, "deal": <ticket>, "order": <ticket>, "volume": 0.01, "price": <fill_price> }`
+
+```json
+{
+    "retcode": 10009,
+    "deal": 97841144,
+    "order": 107313410,
+    "volume": 0.01,
+    "price": 5020.89,
+    "comment": "Request executed"
+}
+```
+
+Findings:
+Not sure we are able to switch profiles and take positions from other profiles. 
+As long as the AlgoTrading is enabled we are able to place trades.
+
+TODO: Add another demo account from another broker and test placing an order by switching the user
 
 ---
 
@@ -415,6 +727,22 @@ Content-Type: application/json
 ```
 **Expect:** `{ "retcode": 10009, "deal": <close_deal_ticket> }`
 
+```json
+{
+    "retcode": 10009,
+    "deal": 97842080,
+    "order": 107314343,
+    "volume": 0.01,
+    "price": 5022.46,
+    "comment": "Request executed"
+}
+```
+
+Findings:
+We dont see if we have profit or loss within the response.
+
+In question: How do we know if this was profitable or not.
+
 ---
 
 ### 9.2 Partial close (half the volume)
@@ -454,6 +782,11 @@ GET {{baseUrl}}/symbol-info/FAKESYMBOL
 ```
 **Expect:** `HTTP 404` — `{ "detail": "Symbol FAKESYMBOL not found" }`
 
+```json
+{
+    "detail": "Symbol FAKESYMBOL not found"
+}
+```
 ---
 
 ### 10.2 Account not authorised in terminal
@@ -461,6 +794,9 @@ GET {{baseUrl}}/symbol-info/FAKESYMBOL
 GET {{baseUrl}}/account?accountId=1511022881
 ```
 **Expect:** `HTTP 502` — `"Could not switch to account 1511022881. Ensure it's authorized in MT5 terminal."`
+
+1511022881 - this is inactive accunt in FTMO
+Swithing to live account (1013336511) was working as expected.
 
 ---
 

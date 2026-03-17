@@ -140,38 +140,52 @@ export function Reports() {
               {f.charAt(0).toUpperCase() + f.slice(1)}
             </button>
           ))}
-          <span className="ml-auto text-sm text-muted self-center">{filtered.length} records</span>
+          <span className="ml-auto text-xs text-muted self-center font-mono">
+            {filtered.length} record{filtered.length !== 1 ? 's' : ''}
+          </span>
         </div>
         {filtered.length === 0
           ? <p className="text-muted text-sm">No cycles yet</p>
           : (
+            /* Outer wrapper: horizontal scroll if table is wide */
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr>
-                    {['Time', 'Symbol', 'Market', 'Decision', 'Reason', 'Mode'].map(h => (
-                      <th key={h} className="text-left text-xs font-semibold uppercase tracking-wider text-muted pb-3 pr-4 border-b border-border">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map((e, i) => (
-                    <tr
-                      key={i}
-                      onClick={() => e.id != null && setSelectedCycleId(e.id)}
-                      className={`border-b border-border/50 transition-colors ${e.id != null ? 'hover:bg-surface2 cursor-pointer' : ''}`}
-                    >
-                      <td className="py-2.5 pr-4 text-muted whitespace-nowrap text-xs">{rel(e.time)}</td>
-                      <td className="py-2.5 pr-4 font-semibold">{e.symbol}</td>
-                      <td className="py-2.5 pr-4"><Badge label={e.market} variant={e.market} /></td>
-                      <td className="py-2.5 pr-4"><Badge label={e.decision} variant={decisionVariant(e.decision)} /></td>
-                      <td className="py-2.5 pr-4 text-muted max-w-[280px] truncate text-xs">{e.reason || '—'}</td>
-                      <td className="py-2.5 pr-4"><Badge label={e.paper ? 'PAPER' : 'LIVE'} variant={e.paper ? 'paper' : 'live'} /></td>
-                      <td className="py-2.5 text-xs text-muted2">{e.id != null ? '→' : ''}</td>
+              {/* Fixed-height scrollable body — ~15 rows visible */}
+              <div
+                className="overflow-y-auto"
+                style={{
+                  maxHeight: '480px',
+                  scrollbarWidth: 'thin',
+                  scrollbarColor: '#2a2a32 #111113',
+                }}
+              >
+                <table className="w-full text-sm">
+                  {/* Sticky header stays in view while scrolling */}
+                  <thead className="sticky top-0 z-10 bg-surface">
+                    <tr>
+                      {['Time', 'Symbol', 'Market', 'Decision', 'Reason', 'Mode', ''].map(h => (
+                        <th key={h} className="text-left text-xs font-semibold uppercase tracking-wider text-muted py-2.5 pr-4 border-b border-border bg-surface">{h}</th>
+                      ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {filtered.map((e, i) => (
+                      <tr
+                        key={i}
+                        onClick={() => e.id != null && setSelectedCycleId(e.id)}
+                        className={`border-b border-border/40 transition-colors ${e.id != null ? 'hover:bg-surface2 cursor-pointer' : ''}`}
+                      >
+                        <td className="py-2.5 pr-4 text-muted whitespace-nowrap text-xs">{rel(e.time)}</td>
+                        <td className="py-2.5 pr-4 font-semibold text-xs">{e.symbol}</td>
+                        <td className="py-2.5 pr-4"><Badge label={e.market} variant={e.market} /></td>
+                        <td className="py-2.5 pr-4"><Badge label={e.decision} variant={decisionVariant(e.decision)} /></td>
+                        <td className="py-2.5 pr-4 text-muted max-w-[260px] truncate text-xs">{e.reason || '—'}</td>
+                        <td className="py-2.5 pr-4"><Badge label={e.paper ? 'PAPER' : 'LIVE'} variant={e.paper ? 'paper' : 'live'} /></td>
+                        <td className="py-2.5 text-xs text-muted2 opacity-40">{e.id != null ? '→' : ''}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )
         }

@@ -260,42 +260,44 @@ export function CycleThread({ thread, defaultExpanded = false }: Props) {
         <span className="text-muted2 text-xs shrink-0 ml-4 mt-0.5">▲</span>
       </div>
 
-      {/* Expandable sections */}
-      <Section
-        title="Decision & Reason"
-        count={thread.decisionLogs.length}
-        defaultOpen={thread.decisionLogs.length > 0}
-        color="text-green"
-      >
-        {thread.decisionLogs.map(e => <LogLine key={e.id} entry={e} />)}
-      </Section>
+      {/* Expandable sections — themed scrollable body */}
+      <div className="overflow-y-auto" style={{ maxHeight: '560px', scrollbarWidth: 'thin', scrollbarColor: '#2a2a32 #111113' }}>
+        <Section
+          title="Decision & Reason"
+          count={thread.decisionLogs.length}
+          defaultOpen={thread.decisionLogs.length > 0}
+          color="text-green"
+        >
+          {thread.decisionLogs.map(e => <LogLine key={e.id} entry={e} />)}
+        </Section>
 
-      <Section
-        title="Thinking"
-        count={thread.thinkingLogs.length}
-        defaultOpen={false}
-        color="text-yellow"
-      >
-        {thread.thinkingLogs.map(e => <LogLine key={e.id} entry={e} />)}
-      </Section>
+        <Section
+          title="Thinking"
+          count={thread.thinkingLogs.length}
+          defaultOpen={false}
+          color="text-yellow"
+        >
+          {thread.thinkingLogs.map(e => <LogLine key={e.id} entry={e} />)}
+        </Section>
 
-      <Section
-        title="Tool Calls"
-        count={thread.toolLogs.length}
-        defaultOpen={false}
-        color="text-blue"
-      >
-        <ToolPairs logs={thread.toolLogs} />
-      </Section>
+        <Section
+          title="Tool Calls"
+          count={thread.toolLogs.length}
+          defaultOpen={false}
+          color="text-blue"
+        >
+          <ToolPairs logs={thread.toolLogs} />
+        </Section>
 
-      <Section
-        title="Errors"
-        count={thread.errorLogs.length}
-        defaultOpen={thread.errorLogs.length > 0}
-        color="text-red"
-      >
-        {thread.errorLogs.map(e => <LogLine key={e.id} entry={e} />)}
-      </Section>
+        <Section
+          title="Errors"
+          count={thread.errorLogs.length}
+          defaultOpen={thread.errorLogs.length > 0}
+          color="text-red"
+        >
+          {thread.errorLogs.map(e => <LogLine key={e.id} entry={e} />)}
+        </Section>
+      </div>
     </div>
   )
 }

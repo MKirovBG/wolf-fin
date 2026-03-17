@@ -100,38 +100,46 @@ export function AgentDetail() {
           </div>
 
           {/* Action buttons */}
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <button
               disabled={!canStart || loading !== null}
               onClick={() => act(() => startAgent(agentKey), 'start')}
-              className="px-4 py-2 text-sm border border-green/40 text-green rounded-lg hover:bg-green-dim disabled:opacity-25 transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-green/30 text-green rounded-md hover:bg-green/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
             >
-              {loading === 'start' ? '...' : '▶ Start'}
+              <span className="text-[10px]">▶</span>
+              {loading === 'start' ? 'Starting…' : 'Start'}
             </button>
             <button
               disabled={!canPause || loading !== null}
               onClick={() => act(() => pauseAgent(agentKey), 'pause')}
-              className="px-4 py-2 text-sm border border-yellow/40 text-yellow rounded-lg hover:bg-yellow-dim disabled:opacity-25 transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-yellow/30 text-yellow rounded-md hover:bg-yellow/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
             >
-              {loading === 'pause' ? '...' : '⏸ Pause'}
+              <span className="text-[10px]">⏸</span>
+              {loading === 'pause' ? 'Pausing…' : 'Pause'}
             </button>
             <button
               disabled={!canStop || loading !== null}
               onClick={() => act(() => stopAgent(agentKey), 'stop')}
-              className="px-4 py-2 text-sm border border-red/40 text-red rounded-lg hover:bg-red-dim disabled:opacity-25 transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-red/30 text-red rounded-md hover:bg-red/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
             >
-              {loading === 'stop' ? '...' : '■ Stop'}
+              <span className="text-[10px]">■</span>
+              {loading === 'stop' ? 'Stopping…' : 'Stop'}
             </button>
+
+            {/* Divider */}
+            <div className="w-px h-4 bg-border mx-1" />
+
             <button
               disabled={loading !== null}
               onClick={() => act(() => triggerAgent(agentKey), 'trigger')}
-              className="px-4 py-2 text-sm border border-blue/30 text-blue rounded-lg hover:bg-blue-dim disabled:opacity-25 transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-blue/30 text-blue rounded-md hover:bg-blue/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
             >
-              {loading === 'trigger' ? 'Running...' : '⚡ Trigger'}
+              <span className="text-[10px]">⚡</span>
+              {loading === 'trigger' ? 'Running…' : 'Trigger'}
             </button>
             <button
               onClick={() => setShowMarket(true)}
-              className="px-4 py-2 text-sm border border-border text-muted rounded-lg hover:border-muted2 hover:text-text transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border text-muted rounded-md hover:border-muted2 hover:text-text transition-all"
             >
               Market
             </button>
@@ -161,7 +169,7 @@ export function AgentDetail() {
 
         {/* OVERVIEW TAB */}
         {tab === 'overview' && (
-          <div className="flex flex-col gap-5 max-w-4xl">
+          <div className="flex flex-col gap-5 max-w-4xl mx-auto w-full">
 
             {/* Stats + Last decision */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

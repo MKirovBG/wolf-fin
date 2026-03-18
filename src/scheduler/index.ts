@@ -5,16 +5,15 @@
 //
 // Fetch modes:
 //   manual     — Start marks agent as running; each Trigger fires one tick.
-//   autonomous — Start begins setInterval; ticks fire on cadence (session-gated for MT5).
-//   scheduled  — Start begins setInterval; ticks fire on cadence (no session gate).
+//   autonomous — Start begins setInterval; ticks fire on cadence continuously.
+//   scheduled  — Start begins setInterval; ticks fire on cadence continuously.
 //
+// Session awareness is handled by the agent's system prompt, not the scheduler.
 // Trigger always fires one immediate tick regardless of mode.
 
 import pino from 'pino'
 import { runAgentTick } from '../agent/index.js'
-import { isForexSessionOpen } from '../adapters/session.js'
 import { setAgentStatus } from '../server/state.js'
-import { logEvent } from '../server/state.js'
 import { makeAgentKey } from '../db/index.js'
 import type { AgentConfig } from '../types.js'
 
@@ -57,12 +56,6 @@ export function startAgentSchedule(config: AgentConfig): void {
   const intervalMs = resolveIntervalMs(config)
 
   const runTick = async () => {
-    // Autonomous mode: skip if MT5 market is closed, but log it visibly
-    if (config.fetchMode === 'autonomous' && config.market === 'mt5' && !isForexSessionOpen()) {
-      log.debug({ key }, 'autonomous — market closed, skipping')
-      logEvent(key, 'info', 'tick_skip', 'Market session closed — tick skipped (waiting for Tokyo / London / New York)')
-      return
-    }
     try {
       await runAgentTick(config)
     } catch (err) {

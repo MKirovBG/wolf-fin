@@ -30,12 +30,16 @@ async function detectExternalCloses(
   agentKey: string,
   config: AgentConfig,
   currentPositions: Array<{ ticket: number; side: string; priceOpen: number; volume: number }>,
+  agentClosedThisCycle: Set<number> = new Set(),
 ): Promise<string> {
   const prev = lastKnownPositions.get(agentKey) ?? new Map<number, TrackedPosition>()
   const current = new Map(currentPositions.map(p => [p.ticket, p]))
   lastKnownPositions.set(agentKey, current)
 
-  const closed = [...prev.entries()].filter(([ticket]) => !current.has(ticket))
+  // Exclude tickets the agent itself closed this cycle — not external closes
+  const closed = [...prev.entries()].filter(([ticket]) =>
+    !current.has(ticket) && !agentClosedThisCycle.has(ticket)
+  )
   if (closed.length === 0) return ''
 
   const notes: string[] = []
@@ -385,12 +389,29 @@ export async function runAgentCycle(config: AgentConfig, cycleType: 'trading' | 
   const systemPrompt = buildSystemPrompt(config, agentKey)
   const llmProvider = getLLMProvider(config)
   const llmModel = getModelForConfig(config)
+  const MAX_ITERATIONS = parseInt(process.env.MAX_CYCLE_ITERATIONS ?? '10', 10)
   let iterations = 0
   let orderPlacedThisCycle = false
+  // Track tickets closed by the agent this cycle so external-close detection ignores them
+  const agentClosedTickets = new Set<number>()
 
   try {
     while (true) {
       iterations++
+
+      // Hard cap — force-end the cycle and record it to prevent runaway loops and duplicate orders
+      if (iterations > MAX_ITERATIONS) {
+        logEvent(agentKey, 'warn', 'cycle_error',
+          `⚠ Cycle aborted — exceeded ${MAX_ITERATIONS} iterations. This usually means the agent is confused about order state. Check for duplicate/cancelled orders.`)
+        recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper: false, decision: 'HOLD', reason: `Aborted after ${MAX_ITERATIONS} iterations — possible order state confusion`, time: new Date().toISOString() })
+        return
+      }
+
+      // Warn at iteration 7 — inject a note into the next LLM call
+      if (iterations === Math.floor(MAX_ITERATIONS * 0.7)) {
+        messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'warn', content: `⚠ You are approaching the maximum iteration limit (${MAX_ITERATIONS}). Finish this cycle immediately — write your final DECISION and REASON without any further tool calls unless absolutely critical.` }] })
+      }
+
       const providerLabel = config.llmProvider === 'openrouter' ? `OpenRouter/${llmModel}` : `Anthropic/${llmModel}`
       logEvent(agentKey, 'debug', 'claude_thinking', `Sending to ${providerLabel} (iteration ${iterations})`)
 
@@ -511,11 +532,44 @@ export async function runAgentCycle(config: AgentConfig, cycleType: 'trading' | 
             ? { ...(result as Record<string, unknown>), candles: undefined }
             : result
 
+          // ── Inject critical context back to LLM for specific tool results ─────────
+          if (block.name === 'place_order' && result != null) {
+            const o = result as { status?: string; orderId?: number }
+            if (o.status === 'FILLED' && o.orderId != null) {
+              // Prevent the agent from calling cancel_order on a filled position ticket
+              resultForHistory = {
+                ...(resultForHistory as Record<string, unknown>),
+                _important: `✅ ORDER FILLED — ticket #${o.orderId} is now an OPEN POSITION. Do NOT call cancel_order on this ticket. If you want to exit, use close_position(ticket=${o.orderId}). This cycle should now end with DECISION: HOLD or your chosen outcome.`,
+              }
+            }
+          }
+
+          // ── Track agent-closed tickets so external-close detector ignores them ──
+          if (block.name === 'close_position' && result != null) {
+            const r = result as { ticket?: number; closed?: boolean }
+            if (r.closed && r.ticket != null) agentClosedTickets.add(r.ticket)
+          }
+
+          // ── Guard: block cancel_order on known open position tickets ─────────────
+          if (block.name === 'cancel_order') {
+            const inp = block.input as { orderId?: number; ticket?: number }
+            const ticketToCancel = inp.orderId ?? inp.ticket
+            const knownPos = lastKnownPositions.get(agentKey)
+            if (ticketToCancel != null && knownPos?.has(ticketToCancel)) {
+              const pos = knownPos.get(ticketToCancel)!
+              const errMsg = `⛔ Cannot cancel: #${ticketToCancel} is an OPEN POSITION (${pos.side} ${pos.volume} lot @ ${pos.priceOpen}). Use close_position(ticket=${ticketToCancel}) to close it.`
+              logEvent(agentKey, 'warn', 'guardrail_block', errMsg)
+              resultForHistory = { error: errMsg }
+              toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(resultForHistory) })
+              continue
+            }
+          }
+
           // ── Detect externally closed MT5 positions (piggybacked on get_snapshot) ──
           if (block.name === 'get_snapshot' && config.market === 'mt5' && result != null) {
             const snap = result as { positions?: Array<{ ticket: number; side: string; priceOpen: number; volume: number }> }
             if (Array.isArray(snap.positions)) {
-              const externalNote = await detectExternalCloses(agentKey, config, snap.positions)
+              const externalNote = await detectExternalCloses(agentKey, config, snap.positions, agentClosedTickets)
               if (externalNote) {
                 resultForHistory = { ...(resultForHistory as Record<string, unknown>), _externalCloses: externalNote.trim() }
               }

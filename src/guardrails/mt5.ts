@@ -10,7 +10,6 @@ import {
 } from './riskStateStore.js'
 
 const MAX_SPREAD_PIPS = parseFloat(process.env.MAX_SPREAD_PIPS ?? '3')
-const MIN_STOP_PIPS = parseFloat(process.env.MIN_STOP_PIPS ?? '10')
 
 /**
  * Validate an MT5 order before sending to the bridge.
@@ -40,15 +39,9 @@ export function validateMt5Order(
     }
   }
 
-  // 4. stopPips required and must meet minimum
+  // 4. stopPips required
   if (params.stopPips == null) {
     return { ok: false, reason: 'MT5 orders require stopPips (use ATR-based distance)' }
-  }
-  if (params.stopPips < MIN_STOP_PIPS) {
-    return {
-      ok: false,
-      reason: `stopPips ${params.stopPips} below minimum ${MIN_STOP_PIPS} — stop too tight`,
-    }
   }
 
   // 5. Pip-based risk: volume × pipValue × stopPips <= remainingBudget

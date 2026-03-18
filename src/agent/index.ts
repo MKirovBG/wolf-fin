@@ -13,8 +13,8 @@ import { getMt5Context } from '../guardrails/riskStateStore.js'
 import { buildMarketContext } from './context.js'
 import { sessionLabel } from '../adapters/session.js'
 import { getTools } from '../tools/definitions.js'
-import { recordCycle, logEvent, tryAcquireCycleLock, releaseCycleLock } from '../server/state.js'
-import { dbGetAgentPerformance, makeAgentKey } from '../db/index.js'
+import { recordCycle, logEvent, tryAcquireCycleLock, releaseCycleLock, getAgent } from '../server/state.js'
+import { dbGetAgentPerformance, makeAgentKey, dbSaveMemory, dbGetMemories, dbDeleteMemory, dbSavePlan, dbGetActivePlan, dbGetStrategy } from '../db/index.js'
 import type { AgentConfig } from '../types.js'
 import type { OrderParams } from '../adapters/types.js'
 
@@ -110,12 +110,53 @@ RISK RULES (non-negotiable):
 - Never risk more than remainingBudgetUsd on a single trade.
 ${sessionNote}`
 
+  const { symbol } = config
   const perf = dbGetAgentPerformance(agentKey, 10)
   const perfSection = perf.totalCycles > 0
-    ? `\n\nYOUR RECENT PERFORMANCE (last ${perf.totalCycles} cycles on ${config.symbol}):
+    ? `\n\nYOUR RECENT PERFORMANCE (last ${perf.totalCycles} cycles on ${symbol}):
 - Decisions: BUY ${perf.buys} | SELL ${perf.sells} | HOLD ${perf.holds}
 - Last decisions: ${perf.lastDecisions.map(d => `[${d.time.slice(11, 16)}] ${d.decision.split(' ')[0]}`).join(' → ')}${perf.holds >= 5 && perf.buys === 0 && perf.sells === 0 ? '\nWARNING: You have held every recent cycle. Re-examine if conditions truly warrant inaction or if you are being overly cautious.' : ''}`
     : ''
+
+  // ── Strategy injection ────────────────────────────────────────────────────────
+  const strategy = dbGetStrategy(agentKey)
+  const strategySection = strategy ? `
+## TRADING STRATEGY: "${strategy.name}"
+Style: ${strategy.style.toUpperCase()} | ${strategy.timeframe ? `Timeframe: ${strategy.timeframe} | ` : ''}${strategy.bias ? `Bias: ${strategy.bias.replace('_', ' ').toUpperCase()} | ` : ''}Max Positions: ${strategy.maxPositions}
+
+ENTRY RULES:
+${strategy.entryRules}
+
+EXIT RULES:
+${strategy.exitRules}
+${strategy.filters ? `\nFILTERS:\n${strategy.filters}` : ''}
+${strategy.notes ? `\nNOTES:\n${strategy.notes}` : ''}` : ''
+
+  // ── Memory injection ──────────────────────────────────────────────────────────
+  const memories = dbGetMemories(agentKey, undefined, 20)
+  const groupedMemories = memories.reduce((acc, m) => {
+    if (!acc[m.category]) acc[m.category] = []
+    acc[m.category].push(m)
+    return acc
+  }, {} as Record<string, typeof memories>)
+
+  const memorySection = memories.length > 0 ? `
+## YOUR PERSISTENT MEMORY (${symbol} — ${memories.length} entries)
+${Object.entries(groupedMemories).map(([cat, mems]) =>
+  `[${cat.toUpperCase()}]\n${mems.map(m => `• ${m.key} (conf ${m.confidence.toFixed(1)}): ${m.value}`).join('\n')}`
+).join('\n\n')}
+
+Use save_memory to add new observations. Use delete_memory when a level/pattern becomes invalid.` : ''
+
+  // ── Active plan injection ─────────────────────────────────────────────────────
+  const activePlan = dbGetActivePlan(agentKey)
+  const planSection = activePlan ? `
+## CURRENT SESSION PLAN
+Bias: ${activePlan.marketBias.toUpperCase()}${activePlan.sessionLabel ? ` | Session: ${activePlan.sessionLabel}` : ''}
+${activePlan.keyLevels ? `Key Levels: ${activePlan.keyLevels}` : ''}
+${activePlan.riskNotes ? `Risk Notes: ${activePlan.riskNotes}` : ''}
+Plan: ${activePlan.planText}
+` : ''
 
   const decisionFormat = `\n\nEXECUTION RULES (mandatory — the DECISION line does NOT trigger a trade by itself):
 - If BUY or SELL: call place_order FIRST, then write the DECISION line.
@@ -128,7 +169,7 @@ DECISION FORMAT (write AFTER executing the tool call):
 DECISION: [HOLD | BUY <qty> @ <price> | SELL <qty> @ <price> | CLOSE <ticket> | CANCEL <orderId>]
 REASON: <1-2 sentences of evidence>`
 
-  const full = base + perfSection + decisionFormat
+  const full = base + perfSection + strategySection + memorySection + planSection + decisionFormat
   return customPrompt ? `${full}\n\nADDITIONAL INSTRUCTIONS:\n${customPrompt}` : full
 }
 
@@ -185,6 +226,7 @@ async function dispatchTool(
   input: Record<string, unknown>,
   defaultMarket: 'crypto' | 'mt5',
   mt5AccountId?: number,
+  agentKey = '',
 ): Promise<unknown> {
   const market = (input.market as 'crypto' | 'mt5' | undefined) ?? defaultMarket
   const adapter = getAdapter(market, mt5AccountId)
@@ -247,6 +289,34 @@ async function dispatchTool(
       if (typeof mt5.closePosition !== 'function') throw new Error('close_position is only supported for MT5')
       return mt5.closePosition(input.ticket as number, input.volume as number | undefined)
     }
+    case 'save_memory': {
+      const { category, key, value, confidence, ttl_hours } = input as { category: string; key: string; value: string; confidence: number; ttl_hours?: number }
+      dbSaveMemory(agentKey, category, key, value, confidence, ttl_hours)
+      logEvent(agentKey, 'info', 'memory_write', `Saved memory [${category}] "${key}" (conf ${confidence})`)
+      return { ok: true, message: `Memory saved: [${category}] ${key}` }
+    }
+    case 'read_memories': {
+      const { category, limit } = input as { category?: string; limit?: number }
+      const memories = dbGetMemories(agentKey, category, limit ?? 10)
+      return { memories, count: memories.length }
+    }
+    case 'delete_memory': {
+      const { category, key } = input as { category: string; key: string }
+      dbDeleteMemory(agentKey, category, key)
+      logEvent(agentKey, 'info', 'memory_write', `Deleted memory [${category}] "${key}"`)
+      return { ok: true }
+    }
+    case 'save_plan': {
+      const { market_bias, key_levels, risk_notes, plan_text, session_label } = input as { market_bias: string; key_levels?: string; risk_notes?: string; plan_text: string; session_label?: string }
+      const planId = dbSavePlan(agentKey, { marketBias: market_bias, keyLevels: key_levels, riskNotes: risk_notes, planText: plan_text, sessionLabel: session_label, cycleCountAt: getAgent(agentKey)?.cycleCount })
+      logEvent(agentKey, 'info', 'plan_created', `Session plan saved [${market_bias.toUpperCase()}] id=${planId}`)
+      return { ok: true, planId, message: `Session plan saved with bias: ${market_bias}` }
+    }
+    case 'get_plan': {
+      const plan = dbGetActivePlan(agentKey)
+      if (!plan) return { plan: null, message: 'No active plan for today. Consider running a planning cycle.' }
+      return { plan }
+    }
     default:
       throw new Error(`Unknown tool: ${name}`)
   }
@@ -254,7 +324,7 @@ async function dispatchTool(
 
 // ── Agent Cycle ───────────────────────────────────────────────────────────────
 
-export async function runAgentCycle(config: AgentConfig): Promise<void> {
+export async function runAgentCycle(config: AgentConfig, cycleType: 'trading' | 'planning' = 'trading'): Promise<void> {
   const agentKey = makeAgentKey(config.market, config.symbol, config.mt5AccountId)
 
   if (!tryAcquireCycleLock(agentKey)) {
@@ -293,7 +363,7 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
         model: llmModel,
         max_tokens: 4096,
         system: systemPrompt,
-        tools: getTools(config.market),
+        tools: getTools(config.market, cycleType),
         messages,
       })
 
@@ -330,15 +400,14 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
             const side  = buyMatch ? 'BUY' : 'SELL'
             const qty   = parseFloat(match[1])
             const price = parseFloat(match[2])
-            const ctx   = getMt5Context()
-            // ATR-based fallback stop: use MIN_STOP_PIPS * 2 or 20 pips minimum
-            const fallbackStop = Math.max(parseFloat(process.env.MIN_STOP_PIPS ?? '10') * 2, 20)
+            // ATR-based fallback stop: 20 pips minimum
+            const fallbackStop = 20
             logEvent(agentKey, 'warn', 'auto_execute', `Agent stated ${side} without calling place_order — auto-executing via text decision`)
             try {
               const result = await dispatchTool('place_order', {
                 symbol: config.symbol, market: config.market,
                 side, type: 'LIMIT', quantity: qty, price, stopPips: fallbackStop,
-              }, config.market, config.mt5AccountId)
+              }, config.market, config.mt5AccountId, agentKey)
               logEvent(agentKey, 'info', 'tool_result', `← auto place_order: ${summariseToolResult('place_order', result)}`)
             } catch (autoErr) {
               const msg = autoErr instanceof Error ? autoErr.message : String(autoErr)
@@ -348,7 +417,7 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
             const orderId = parseInt(cancelMatch[1], 10)
             logEvent(agentKey, 'warn', 'auto_execute', `Agent stated CANCEL without calling cancel_order — auto-executing`)
             try {
-              await dispatchTool('cancel_order', { symbol: config.symbol, market: config.market, orderId }, config.market, config.mt5AccountId)
+              await dispatchTool('cancel_order', { symbol: config.symbol, market: config.market, orderId }, config.market, config.mt5AccountId, agentKey)
               logEvent(agentKey, 'info', 'tool_result', '← auto cancel_order: cancelled')
             } catch (autoErr) {
               const msg = autoErr instanceof Error ? autoErr.message : String(autoErr)
@@ -360,7 +429,7 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
               const ticket = parseInt(closeMatch[1], 10)
               logEvent(agentKey, 'warn', 'auto_execute', `Agent stated CLOSE without calling close_position — auto-executing ticket ${ticket}`)
               try {
-                const result = await dispatchTool('close_position', { ticket, market: config.market }, config.market, config.mt5AccountId)
+                const result = await dispatchTool('close_position', { ticket, market: config.market }, config.market, config.mt5AccountId, agentKey)
                 logEvent(agentKey, 'info', 'tool_result', `← auto close_position: ${summariseToolResult('close_position', result)}`)
               } catch (autoErr) {
                 const msg = autoErr instanceof Error ? autoErr.message : String(autoErr)
@@ -391,7 +460,7 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
 
           let result: unknown
           try {
-            result = await dispatchTool(block.name, block.input as Record<string, unknown>, config.market, config.mt5AccountId)
+            result = await dispatchTool(block.name, block.input as Record<string, unknown>, config.market, config.mt5AccountId, agentKey)
             const summary = summariseToolResult(block.name, result)
             logEvent(agentKey, 'info', 'tool_result', `← ${block.name}: ${summary}`)
           } catch (err) {
@@ -457,6 +526,7 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
           { symbol: config.symbol },
           config.market,
           config.mt5AccountId,
+          agentKey,
         ) as Array<{ orderId: number }>
 
         if (Array.isArray(openOrders) && openOrders.length > 0) {
@@ -471,6 +541,7 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
                   { ticket: order.orderId, market: config.market },
                   config.market,
                   config.mt5AccountId,
+                  agentKey,
                 )
                 logEvent(agentKey, 'warn', 'tool_result',
                   `← Emergency close_position: ${summariseToolResult('close_position', result)}`)
@@ -480,6 +551,7 @@ export async function runAgentCycle(config: AgentConfig): Promise<void> {
                   { symbol: config.symbol, market: config.market, orderId: order.orderId },
                   config.market,
                   config.mt5AccountId,
+                  agentKey,
                 )
                 logEvent(agentKey, 'warn', 'tool_result',
                   `← Emergency cancel_order orderId=${order.orderId}: cancelled`)

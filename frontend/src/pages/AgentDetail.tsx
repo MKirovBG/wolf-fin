@@ -8,6 +8,7 @@ import { SettingsPanel } from '../components/AgentCard.tsx'
 import { ThreadedLogsPanel } from '../components/ThreadedLogsPanel.tsx'
 import { SystemPromptEditor } from '../components/SystemPromptEditor.tsx'
 import { MarketDataModal } from '../components/MarketDataModal.tsx'
+import { IntelligencePanel } from '../components/IntelligencePanel.tsx'
 
 function rel(iso: string) {
   const d = Date.now() - new Date(iso).getTime()
@@ -22,7 +23,7 @@ function iLabel(s: number) {
   return `${s / 3600}h`
 }
 
-type Tab = 'overview' | 'logs'
+type Tab = 'overview' | 'logs' | 'intelligence'
 
 export function AgentDetail() {
   const { market, symbol, accountId } = useParams<{ market: string; symbol: string; accountId?: string }>()
@@ -148,7 +149,7 @@ export function AgentDetail() {
 
         {/* Tab bar */}
         <div className="flex gap-0">
-          {(['overview', 'logs'] as Tab[]).map(t => (
+          {(['overview', 'logs', 'intelligence'] as Tab[]).map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -158,7 +159,7 @@ export function AgentDetail() {
                   : 'border-transparent text-muted hover:text-text'
               }`}
             >
-              {t === 'overview' ? 'Overview' : 'Logs'}
+              {t === 'overview' ? 'Overview' : t === 'logs' ? 'Logs' : 'Intelligence'}
             </button>
           ))}
         </div>
@@ -169,6 +170,7 @@ export function AgentDetail() {
         className={`flex-1 px-6 py-5 ${tab === 'logs' ? 'overflow-hidden flex flex-col' : 'overflow-auto'}`}
         style={{ minHeight: 0 }}
       >
+
 
         {/* OVERVIEW TAB */}
         {tab === 'overview' && (
@@ -248,6 +250,11 @@ export function AgentDetail() {
           <div className="h-full flex flex-col">
             <ThreadedLogsPanel agentKey={agentKey} />
           </div>
+        )}
+
+        {/* INTELLIGENCE TAB */}
+        {tab === 'intelligence' && (
+          <IntelligencePanel agentKey={agentKey} />
         )}
       </div>
 

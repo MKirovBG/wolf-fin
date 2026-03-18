@@ -42,6 +42,7 @@ export type LogEvent =
   | 'claude_thinking' | 'decision'
   | 'guardrail_block' | 'session_skip' | 'cycle_skip'
   | 'auto_execute' | 'auto_execute_error'
+  | 'memory_write' | 'plan_created'
 
 export interface LogEntry {
   id: number

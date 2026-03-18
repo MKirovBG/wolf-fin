@@ -127,6 +127,7 @@ export type LogEvent =
   | 'claude_thinking' | 'decision'
   | 'guardrail_block' | 'session_skip'
   | 'auto_execute' | 'auto_execute_error'
+  | 'memory_write' | 'plan_created'
 
 export interface LogEntry {
   id: number
@@ -256,4 +257,44 @@ export interface MarketSummary {
   holds: number
   errors: number
   risk: RiskState
+}
+
+export interface StrategyDoc {
+  agentKey: string
+  name: string
+  style: 'scalping' | 'swing' | 'trend' | 'mean_reversion' | 'custom'
+  bias?: string
+  timeframe?: string
+  entryRules: string
+  exitRules: string
+  filters?: string
+  maxPositions: number
+  notes?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AgentMemory {
+  id: number
+  category: string
+  key: string
+  value: string
+  confidence: number
+  createdAt: string
+  updatedAt: string
+  expiresAt?: string
+}
+
+export interface AgentPlan {
+  id: number
+  agentKey: string
+  sessionDate: string
+  sessionLabel?: string
+  marketBias: string
+  keyLevels?: string
+  riskNotes?: string
+  planText: string
+  createdAt: string
+  cycleCountAt?: number
+  active: boolean
 }

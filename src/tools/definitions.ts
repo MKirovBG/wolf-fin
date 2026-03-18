@@ -114,17 +114,98 @@ const ALL_TOOLS: Anthropic.Tool[] = [
       required: ['ticket', 'market'],
     },
   },
+  {
+    name: 'save_memory',
+    description: `Persist a trading observation, key price level, pattern, or risk note to long-term memory.
+Call this when you discover something worth remembering across future cycles and sessions:
+- A support or resistance level that has held multiple times
+- A pattern you've observed in this symbol's behaviour
+- A risk condition to always watch for
+- A session-specific behaviour (e.g. "London open often fades initial move")
+Memories are automatically injected into your system prompt each cycle.`,
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        category: { type: 'string', enum: ['pattern', 'risk', 'price_level', 'session', 'general'], description: 'Memory category' },
+        key: { type: 'string', description: 'Short unique label, e.g. "1.0800_support" or "london_open_fade"' },
+        value: { type: 'string', description: 'What you observed. Be specific and concise (max 200 words).' },
+        confidence: { type: 'number', description: 'Your confidence in this observation (0.0 to 1.0)' },
+        ttl_hours: { type: 'number', description: 'Optional: expire this memory after N hours. Omit for permanent.' }
+      },
+      required: ['category', 'key', 'value', 'confidence']
+    }
+  },
+  {
+    name: 'read_memories',
+    description: `Query your long-term memory for this symbol. Top memories are already injected into your system prompt, but use this tool to search for something specific or to see more entries.`,
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        category: { type: 'string', enum: ['pattern', 'risk', 'price_level', 'session', 'general', 'all'], description: 'Filter by category, or "all"' },
+        limit: { type: 'number', description: 'Max memories to return (default 10)' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'delete_memory',
+    description: `Remove a memory that is no longer valid. Use this when a support level breaks, a pattern stops working, or old information would mislead future decisions.`,
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        category: { type: 'string', enum: ['pattern', 'risk', 'price_level', 'session', 'general'] },
+        key: { type: 'string', description: 'The key of the memory to delete' }
+      },
+      required: ['category', 'key']
+    }
+  },
+  {
+    name: 'save_plan',
+    description: `Write a session trading plan. Use this at the start of a trading session to record your market bias, key levels to watch, and intent for the session. Only one active plan exists per day per agent.`,
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        market_bias: { type: 'string', enum: ['bullish', 'bearish', 'neutral', 'range'], description: 'Your directional bias for this session' },
+        key_levels: { type: 'string', description: 'JSON array of key levels: [{price, type, rationale}]. E.g. [{"price":1.0800,"type":"support","rationale":"held 3 times this week"}]' },
+        risk_notes: { type: 'string', description: 'Any risk conditions or filters for this session (news, spread, timing)' },
+        plan_text: { type: 'string', description: 'Full session plan in plain text: what setups you are looking for, entry conditions, targets' },
+        session_label: { type: 'string', description: 'Optional: session name e.g. "London", "New York", "Daily"' }
+      },
+      required: ['market_bias', 'plan_text']
+    }
+  },
+  {
+    name: 'get_plan',
+    description: `Retrieve your current active session plan. Call this to check if current market action aligns with your session intent before making a trading decision.`,
+    input_schema: {
+      type: 'object' as const,
+      properties: {},
+      required: []
+    }
+  },
 ]
 
-/** Returns the tool list for the given market, excluding tools unsupported by that market. */
-export function getTools(market: 'crypto' | 'mt5'): Anthropic.Tool[] {
+const TRADING_ONLY_TOOLS = new Set(['place_order', 'close_position', 'cancel_order'])
+
+/** Returns the tool list for the given market, excluding tools unsupported by that market.
+ *  When cycleType is 'planning', trading execution tools are excluded. */
+export function getTools(market: 'crypto' | 'mt5', cycleType?: 'trading' | 'planning'): Anthropic.Tool[] {
+  let tools = ALL_TOOLS
+
   if (market === 'mt5') {
     // Exclude order_book (MT5 retail brokers don't publish DOM)
     // Include close_position (MT5 uses ticket-based closes, NOT opposite-side orders)
-    return ALL_TOOLS.filter(t => t.name !== 'get_order_book')
+    tools = tools.filter(t => t.name !== 'get_order_book')
+  } else {
+    // Crypto: exclude close_position (use place_order sell to exit a long)
+    tools = tools.filter(t => t.name !== 'close_position')
   }
-  // Crypto: exclude close_position (use place_order sell to exit a long)
-  return ALL_TOOLS.filter(t => t.name !== 'close_position')
+
+  if (cycleType === 'planning') {
+    tools = tools.filter(t => !TRADING_ONLY_TOOLS.has(t.name))
+  }
+
+  return tools
 }
 
 // ── Tool input types ──────────────────────────────────────────────────────────

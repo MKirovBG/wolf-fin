@@ -55,6 +55,65 @@ export function initDb(): void {
     );
   `)
 
+  // ── New tables ────────────────────────────────────────────────────────────
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_memories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_key TEXT NOT NULL,
+      category TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0.7,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      expires_at TEXT,
+      UNIQUE(agent_key, category, key) ON CONFLICT REPLACE
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_strategies (
+      agent_key TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      style TEXT NOT NULL,
+      bias TEXT,
+      timeframe TEXT,
+      entry_rules TEXT NOT NULL,
+      exit_rules TEXT NOT NULL,
+      filters TEXT,
+      max_positions INTEGER DEFAULT 1,
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_key TEXT NOT NULL,
+      session_date TEXT NOT NULL,
+      session_label TEXT,
+      market_bias TEXT NOT NULL,
+      key_levels TEXT,
+      risk_notes TEXT,
+      plan_text TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      cycle_count_at INTEGER,
+      active INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_analyses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_key TEXT NOT NULL,
+      analysis_type TEXT NOT NULL,
+      cycles_reviewed INTEGER,
+      win_rate REAL,
+      avg_pnl_usd REAL,
+      summary_text TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      period_start TEXT,
+      period_end TEXT
+    );
+  `)
+
   // Migration: add pnl_usd column to existing databases
   try { db.exec('ALTER TABLE cycle_results ADD COLUMN pnl_usd REAL') } catch { /* column already exists */ }
 }
@@ -291,4 +350,123 @@ export function dbGetLogs(sinceId?: number, agentKey?: string, limit = 200): Log
     message: r.message,
     ...(r.data ? { data: JSON.parse(r.data) } : {}),
   }))
+}
+
+// ── Memory ───────────────────────────────────────────────────────────────────
+
+export function dbSaveMemory(agentKey: string, category: string, key: string, value: string, confidence: number, ttlHours?: number): void {
+  const now = new Date().toISOString()
+  const expiresAt = ttlHours ? new Date(Date.now() + ttlHours * 3600000).toISOString() : null
+  db.prepare(`
+    INSERT INTO agent_memories (agent_key, category, key, value, confidence, created_at, updated_at, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(agent_key, category, key) DO UPDATE SET
+      value = excluded.value,
+      confidence = excluded.confidence,
+      updated_at = excluded.updated_at,
+      expires_at = excluded.expires_at
+  `).run(agentKey, category, key, value, confidence, now, now, expiresAt)
+}
+
+export function dbGetMemories(agentKey: string, category?: string, limit = 20): Array<{
+  id: number; category: string; key: string; value: string; confidence: number;
+  createdAt: string; updatedAt: string; expiresAt: string | null
+}> {
+  const now = new Date().toISOString()
+  let sql = `SELECT * FROM agent_memories WHERE agent_key = ? AND (expires_at IS NULL OR expires_at > ?)`
+  const params: unknown[] = [agentKey, now]
+  if (category && category !== 'all') { sql += ` AND category = ?`; params.push(category) }
+  sql += ` ORDER BY confidence DESC, updated_at DESC LIMIT ?`
+  params.push(limit)
+  const rows = db.prepare(sql).all(...params) as Array<{
+    id: number; category: string; key: string; value: string; confidence: number;
+    created_at: string; updated_at: string; expires_at: string | null
+  }>
+  return rows.map(r => ({ id: r.id, category: r.category, key: r.key, value: r.value, confidence: r.confidence, createdAt: r.created_at, updatedAt: r.updated_at, expiresAt: r.expires_at }))
+}
+
+export function dbDeleteMemory(agentKey: string, category: string, key: string): void {
+  db.prepare(`DELETE FROM agent_memories WHERE agent_key = ? AND category = ? AND key = ?`).run(agentKey, category, key)
+}
+
+export function dbClearMemories(agentKey: string): void {
+  db.prepare(`DELETE FROM agent_memories WHERE agent_key = ?`).run(agentKey)
+}
+
+// ── Strategy ─────────────────────────────────────────────────────────────────
+
+export interface StrategyDoc {
+  agentKey: string; name: string; style: string; bias?: string; timeframe?: string;
+  entryRules: string; exitRules: string; filters?: string; maxPositions: number; notes?: string;
+  createdAt: string; updatedAt: string
+}
+
+export function dbSaveStrategy(s: Omit<StrategyDoc, 'createdAt' | 'updatedAt'>): void {
+  const now = new Date().toISOString()
+  const existing = db.prepare(`SELECT created_at FROM agent_strategies WHERE agent_key = ?`).get(s.agentKey) as { created_at: string } | undefined
+  const createdAt = existing?.created_at ?? now
+  db.prepare(`
+    INSERT INTO agent_strategies (agent_key, name, style, bias, timeframe, entry_rules, exit_rules, filters, max_positions, notes, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(agent_key) DO UPDATE SET
+      name = excluded.name, style = excluded.style, bias = excluded.bias,
+      timeframe = excluded.timeframe, entry_rules = excluded.entry_rules,
+      exit_rules = excluded.exit_rules, filters = excluded.filters,
+      max_positions = excluded.max_positions, notes = excluded.notes,
+      updated_at = excluded.updated_at
+  `).run(s.agentKey, s.name, s.style, s.bias ?? null, s.timeframe ?? null, s.entryRules, s.exitRules, s.filters ?? null, s.maxPositions ?? 1, s.notes ?? null, createdAt, now)
+}
+
+export function dbGetStrategy(agentKey: string): StrategyDoc | null {
+  const row = db.prepare(`SELECT * FROM agent_strategies WHERE agent_key = ?`).get(agentKey) as {
+    agent_key: string; name: string; style: string; bias: string | null; timeframe: string | null;
+    entry_rules: string; exit_rules: string; filters: string | null; max_positions: number;
+    notes: string | null; created_at: string; updated_at: string
+  } | undefined
+  if (!row) return null
+  return { agentKey: row.agent_key, name: row.name, style: row.style, bias: row.bias ?? undefined, timeframe: row.timeframe ?? undefined, entryRules: row.entry_rules, exitRules: row.exit_rules, filters: row.filters ?? undefined, maxPositions: row.max_positions, notes: row.notes ?? undefined, createdAt: row.created_at, updatedAt: row.updated_at }
+}
+
+export function dbDeleteStrategy(agentKey: string): void {
+  db.prepare(`DELETE FROM agent_strategies WHERE agent_key = ?`).run(agentKey)
+}
+
+// ── Plans ─────────────────────────────────────────────────────────────────────
+
+export interface PlanDoc {
+  id: number; agentKey: string; sessionDate: string; sessionLabel?: string;
+  marketBias: string; keyLevels?: string; riskNotes?: string;
+  planText: string; createdAt: string; cycleCountAt?: number; active: boolean
+}
+
+export function dbSavePlan(agentKey: string, plan: { marketBias: string; keyLevels?: string; riskNotes?: string; planText: string; sessionLabel?: string; cycleCountAt?: number }): number {
+  const now = new Date().toISOString()
+  const sessionDate = now.slice(0, 10)
+  // Deactivate previous plans for today
+  db.prepare(`UPDATE agent_plans SET active = 0 WHERE agent_key = ? AND session_date = ?`).run(agentKey, sessionDate)
+  const result = db.prepare(`
+    INSERT INTO agent_plans (agent_key, session_date, session_label, market_bias, key_levels, risk_notes, plan_text, created_at, cycle_count_at, active)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+  `).run(agentKey, sessionDate, plan.sessionLabel ?? null, plan.marketBias, plan.keyLevels ?? null, plan.riskNotes ?? null, plan.planText, now, plan.cycleCountAt ?? null) as { lastInsertRowid: number }
+  return result.lastInsertRowid as number
+}
+
+export function dbGetActivePlan(agentKey: string): PlanDoc | null {
+  const today = new Date().toISOString().slice(0, 10)
+  const row = db.prepare(`SELECT * FROM agent_plans WHERE agent_key = ? AND session_date = ? AND active = 1 ORDER BY id DESC LIMIT 1`).get(agentKey, today) as {
+    id: number; agent_key: string; session_date: string; session_label: string | null;
+    market_bias: string; key_levels: string | null; risk_notes: string | null;
+    plan_text: string; created_at: string; cycle_count_at: number | null; active: number
+  } | undefined
+  if (!row) return null
+  return { id: row.id, agentKey: row.agent_key, sessionDate: row.session_date, sessionLabel: row.session_label ?? undefined, marketBias: row.market_bias, keyLevels: row.key_levels ?? undefined, riskNotes: row.risk_notes ?? undefined, planText: row.plan_text, createdAt: row.created_at, cycleCountAt: row.cycle_count_at ?? undefined, active: !!row.active }
+}
+
+export function dbGetAllPlans(agentKey: string, limit = 10): PlanDoc[] {
+  const rows = db.prepare(`SELECT * FROM agent_plans WHERE agent_key = ? ORDER BY id DESC LIMIT ?`).all(agentKey, limit) as Array<{
+    id: number; agent_key: string; session_date: string; session_label: string | null;
+    market_bias: string; key_levels: string | null; risk_notes: string | null;
+    plan_text: string; created_at: string; cycle_count_at: number | null; active: number
+  }>
+  return rows.map(r => ({ id: r.id, agentKey: r.agent_key, sessionDate: r.session_date, sessionLabel: r.session_label ?? undefined, marketBias: r.market_bias, keyLevels: r.key_levels ?? undefined, riskNotes: r.risk_notes ?? undefined, planText: r.plan_text, createdAt: r.created_at, cycleCountAt: r.cycle_count_at ?? undefined, active: !!r.active }))
 }

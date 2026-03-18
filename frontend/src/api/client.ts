@@ -1,4 +1,4 @@
-import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, CycleDetail, LogEntry, PositionEntry, FillEntry, AccountEntry, Mt5AccountInfo, OpenRouterModel } from '../types/index.ts'
+import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, CycleDetail, LogEntry, PositionEntry, FillEntry, AccountEntry, Mt5AccountInfo, OpenRouterModel, StrategyDoc, AgentMemory, AgentPlan } from '../types/index.ts'
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, options)
@@ -88,3 +88,24 @@ export const searchSymbols = (market: string, search: string, accountId?: number
   if (accountId) p.set('accountId', String(accountId))
   return api<Array<{ symbol: string; description: string }>>(`/api/symbols?${p}`)
 }
+
+// ── Agent Strategy ────────────────────────────────────────────────────────────
+export const getAgentStrategy = (key: string) => api<StrategyDoc>(`/api/agents/${key}/strategy`)
+export const saveAgentStrategy = (key: string, s: Omit<StrategyDoc, 'agentKey' | 'createdAt' | 'updatedAt'>) =>
+  api<{ ok: boolean }>(`/api/agents/${key}/strategy`, { method: 'PUT', body: JSON.stringify(s), headers: { 'Content-Type': 'application/json' } })
+export const deleteAgentStrategy = (key: string) =>
+  api<{ ok: boolean }>(`/api/agents/${key}/strategy`, { method: 'DELETE' })
+
+// ── Agent Memory ──────────────────────────────────────────────────────────────
+export const getAgentMemories = (key: string, category?: string) =>
+  api<AgentMemory[]>(`/api/agents/${key}/memories${category ? `?category=${category}` : ''}`)
+export const deleteAgentMemory = (key: string, category: string, memKey: string) =>
+  api<{ ok: boolean }>(`/api/agents/${key}/memories/${category}/${encodeURIComponent(memKey)}`, { method: 'DELETE' })
+export const clearAgentMemories = (key: string) =>
+  api<{ ok: boolean }>(`/api/agents/${key}/memories`, { method: 'DELETE' })
+
+// ── Agent Plans ───────────────────────────────────────────────────────────────
+export const getAgentPlan = (key: string) => api<AgentPlan>(`/api/agents/${key}/plan/active`)
+export const getAgentPlans = (key: string) => api<AgentPlan[]>(`/api/agents/${key}/plans`)
+export const triggerPlanningCycle = (key: string) =>
+  api<{ ok: boolean }>(`/api/agents/${key}/plan`, { method: 'POST' })

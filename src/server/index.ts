@@ -7,7 +7,7 @@ import { dirname, join } from 'path'
 import { existsSync, appendFileSync, readFileSync, writeFileSync } from 'fs'
 import pino from 'pino'
 import { getState, getAgent, upsertAgent, removeAgent, setAgentStatus, getLogs } from './state.js'
-import { dbGetCycleResults, dbGetCycleById, dbGetLogsForCycle, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor, makeAgentKey } from '../db/index.js'
+import { dbGetCycleResults, dbGetCycleById, dbGetLogsForCycle, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor, makeAgentKey, dbGetStrategy, dbSaveStrategy, dbDeleteStrategy, dbGetMemories, dbClearMemories, dbDeleteMemory, dbGetActivePlan, dbGetAllPlans } from '../db/index.js'
 import { getRiskState, MAX_DAILY_LOSS_USD } from '../guardrails/riskState.js'
 import { getRiskStateFor } from '../guardrails/riskStateStore.js'
 import { startAgentSchedule, pauseAgentSchedule, stopAgentSchedule } from '../scheduler/index.js'
@@ -553,6 +553,64 @@ export async function startServer(): Promise<void> {
     const trades = results.flatMap(r => r.status === 'fulfilled' ? r.value : [])
       .sort((a, b) => b.time - a.time)
     return reply.send(trades)
+  })
+
+  // ── Agent Strategy ────────────────────────────────────────────────────────────
+  app.get('/api/agents/:key/strategy', async (req) => {
+    const { key } = req.params as { key: string }
+    return dbGetStrategy(key) ?? {}
+  })
+
+  app.put('/api/agents/:key/strategy', async (req, reply) => {
+    const { key } = req.params as { key: string }
+    const body = req.body as Omit<import('../db/index.js').StrategyDoc, 'agentKey' | 'createdAt' | 'updatedAt'>
+    dbSaveStrategy({ ...body, agentKey: key })
+    return reply.send({ ok: true })
+  })
+
+  app.delete('/api/agents/:key/strategy', async (req, reply) => {
+    const { key } = req.params as { key: string }
+    dbDeleteStrategy(key)
+    return reply.send({ ok: true })
+  })
+
+  // ── Agent Memory ──────────────────────────────────────────────────────────────
+  app.get('/api/agents/:key/memories', async (req) => {
+    const { key } = req.params as { key: string }
+    const { category } = req.query as { category?: string }
+    return dbGetMemories(key, category, 100)
+  })
+
+  app.delete('/api/agents/:key/memories', async (req, reply) => {
+    const { key } = req.params as { key: string }
+    dbClearMemories(key)
+    return reply.send({ ok: true })
+  })
+
+  app.delete('/api/agents/:key/memories/:category/:memKey', async (req, reply) => {
+    const { key, category, memKey } = req.params as { key: string; category: string; memKey: string }
+    dbDeleteMemory(key, category, decodeURIComponent(memKey))
+    return reply.send({ ok: true })
+  })
+
+  // ── Agent Plans ───────────────────────────────────────────────────────────────
+  app.get('/api/agents/:key/plans', async (req) => {
+    const { key } = req.params as { key: string }
+    return dbGetAllPlans(key, 10)
+  })
+
+  app.get('/api/agents/:key/plan/active', async (req) => {
+    const { key } = req.params as { key: string }
+    return dbGetActivePlan(key) ?? {}
+  })
+
+  app.post('/api/agents/:key/plan', async (req, reply) => {
+    const { key } = req.params as { key: string }
+    const agent = getAgent(key)
+    if (!agent) return reply.status(404).send({ error: 'Agent not found' })
+    // Run a planning cycle asynchronously
+    runAgentCycle(agent.config, 'planning').catch(err => log.error({ err, key }, 'planning cycle error'))
+    return reply.send({ ok: true, message: 'Planning cycle triggered' })
   })
 
   // ── Serve React frontend ─────────────────────────────────────────────────────

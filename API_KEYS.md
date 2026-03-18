@@ -30,7 +30,5 @@
   - Free tier works without a key (just rate-limited)
   - `.env`: `COINGECKO_KEY`
 
-https://api.alpaca.markets: AKP66ZZ2ISSRC5L7OYCQ7DYCSO - KEY C8sH2YvhD9DJc2ZQZmtZhjDM8qFmmhEsULtCLZHUX9VZ - SECRET
-https://paper-api.alpaca.markets/v2: PKMWZHCRKFHLYDFFTOHFGTR5Q6 - KEY Cfjs43tLPkotNvZPZPGC8Rhrtffh1tjPYChxDaSRKY3c - SECRET
 
 

@@ -8,6 +8,11 @@ export declare function openSessions(): Session[];
  */
 export declare function isForexSessionOpen(): boolean;
 /**
+ * Returns minutes remaining until the earliest active session closes.
+ * Returns null if no major session is open.
+ */
+export declare function minutesUntilSessionClose(): number | null;
+/**
  * Returns a human-readable session label for the system prompt.
  * e.g. "London / New York overlap (high liquidity)"
  */

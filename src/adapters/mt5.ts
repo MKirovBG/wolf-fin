@@ -13,7 +13,7 @@ import type {
   RiskState,
 } from './types.js'
 import type { IMarketAdapter } from './interface.js'
-import { computeIndicators } from './indicators.js'
+import { computeIndicators, computeKeyLevels } from './indicators.js'
 
 // ── Bridge HTTP helpers ──────────────────────────────────────────────────────
 
@@ -301,6 +301,8 @@ export class MT5Adapter implements IMarketAdapter {
     const contractSize = info.trade_contract_size || 100_000
     const pipValue = point * contractSize
 
+    const keyLevels = computeKeyLevels(h4, h1, mid)
+
     return {
       symbol: snap.symbol || symbol,
       timestamp: Date.now(),
@@ -318,6 +320,13 @@ export class MT5Adapter implements IMarketAdapter {
       positions,       // rich MT5 position detail (sl, tp, profit, priceCurrent, swap)
       pendingOrders,   // pending limit/stop orders not yet filled
       risk: riskState,
+      accountInfo: {
+        balance: snap.account.balance,
+        equity: snap.account.equity,
+        freeMargin: snap.account.free_margin,
+        usedMargin: snap.account.margin,
+        leverage: snap.account.leverage,
+      },
       forex: {
         spread: info.spread * point / pipSizeHeuristic(symbol, point),
         pipValue,
@@ -326,6 +335,7 @@ export class MT5Adapter implements IMarketAdapter {
         swapLong: info.swap_long,
         swapShort: info.swap_short,
       },
+      keyLevels,
     }
   }
 
@@ -389,6 +399,11 @@ export class MT5Adapter implements IMarketAdapter {
       timeInForce: 'GTC',
       time: new Date(p.time).getTime(),
       updateTime: Date.now(),
+      profit: p.profit,
+      swap: p.swap,
+      sl: p.sl,
+      tp: p.tp,
+      priceCurrent: p.priceCurrent,
     }))
 
     const pending: Order[] = pendingOrders.map(o => ({
@@ -428,6 +443,13 @@ export class MT5Adapter implements IMarketAdapter {
     }))
   }
 
+  /** Rich deal history with profit/loss and exit reason (sl, tp, etc.) for LLM reasoning */
+  async getDeals(symbol?: string, days = 1, limit = 20): Promise<BridgeDeal[]> {
+    const sym = symbol ? `&symbol=${toMt5Symbol(symbol)}` : ''
+    const acct = this.accountId ? `&accountId=${this.accountId}` : ''
+    return mt5Get<BridgeDeal[]>(this.buildUrl(`/history/deals?days=${days}&limit=${limit}${sym}${acct}`))
+  }
+
   async placeOrder(params: OrderParams): Promise<OrderResult> {
     const magic = parseInt(process.env.MT5_MAGIC ?? '123456')
     const deviation = parseInt(process.env.MT5_DEVIATION ?? '10')
@@ -443,19 +465,40 @@ export class MT5Adapter implements IMarketAdapter {
     }
 
     if (this.accountId) body.accountId = this.accountId
-    if (params.price != null) body.price = params.price
 
-    // Compute stop-loss from stopPips if provided
+    // MARKET orders must NOT include a price — MT5 executes at best available.
+    // Sending a price for MARKET causes error 10015 (Invalid price).
+    // For LIMIT/STOP orders, price is required.
+    if (params.type !== 'MARKET' && params.price != null) body.price = params.price
+
+    // Compute absolute stop-loss price from stopPips.
+    // For MARKET orders, use params.price as the reference execution estimate (agent provides it).
     if (params.stopPrice != null) {
       body.sl = params.stopPrice
-    } else if (params.stopPips != null && params.price != null) {
-      const pipSz = pipSizeHeuristic(params.symbol)
-      body.sl = params.side === 'BUY'
-        ? params.price - params.stopPips * pipSz
-        : params.price + params.stopPips * pipSz
+    } else if (params.stopPips != null) {
+      const refPrice = params.price   // agent-supplied reference (bid for SELL, ask for BUY)
+      if (refPrice != null) {
+        const pipSz = pipSizeHeuristic(params.symbol)
+        body.sl = params.side === 'BUY'
+          ? refPrice - params.stopPips * pipSz
+          : refPrice + params.stopPips * pipSz
+      }
     }
 
-    const result = await mt5Post<BridgeOrderResult>('/order', body)
+    let result: BridgeOrderResult
+    try {
+      result = await mt5Post<BridgeOrderResult>('/order', body)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      // 10015 = Invalid price — give the agent an actionable error instead of a raw 502
+      if (msg.includes('10015')) {
+        throw new Error(
+          `Price rejected by broker (MT5 #10015) — market has moved since you read the snapshot. ` +
+          `For MARKET orders: omit the price field. For LIMIT orders: use the current bid/ask from this tick's snapshot.`
+        )
+      }
+      throw err
+    }
 
     return {
       orderId: result.order,
@@ -471,22 +514,47 @@ export class MT5Adapter implements IMarketAdapter {
   }
 
   async cancelOrder(_symbol: string, orderId: string | number): Promise<void> {
-    // For pending orders: try cancel first, fall back to close
     const body: Record<string, unknown> = { ticket: Number(orderId) }
     if (this.accountId) body.accountId = this.accountId
     try {
       await mt5Post('/order/cancel', body)
     } catch {
-      await mt5Post('/order/close', body)
+      // Fall back to close (handles case where agent calls cancel on an open position)
+      try {
+        await mt5Post('/order/close', body)
+      } catch (closeErr) {
+        const msg = closeErr instanceof Error ? closeErr.message : String(closeErr)
+        // 404 = already gone — not an error, just stale state
+        if (msg.includes('404') || msg.includes('not found')) return
+        throw closeErr
+      }
     }
   }
 
-  async closePosition(ticket: number, volume?: number): Promise<{ closed: boolean; ticket: number }> {
+  async closePosition(ticket: number, volume?: number): Promise<{ closed: boolean; ticket: number; dealTicket?: number; alreadyClosed?: boolean }> {
     const body: Record<string, unknown> = { ticket }
     if (this.accountId) body.accountId = this.accountId
     if (volume != null) body.volume = volume
-    await mt5Post<BridgeOrderResult>('/order/close', body)
-    return { closed: true, ticket }
+    try {
+      const res = await mt5Post<BridgeOrderResult>('/order/close', body)
+      return { closed: true, ticket, dealTicket: res.deal }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('404') || msg.includes('not found')) {
+        // Position already closed externally — return gracefully so agent knows
+        return { closed: false, ticket, alreadyClosed: true }
+      }
+      throw err
+    }
+  }
+
+  async modifyPosition(ticket: number, sl?: number, tp?: number): Promise<{ ok: boolean; ticket: number; sl?: number; tp?: number }> {
+    const body: Record<string, unknown> = { ticket }
+    if (this.accountId) body.accountId = this.accountId
+    if (sl != null) body.sl = sl
+    if (tp != null) body.tp = tp
+    const res = await mt5Post<{ retcode: number; ticket: number; sl?: number; tp?: number }>('/order/modify', body)
+    return { ok: true, ticket: res.ticket, sl: res.sl, tp: res.tp }
   }
 
   async getSpread(symbol: string): Promise<number | null> {

@@ -25,6 +25,11 @@ export interface Order {
     timeInForce: string;
     time: number;
     updateTime: number;
+    profit?: number;
+    swap?: number;
+    sl?: number;
+    tp?: number;
+    priceCurrent?: number;
 }
 export interface Fill {
     symbol: string;
@@ -65,6 +70,12 @@ export interface RiskState {
     remainingBudgetUsd: number;
     positionNotionalUsd: number;
 }
+export interface KeyLevel {
+    price: number;
+    type: 'resistance' | 'support' | 'pivot' | 'swing_high' | 'swing_low';
+    source: string;
+    strength: number;
+}
 export interface MarketContext {
     /** Crypto sentiment index 0-100, only present for crypto market */
     fearGreed?: {
@@ -89,6 +100,13 @@ export interface MarketContext {
         btcDominance: number;
         totalMarketCapUsd: number;
     };
+    /** Recent forex news headlines with sentiment tags — only present for mt5 market */
+    forexNews?: {
+        headline: string;
+        sentiment: 'bullish' | 'bearish' | 'neutral';
+        source: string;
+        url: string;
+    }[];
 }
 export interface MarketSnapshot {
     symbol: string;
@@ -128,6 +146,20 @@ export interface MarketSnapshot {
         swapLong: number;
         swapShort: number;
     };
+    /** MT5-specific: rich open position details (sl, tp, profit, swap, priceCurrent) */
+    positions?: Record<string, unknown>[];
+    /** MT5-specific: pending limit/stop orders not yet filled */
+    pendingOrders?: Record<string, unknown>[];
+    /** MT5-specific: live account financials (balance, equity, margin, leverage) */
+    accountInfo?: {
+        balance: number;
+        equity: number;
+        freeMargin: number;
+        usedMargin: number;
+        leverage: number;
+    };
+    /** Auto-computed support/resistance/pivot levels — sorted by proximity to current price */
+    keyLevels?: KeyLevel[];
 }
 export interface OrderParams {
     symbol: string;

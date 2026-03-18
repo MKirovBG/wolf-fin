@@ -4,7 +4,7 @@
 // skipped — the cycle-lock in runAgentCycle handles this automatically.
 
 import pino from 'pino'
-import { runAgentCycle } from '../agent/index.js'
+import { runAgentTick } from '../agent/index.js'
 import { isForexSessionOpen } from '../adapters/session.js'
 import { setAgentStatus } from '../server/state.js'
 import { makeAgentKey } from '../db/index.js'
@@ -16,7 +16,7 @@ const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
 const tasks = new Map<string, ReturnType<typeof setInterval>>()
 
 function agentKey(config: AgentConfig): string {
-  return makeAgentKey(config.market, config.symbol, config.mt5AccountId)
+  return makeAgentKey(config.market, config.symbol, config.mt5AccountId, config.name)
 }
 
 /** Backwards-compat: old DB records stored scheduleIntervalMinutes (number in minutes).
@@ -55,7 +55,7 @@ export function startAgentSchedule(config: AgentConfig): void {
     }
 
     try {
-      await runAgentCycle(config)
+      await runAgentTick(config)
     } catch (err) {
       log.error({ key, err }, 'agent cycle error')
     }

@@ -40,6 +40,39 @@ function nextLogId(): number {
 }
 const logBuffer: LogEntry[] = []
 
+// ── SSE subscriber registries ─────────────────────────────────────────────────
+
+type LogSubscriber = (entry: LogEntry) => void
+const logSubscribers = new Set<LogSubscriber>()
+
+export function subscribeToLogs(cb: LogSubscriber): () => void {
+  logSubscribers.add(cb)
+  return () => logSubscribers.delete(cb)
+}
+
+export interface AgentStatusEvent {
+  type: 'agent_update'
+  agentKey: string
+  agent: AgentState
+}
+
+type AgentStatusSubscriber = (event: AgentStatusEvent) => void
+const agentStatusSubscribers = new Set<AgentStatusSubscriber>()
+
+export function subscribeToAgentStatus(cb: AgentStatusSubscriber): () => void {
+  agentStatusSubscribers.add(cb)
+  return () => agentStatusSubscribers.delete(cb)
+}
+
+function broadcastAgentUpdate(key: string): void {
+  const agent = state.agents[key]
+  if (!agent) return
+  const event: AgentStatusEvent = { type: 'agent_update', agentKey: key, agent }
+  for (const sub of agentStatusSubscribers) {
+    try { sub(event) } catch { /* ignore */ }
+  }
+}
+
 export function logEvent(
   agentKey: string,
   level: LogLevel,
@@ -51,15 +84,18 @@ export function logEvent(
   logBuffer.unshift(entry)
   if (logBuffer.length > 500) logBuffer.length = 500
   dbLogEvent(entry)
+  // Broadcast to SSE subscribers
+  for (const sub of logSubscribers) {
+    try { sub(entry) } catch { /* ignore subscriber errors */ }
+  }
 }
 
-export function getLogs(sinceId?: number, agentKey?: string): LogEntry[] {
-  // Serve from DB for full history; fall back to buffer for low-latency polling
-  return dbGetLogs(sinceId, agentKey, 200)
+export function getLogs(sinceId?: number, agentKey?: string, limit = 200): LogEntry[] {
+  return dbGetLogs(sinceId, agentKey, limit)
 }
 
 interface AppState {
-  agents: Record<string, AgentState>   // key = "market:symbol"
+  agents: Record<string, AgentState>   // key = makeAgentKey(market, symbol, accountId, name)
   recentEvents: CycleResult[]
 }
 
@@ -77,7 +113,7 @@ export function getAgent(key: string): AgentState | undefined {
 }
 
 export function upsertAgent(agent: AgentState): void {
-  const key = makeAgentKey(agent.config.market, agent.config.symbol, agent.config.mt5AccountId)
+  const key = makeAgentKey(agent.config.market, agent.config.symbol, agent.config.mt5AccountId, agent.config.name)
   state.agents[key] = agent
   dbUpsertAgent(agent)
 }
@@ -98,6 +134,7 @@ export function setAgentStatus(key: string, status: AgentStatus): void {
       agent.startedAt = null
     }
     dbUpdateAgentStatus(key, agent.status, agent.startedAt)
+    broadcastAgentUpdate(key)
   }
 }
 
@@ -107,6 +144,7 @@ export function recordCycle(key: string, result: CycleResult): void {
     agent.lastCycle = result
     agent.cycleCount++
     dbUpsertAgent(agent)
+    broadcastAgentUpdate(key)
   }
   state.recentEvents.unshift(result)
   if (state.recentEvents.length > 100) state.recentEvents.length = 100

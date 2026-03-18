@@ -2,17 +2,26 @@
 
 export type AgentStatus = 'idle' | 'running' | 'paused'
 
+export interface GuardrailsConfig {
+  sessionOpenCheck: boolean   // block orders when market session is closed
+  extremeSpreadCheck: boolean // block orders with abnormally wide spread ($500+/lot)
+  stopPipsRequired: boolean   // MT5 orders must include stopPips field
+}
+
 export interface AgentConfig {
+  name?: string                  // Agent display name — used to support multiple agents per symbol
   symbol: string
   market: 'crypto' | 'mt5'
   fetchMode: 'manual' | 'scheduled' | 'autonomous'
   scheduleIntervalSeconds: number
-  maxLossUsd: number
   leverage?: number              // Account leverage — used in agent context for position sizing
   customPrompt?: string
+  promptTemplate?: string        // full system prompt with {{pill}} tokens; if empty uses default
+  guardrails?: Partial<GuardrailsConfig>  // defaults: all true
   mt5AccountId?: number          // Which MT5 account this agent trades with
   llmProvider?: 'anthropic' | 'openrouter'  // defaults to 'anthropic'
   llmModel?: string              // OpenRouter model ID e.g. "openai/gpt-4o" or "anthropic/claude-opus-4-5"
+  maxDailyLossUsd?: number       // Auto-pause agent when today's realized P&L drops below -maxDailyLossUsd
 }
 
 export interface AgentState {
@@ -37,12 +46,18 @@ export interface CycleResult {
 
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug'
 export type LogEvent =
-  | 'cycle_start' | 'cycle_end' | 'cycle_error'
+  // Session-based tick events (current)
+  | 'tick_start' | 'tick_end' | 'tick_error' | 'tick_skip'
+  | 'session_start' | 'session_reset'
+  // Legacy cycle events (kept for backward-compat with old DB rows)
+  | 'cycle_start' | 'cycle_end' | 'cycle_error' | 'cycle_skip'
+  // Tool events
   | 'tool_call' | 'tool_result' | 'tool_error'
   | 'claude_thinking' | 'decision'
-  | 'guardrail_block' | 'session_skip' | 'cycle_skip'
+  | 'guardrail_block' | 'session_skip'
   | 'auto_execute' | 'auto_execute_error'
   | 'memory_write' | 'plan_created'
+  | 'pnl_record'
 
 export interface LogEntry {
   id: number

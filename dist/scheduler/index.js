@@ -3,14 +3,15 @@
 // If a cycle is still running when the next tick fires, the tick is
 // skipped — the cycle-lock in runAgentCycle handles this automatically.
 import pino from 'pino';
-import { runAgentCycle } from '../agent/index.js';
+import { runAgentTick } from '../agent/index.js';
 import { isForexSessionOpen } from '../adapters/session.js';
 import { setAgentStatus } from '../server/state.js';
+import { makeAgentKey } from '../db/index.js';
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 // Map of agentKey → active interval handle
 const tasks = new Map();
 function agentKey(config) {
-    return `${config.market}:${config.symbol}`;
+    return makeAgentKey(config.market, config.symbol, config.mt5AccountId, config.name);
 }
 /** Backwards-compat: old DB records stored scheduleIntervalMinutes (number in minutes).
  *  New records store scheduleIntervalSeconds. */
@@ -38,13 +39,13 @@ export function startAgentSchedule(config) {
     }
     const intervalMs = resolveIntervalMs(config);
     const handle = setInterval(async () => {
-        // Autonomous mode: skip if forex/mt5 market is closed
-        if (config.fetchMode === 'autonomous' && (config.market === 'forex' || config.market === 'mt5') && !isForexSessionOpen()) {
+        // Autonomous mode: skip if MT5 market is closed
+        if (config.fetchMode === 'autonomous' && config.market === 'mt5' && !isForexSessionOpen()) {
             log.debug({ key }, 'autonomous — market closed, skipping');
             return;
         }
         try {
-            await runAgentCycle(config);
+            await runAgentTick(config);
         }
         catch (err) {
             log.error({ key, err }, 'agent cycle error');

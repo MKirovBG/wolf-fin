@@ -14,7 +14,8 @@ const ALL_TOOLS: Anthropic.Tool[] = [
   {
     name: 'get_snapshot',
     description:
-      'Fetch the current market snapshot for a symbol. Returns price, 24h stats, multi-timeframe candles, pre-computed technical indicators (RSI, EMA, ATR, VWAP, BB width), account balances, open orders, risk state, and market context enrichment.',
+      'Fetch the current market snapshot for a symbol. Returns price, 24h stats, multi-timeframe candles, pre-computed technical indicators (RSI, EMA, ATR, VWAP, BB width), account balances, open orders, risk state, and market context enrichment. ' +
+      'NOTE: A fresh snapshot is already pre-fetched and injected at the top of each tick message — only call this tool if you need to re-check conditions AFTER placing an order, or for a different symbol.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -115,6 +116,25 @@ const ALL_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'modify_position',
+    description:
+      'MT5 only — modify the stop-loss and/or take-profit price of an open position. ' +
+      'Use this to: trail a stop (move SL closer to price as trade moves in your favour), ' +
+      'move SL to breakeven (set SL = entry price once in profit), or update TP. ' +
+      'You MUST provide at least one of sl or tp. Pass 0 to remove a level. ' +
+      'Get the ticket from get_open_orders.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        ticket: { type: 'number', description: 'Position ticket number' },
+        market: MARKET_FIELD,
+        sl: { type: 'number', description: 'New stop-loss price. Pass 0 to remove existing SL.' },
+        tp: { type: 'number', description: 'New take-profit price. Pass 0 to remove existing TP.' },
+      },
+      required: ['ticket', 'market'],
+    },
+  },
+  {
     name: 'save_memory',
     description: `Persist a trading observation, key price level, pattern, or risk note to long-term memory.
 Call this when you discover something worth remembering across future cycles and sessions:
@@ -183,9 +203,28 @@ Memories are automatically injected into your system prompt each cycle.`,
       required: []
     }
   },
+  {
+    name: 'get_trade_history',
+    description:
+      'Fetch your recent closed trades (deals) for a symbol. ' +
+      'Use this when: (a) a position you opened is no longer showing in get_open_orders — check if it was stopped out or hit TP; ' +
+      '(b) you want to review your P&L and exit reasons before sizing a new trade; ' +
+      '(c) you suspect an external close happened. ' +
+      'Returns entry/exit price, volume, profit/loss, and the exit reason in the comment field ("sl" = stopped out, "tp" = take profit hit, "" = manual/external close).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        symbol: { type: 'string', description: 'Trading pair symbol, e.g. "XAUUSD"' },
+        market: MARKET_FIELD,
+        days: { type: 'number', description: 'How many days back to look (default 1, max 7)' },
+        limit: { type: 'number', description: 'Max deals to return (default 20)' },
+      },
+      required: ['symbol', 'market'],
+    },
+  },
 ]
 
-const TRADING_ONLY_TOOLS = new Set(['place_order', 'close_position', 'cancel_order'])
+const TRADING_ONLY_TOOLS = new Set(['place_order', 'close_position', 'cancel_order', 'modify_position'])
 
 /** Returns the tool list for the given market, excluding tools unsupported by that market.
  *  When cycleType is 'planning', trading execution tools are excluded. */
@@ -197,8 +236,8 @@ export function getTools(market: 'crypto' | 'mt5', cycleType?: 'trading' | 'plan
     // Include close_position (MT5 uses ticket-based closes, NOT opposite-side orders)
     tools = tools.filter(t => t.name !== 'get_order_book')
   } else {
-    // Crypto: exclude close_position (use place_order sell to exit a long)
-    tools = tools.filter(t => t.name !== 'close_position')
+    // Crypto: exclude MT5-specific tools
+    tools = tools.filter(t => t.name !== 'close_position' && t.name !== 'get_trade_history')
   }
 
   if (cycleType === 'planning') {
@@ -253,4 +292,11 @@ export interface ClosePositionInput {
   ticket: number
   market: 'crypto' | 'mt5'
   volume?: number
+}
+
+export interface GetTradeHistoryInput {
+  symbol: string
+  market: 'crypto' | 'mt5'
+  days?: number
+  limit?: number
 }

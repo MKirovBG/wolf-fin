@@ -1,0 +1,1 @@
+{"version":3,"file":"finnhubNews.d.ts","sourceRoot":"","sources":["../../src/adapters/finnhubNews.ts"],"names":[],"mappings":"AAsCA,MAAM,WAAW,aAAa;IAC5B,QAAQ,EAAE,MAAM,CAAA;IAChB,SAAS,EAAE,SAAS,GAAG,SAAS,GAAG,SAAS,CAAA;IAC5C,MAAM,EAAE,MAAM,CAAA;IACd,GAAG,EAAE,MAAM,CAAA;CACZ;AAED,wBAAsB,cAAc,CAAC,MAAM,EAAE,MAAM,GAAG,OAAO,CAAC,aAAa,EAAE,CAAC,CA2B7E"}

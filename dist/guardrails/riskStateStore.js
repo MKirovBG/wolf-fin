@@ -58,12 +58,9 @@ export function getRiskStateFor(market) {
         positionNotionalUsd: s.positionNotionalUsd,
     };
 }
-export function isDailyLimitHitFor(market) {
-    return get(market).realizedPnlUsd <= -MAX_DAILY_LOSS_USD;
-}
 /** Sum of open position notional across all markets. */
 export function getCombinedNotionalUsd() {
     return get('crypto').positionNotionalUsd + get('forex').positionNotionalUsd + get('mt5').positionNotionalUsd;
 }
-export { MAX_DAILY_LOSS_USD, MAX_POSITION_USD, MAX_COMBINED_NOTIONAL_USD };
+export { MAX_POSITION_USD, MAX_COMBINED_NOTIONAL_USD };
 //# sourceMappingURL=riskStateStore.js.map

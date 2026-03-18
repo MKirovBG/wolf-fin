@@ -17,7 +17,7 @@ export const getStatus = () => api<StatusResponse>('/api/status')
 export const getAgents = () => api<AgentState[]>('/api/agents')
 
 export const addAgent = (config: AgentConfig) =>
-  api<{ ok: boolean; key: string }>('/api/agents', { method: 'POST', ...json(config) })
+  api<{ ok: boolean; key: string; conflicts?: string[] }>('/api/agents', { method: 'POST', ...json(config) })
 
 export const deleteAgent = (key: string) =>
   api<{ ok: boolean }>(`/api/agents/${encodeURIComponent(key)}`, { method: 'DELETE' })
@@ -70,6 +70,15 @@ export const getLogs = (sinceId?: number, agent?: string) => {
 export const getPositions = () => api<PositionEntry[]>('/api/positions')
 export const getTrades    = () => api<FillEntry[]>('/api/trades')
 
+export const closePosition = (ticket: number, agentKey: string, volume?: number) =>
+  api<{ closed: boolean; ticket: number }>(`/api/positions/${ticket}/close`, { method: 'POST', ...json({ agentKey, volume }) })
+
+export const modifyPosition = (ticket: number, agentKey: string, sl?: number, tp?: number) =>
+  api<{ ok: boolean; ticket: number }>(`/api/positions/${ticket}/modify`, { method: 'POST', ...json({ agentKey, sl, tp }) })
+
+export const cancelOrder = (ticket: number, agentKey: string) =>
+  api<{ ok: boolean; ticket: number }>(`/api/orders/${ticket}/cancel`, { method: 'POST', ...json({ agentKey }) })
+
 // ── Reports ───────────────────────────────────────────────────────────────────
 export const getReportSummary = () => api<ReportSummary>('/api/reports/summary')
 
@@ -78,6 +87,9 @@ export const getReportTrades = (market?: string) =>
 
 export const getCycleDetail = (id: number) =>
   api<CycleDetail>(`/api/cycles/${id}`)
+
+export const getAgentCycles = (key: string, limit = 100) =>
+  api<(CycleResult & { id: number; agentKey: string })[]>(`/api/agents/${encodeURIComponent(key)}/cycles?limit=${limit}`)
 
 // ── Accounts ─────────────────────────────────────────────────────────────────
 export const getAccounts = () => api<AccountEntry[]>('/api/accounts')

@@ -33,6 +33,31 @@ export function isForexSessionOpen() {
     return sessions.some(s => s === 'tokyo' || s === 'london' || s === 'newyork');
 }
 /**
+ * Returns minutes remaining until the earliest active session closes.
+ * Returns null if no major session is open.
+ */
+export function minutesUntilSessionClose() {
+    const now = new Date();
+    const hour = now.getUTCHours();
+    const minute = now.getUTCMinutes();
+    const minutesNow = hour * 60 + minute;
+    let minRemaining = null;
+    for (const [, w] of Object.entries(SESSIONS)) {
+        if (!isInSession(w, hour))
+            continue;
+        let closeMinutes = w.closeUtcHour * 60;
+        // If session wraps midnight (e.g. Sydney 22:00-07:00)
+        if (w.openUtcHour > w.closeUtcHour && minutesNow >= w.openUtcHour * 60) {
+            closeMinutes += 24 * 60; // next day
+        }
+        const remaining = closeMinutes - minutesNow;
+        if (remaining > 0 && (minRemaining === null || remaining < minRemaining)) {
+            minRemaining = remaining;
+        }
+    }
+    return minRemaining;
+}
+/**
  * Returns a human-readable session label for the system prompt.
  * e.g. "London / New York overlap (high liquidity)"
  */

@@ -48,11 +48,98 @@ export function initDb() {
       value TEXT NOT NULL
     );
   `);
+    // ── New tables ────────────────────────────────────────────────────────────
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_memories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_key TEXT NOT NULL,
+      category TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0.7,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      expires_at TEXT,
+      UNIQUE(agent_key, category, key) ON CONFLICT REPLACE
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_strategies (
+      agent_key TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      style TEXT NOT NULL,
+      bias TEXT,
+      timeframe TEXT,
+      entry_rules TEXT NOT NULL,
+      exit_rules TEXT NOT NULL,
+      filters TEXT,
+      max_positions INTEGER DEFAULT 1,
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_key TEXT NOT NULL,
+      session_date TEXT NOT NULL,
+      session_label TEXT,
+      market_bias TEXT NOT NULL,
+      key_levels TEXT,
+      risk_notes TEXT,
+      plan_text TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      cycle_count_at INTEGER,
+      active INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_analyses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_key TEXT NOT NULL,
+      analysis_type TEXT NOT NULL,
+      cycles_reviewed INTEGER,
+      win_rate REAL,
+      avg_pnl_usd REAL,
+      summary_text TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      period_start TEXT,
+      period_end TEXT
+    );
+  `);
     // Migration: add pnl_usd column to existing databases
     try {
         db.exec('ALTER TABLE cycle_results ADD COLUMN pnl_usd REAL');
     }
     catch { /* column already exists */ }
+    // Migration: add prompt_template and guardrails columns to agents table
+    try {
+        db.exec('ALTER TABLE agents ADD COLUMN prompt_template TEXT');
+    }
+    catch { /* column already exists */ }
+    try {
+        db.exec('ALTER TABLE agents ADD COLUMN guardrails TEXT');
+    }
+    catch { /* column already exists */ }
+    // Keep max_loss_usd for backward compat — new agents won't use it
+    try {
+        db.exec('ALTER TABLE agents ADD COLUMN max_loss_usd REAL DEFAULT 0');
+    }
+    catch { /* column already exists */ }
+    // Agent sessions table (session-based tick architecture)
+    try {
+        db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_sessions (
+        agent_key    TEXT NOT NULL,
+        session_date TEXT NOT NULL,
+        tick_count   INTEGER NOT NULL DEFAULT 0,
+        messages     TEXT NOT NULL DEFAULT '[]',
+        summary      TEXT,
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL,
+        PRIMARY KEY (agent_key, session_date)
+      )
+    `);
+    }
+    catch { /* already exists */ }
 }
 // ── Agents ──────────────────────────────────────────────────────────────────
 export function dbGetAllAgents() {
@@ -65,18 +152,26 @@ export function dbGetAllAgents() {
         lastCycle: row.last_cycle ? JSON.parse(row.last_cycle) : null,
     }));
 }
+export function makeAgentKey(market, symbol, mt5AccountId, name) {
+    const namePart = name ? `:${name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')}` : '';
+    if (market === 'mt5' && mt5AccountId)
+        return `mt5:${symbol}:${mt5AccountId}${namePart}`;
+    return `${market}:${symbol}${namePart}`;
+}
 export function dbUpsertAgent(agent) {
-    const key = `${agent.config.market}:${agent.config.symbol}`;
+    const key = makeAgentKey(agent.config.market, agent.config.symbol, agent.config.mt5AccountId, agent.config.name);
     db.prepare(`
-    INSERT INTO agents (key, config, status, cycle_count, started_at, last_cycle)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO agents (key, config, status, cycle_count, started_at, last_cycle, prompt_template, guardrails)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET
-      config      = excluded.config,
-      status      = excluded.status,
-      cycle_count = excluded.cycle_count,
-      started_at  = excluded.started_at,
-      last_cycle  = excluded.last_cycle
-  `).run(key, JSON.stringify(agent.config), agent.status, agent.cycleCount, agent.startedAt, agent.lastCycle ? JSON.stringify(agent.lastCycle) : null);
+      config          = excluded.config,
+      status          = excluded.status,
+      cycle_count     = excluded.cycle_count,
+      started_at      = excluded.started_at,
+      last_cycle      = excluded.last_cycle,
+      prompt_template = excluded.prompt_template,
+      guardrails      = excluded.guardrails
+  `).run(key, JSON.stringify(agent.config), agent.status, agent.cycleCount, agent.startedAt, agent.lastCycle ? JSON.stringify(agent.lastCycle) : null, agent.config.promptTemplate ?? null, agent.config.guardrails ? JSON.stringify(agent.config.guardrails) : null);
 }
 export function dbRemoveAgent(key) {
     db.prepare('DELETE FROM agents WHERE key = ?').run(key);
@@ -117,18 +212,51 @@ export function dbGetAgentPerformance(agentKey, limit = 10) {
         lastDecisions: rows.slice(0, limit).map(r => ({ decision: r.decision, reason: r.reason, time: r.time })),
     };
 }
-export function dbGetCycleResults(market, limit = 500) {
-    const rows = market
-        ? db.prepare('SELECT * FROM cycle_results WHERE market = ? ORDER BY id DESC LIMIT ?').all(market, limit)
-        : db.prepare('SELECT * FROM cycle_results ORDER BY id DESC LIMIT ?').all(limit);
-    return rows.map(r => ({
+function rowToCycle(r) {
+    return {
+        id: r.id,
+        agentKey: r.agent_key,
         symbol: r.symbol,
         market: r.market,
         paper: r.paper === 1,
         decision: r.decision,
         reason: r.reason,
         time: r.time,
+        pnlUsd: r.pnl_usd ?? undefined,
         ...(r.error ? { error: r.error } : {}),
+    };
+}
+export function dbGetCycleResults(market, limit = 500) {
+    const rows = market
+        ? db.prepare('SELECT * FROM cycle_results WHERE market = ? ORDER BY id DESC LIMIT ?').all(market, limit)
+        : db.prepare('SELECT * FROM cycle_results ORDER BY id DESC LIMIT ?').all(limit);
+    return rows.map(rowToCycle);
+}
+export function dbGetCycleResultsForAgent(agentKey, limit = 100) {
+    const rows = db.prepare('SELECT * FROM cycle_results WHERE agent_key = ? ORDER BY id DESC LIMIT ?').all(agentKey, limit);
+    return rows.map(rowToCycle);
+}
+export function dbGetCycleById(id) {
+    const row = db.prepare('SELECT * FROM cycle_results WHERE id = ?').get(id);
+    return row ? rowToCycle(row) : null;
+}
+export function dbGetLogsForCycle(agentKey, cycleEndTime) {
+    // Return all log entries for this agent in the 15-minute window ending at cycleEndTime + 30s
+    const rows = db.prepare(`
+    SELECT * FROM log_entries
+    WHERE agent_key = ?
+      AND time >= datetime(?, '-15 minutes')
+      AND time <= datetime(?, '+30 seconds')
+    ORDER BY id ASC
+  `).all(agentKey, cycleEndTime, cycleEndTime);
+    return rows.map(r => ({
+        id: r.id,
+        time: r.time,
+        agentKey: r.agent_key,
+        level: r.level,
+        event: r.event,
+        message: r.message,
+        data: r.data ? JSON.parse(r.data) : undefined,
     }));
 }
 // ── Settings ─────────────────────────────────────────────────────────────────
@@ -182,5 +310,114 @@ export function dbGetLogs(sinceId, agentKey, limit = 200) {
         message: r.message,
         ...(r.data ? { data: JSON.parse(r.data) } : {}),
     }));
+}
+// ── Memory ───────────────────────────────────────────────────────────────────
+export function dbSaveMemory(agentKey, category, key, value, confidence, ttlHours) {
+    const now = new Date().toISOString();
+    const expiresAt = ttlHours ? new Date(Date.now() + ttlHours * 3600000).toISOString() : null;
+    db.prepare(`
+    INSERT INTO agent_memories (agent_key, category, key, value, confidence, created_at, updated_at, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(agent_key, category, key) DO UPDATE SET
+      value = excluded.value,
+      confidence = excluded.confidence,
+      updated_at = excluded.updated_at,
+      expires_at = excluded.expires_at
+  `).run(agentKey, category, key, value, confidence, now, now, expiresAt);
+}
+export function dbGetMemories(agentKey, category, limit = 20) {
+    const now = new Date().toISOString();
+    let sql = `SELECT * FROM agent_memories WHERE agent_key = ? AND (expires_at IS NULL OR expires_at > ?)`;
+    const params = [agentKey, now];
+    if (category && category !== 'all') {
+        sql += ` AND category = ?`;
+        params.push(category);
+    }
+    sql += ` ORDER BY confidence DESC, updated_at DESC LIMIT ?`;
+    params.push(limit);
+    const rows = db.prepare(sql).all(...params);
+    return rows.map(r => ({ id: r.id, category: r.category, key: r.key, value: r.value, confidence: r.confidence, createdAt: r.created_at, updatedAt: r.updated_at, expiresAt: r.expires_at }));
+}
+export function dbDeleteMemory(agentKey, category, key) {
+    db.prepare(`DELETE FROM agent_memories WHERE agent_key = ? AND category = ? AND key = ?`).run(agentKey, category, key);
+}
+export function dbClearMemories(agentKey) {
+    db.prepare(`DELETE FROM agent_memories WHERE agent_key = ?`).run(agentKey);
+}
+export function dbSaveStrategy(s) {
+    const now = new Date().toISOString();
+    const existing = db.prepare(`SELECT created_at FROM agent_strategies WHERE agent_key = ?`).get(s.agentKey);
+    const createdAt = existing?.created_at ?? now;
+    db.prepare(`
+    INSERT INTO agent_strategies (agent_key, name, style, bias, timeframe, entry_rules, exit_rules, filters, max_positions, notes, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(agent_key) DO UPDATE SET
+      name = excluded.name, style = excluded.style, bias = excluded.bias,
+      timeframe = excluded.timeframe, entry_rules = excluded.entry_rules,
+      exit_rules = excluded.exit_rules, filters = excluded.filters,
+      max_positions = excluded.max_positions, notes = excluded.notes,
+      updated_at = excluded.updated_at
+  `).run(s.agentKey, s.name, s.style, s.bias ?? null, s.timeframe ?? null, s.entryRules, s.exitRules, s.filters ?? null, s.maxPositions ?? 1, s.notes ?? null, createdAt, now);
+}
+export function dbGetStrategy(agentKey) {
+    const row = db.prepare(`SELECT * FROM agent_strategies WHERE agent_key = ?`).get(agentKey);
+    if (!row)
+        return null;
+    return { agentKey: row.agent_key, name: row.name, style: row.style, bias: row.bias ?? undefined, timeframe: row.timeframe ?? undefined, entryRules: row.entry_rules, exitRules: row.exit_rules, filters: row.filters ?? undefined, maxPositions: row.max_positions, notes: row.notes ?? undefined, createdAt: row.created_at, updatedAt: row.updated_at };
+}
+export function dbDeleteStrategy(agentKey) {
+    db.prepare(`DELETE FROM agent_strategies WHERE agent_key = ?`).run(agentKey);
+}
+export function dbSavePlan(agentKey, plan) {
+    const now = new Date().toISOString();
+    const sessionDate = now.slice(0, 10);
+    // Deactivate previous plans for today
+    db.prepare(`UPDATE agent_plans SET active = 0 WHERE agent_key = ? AND session_date = ?`).run(agentKey, sessionDate);
+    const result = db.prepare(`
+    INSERT INTO agent_plans (agent_key, session_date, session_label, market_bias, key_levels, risk_notes, plan_text, created_at, cycle_count_at, active)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+  `).run(agentKey, sessionDate, plan.sessionLabel ?? null, plan.marketBias, plan.keyLevels ?? null, plan.riskNotes ?? null, plan.planText, now, plan.cycleCountAt ?? null);
+    return result.lastInsertRowid;
+}
+export function dbGetActivePlan(agentKey) {
+    const today = new Date().toISOString().slice(0, 10);
+    const row = db.prepare(`SELECT * FROM agent_plans WHERE agent_key = ? AND session_date = ? AND active = 1 ORDER BY id DESC LIMIT 1`).get(agentKey, today);
+    if (!row)
+        return null;
+    return { id: row.id, agentKey: row.agent_key, sessionDate: row.session_date, sessionLabel: row.session_label ?? undefined, marketBias: row.market_bias, keyLevels: row.key_levels ?? undefined, riskNotes: row.risk_notes ?? undefined, planText: row.plan_text, createdAt: row.created_at, cycleCountAt: row.cycle_count_at ?? undefined, active: !!row.active };
+}
+export function dbGetAllPlans(agentKey, limit = 10) {
+    const rows = db.prepare(`SELECT * FROM agent_plans WHERE agent_key = ? ORDER BY id DESC LIMIT ?`).all(agentKey, limit);
+    return rows.map(r => ({ id: r.id, agentKey: r.agent_key, sessionDate: r.session_date, sessionLabel: r.session_label ?? undefined, marketBias: r.market_bias, keyLevels: r.key_levels ?? undefined, riskNotes: r.risk_notes ?? undefined, planText: r.plan_text, createdAt: r.created_at, cycleCountAt: r.cycle_count_at ?? undefined, active: !!r.active }));
+}
+export function dbGetTodaySession(agentKey) {
+    const today = new Date().toISOString().slice(0, 10);
+    const row = db.prepare('SELECT * FROM agent_sessions WHERE agent_key = ? AND session_date = ?').get(agentKey, today);
+    if (!row)
+        return null;
+    return {
+        agentKey: row.agent_key,
+        sessionDate: row.session_date,
+        tickCount: row.tick_count,
+        messages: JSON.parse(row.messages),
+        summary: row.summary,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+    };
+}
+export function dbSaveSession(agentKey, data) {
+    const now = new Date().toISOString();
+    db.prepare(`
+    INSERT INTO agent_sessions (agent_key, session_date, tick_count, messages, summary, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(agent_key, session_date) DO UPDATE SET
+      tick_count = excluded.tick_count,
+      messages   = excluded.messages,
+      summary    = excluded.summary,
+      updated_at = excluded.updated_at
+  `).run(agentKey, data.sessionDate, data.tickCount, JSON.stringify(data.messages), data.summary ?? null, now, now);
+}
+export function dbDeleteSession(agentKey, sessionDate) {
+    db.prepare('DELETE FROM agent_sessions WHERE agent_key = ? AND session_date = ?').run(agentKey, sessionDate);
 }
 //# sourceMappingURL=index.js.map

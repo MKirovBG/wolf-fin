@@ -18,6 +18,7 @@ export default function App() {
           <Route path="agents" element={<Agents />} />
           <Route path="agents/new" element={<AgentCreate />} />
           <Route path="agents/:market/:symbol/:accountId?" element={<AgentDetail />} />
+          <Route path="agents/k/:agentKey" element={<AgentDetail />} />
           <Route path="positions" element={<Positions />} />
           <Route path="keys" element={<ApiKeys />} />
           <Route path="reports" element={<Reports />} />

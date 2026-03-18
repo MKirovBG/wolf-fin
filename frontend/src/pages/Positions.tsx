@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { getPositions, getTrades } from '../api/client.ts'
+import { getPositions, getTrades, closePosition, modifyPosition, cancelOrder } from '../api/client.ts'
 import type { PositionEntry, FillEntry } from '../types/index.ts'
 import { Badge } from '../components/Badge.tsx'
 import { Card } from '../components/Card.tsx'
@@ -14,15 +14,23 @@ function fmtTime(ms: number) {
   return new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-function PnLCell({ entry, currentPrices }: { entry: PositionEntry; currentPrices: Record<string, number> }) {
-  const current = currentPrices[entry.symbol]
-  if (!current || !entry.price || !entry.executedQty) return <span className="text-muted">—</span>
-  const pnl = (current - entry.price) * entry.executedQty * (entry.side === 'BUY' ? 1 : -1)
-  return (
-    <span className={pnl >= 0 ? 'text-green font-mono' : 'text-red font-mono'}>
-      {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
-    </span>
-  )
+function priceDp(price: number) {
+  if (price > 100) return 2
+  if (price > 1)   return 4
+  return 6
+}
+
+// P&L cell — uses broker-provided profit for MT5
+function PnLCell({ entry }: { entry: PositionEntry }) {
+  if (entry.profit != null) {
+    const total = entry.profit + (entry.swap ?? 0)
+    return (
+      <span className={`font-mono font-semibold ${total >= 0 ? 'text-green' : 'text-red'}`}>
+        {total >= 0 ? '+' : ''}${total.toFixed(2)}
+      </span>
+    )
+  }
+  return <span className="text-muted">—</span>
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -47,6 +55,250 @@ function EmptyState({ label }: { label: string }) {
   )
 }
 
+// ── Inline SL editor ──────────────────────────────────────────────────────────
+
+interface SlCellProps {
+  entry: PositionEntry
+  dp: number
+  onSaved: () => void
+}
+
+function SlCell({ entry, dp, onSaved }: SlCellProps) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue]     = useState('')
+  const [saving, setSaving]   = useState(false)
+  const [error, setError]     = useState('')
+
+  const startEdit = () => {
+    setValue(entry.sl != null && entry.sl > 0 ? entry.sl.toFixed(dp) : '')
+    setError('')
+    setEditing(true)
+  }
+
+  const cancel = () => setEditing(false)
+
+  const save = async () => {
+    const sl = parseFloat(value)
+    if (isNaN(sl) || sl < 0) { setError('Invalid'); return }
+    setSaving(true)
+    try {
+      await modifyPosition(entry.orderId, entry.agentKey, sl, entry.tp ?? undefined)
+      setEditing(false)
+      onSaved()
+    } catch {
+      setError('Failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1">
+        <input
+          type="number"
+          step="any"
+          autoFocus
+          value={value}
+          onChange={e => { setValue(e.target.value); setError('') }}
+          onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') cancel() }}
+          className="w-24 px-1.5 py-0.5 text-xs font-mono bg-bg border border-blue/40 rounded text-text focus:outline-none focus:border-blue"
+        />
+        <button
+          onClick={save}
+          disabled={saving}
+          className="text-[10px] px-1.5 py-0.5 rounded bg-green/20 text-green hover:bg-green/30 disabled:opacity-40 transition-colors"
+        >
+          {saving ? '…' : '✓'}
+        </button>
+        <button
+          onClick={cancel}
+          className="text-[10px] px-1.5 py-0.5 rounded bg-surface2 text-muted hover:text-text transition-colors"
+        >
+          ✕
+        </button>
+        {error && <span className="text-red text-[10px]">{error}</span>}
+      </div>
+    )
+  }
+
+  return (
+    <button
+      onClick={startEdit}
+      title="Click to edit stop-loss"
+      className="group flex items-center gap-1 font-mono text-muted text-xs hover:text-text transition-colors"
+    >
+      {entry.sl != null && entry.sl > 0
+        ? <span className="group-hover:text-yellow">{entry.sl.toFixed(dp)}</span>
+        : <span className="text-red/60 group-hover:text-red">none</span>
+      }
+      <span className="text-muted2 text-[9px] opacity-0 group-hover:opacity-100 transition-opacity">✎</span>
+    </button>
+  )
+}
+
+// ── Inline TP editor ─────────────────────────────────────────────────────────
+
+interface TpCellProps {
+  entry: PositionEntry
+  dp: number
+  onSaved: () => void
+}
+
+function TpCell({ entry, dp, onSaved }: TpCellProps) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue]     = useState('')
+  const [saving, setSaving]   = useState(false)
+  const [error, setError]     = useState('')
+
+  const startEdit = () => {
+    setValue(entry.tp != null && entry.tp > 0 ? entry.tp.toFixed(dp) : '')
+    setError('')
+    setEditing(true)
+  }
+
+  const cancel = () => setEditing(false)
+
+  const save = async () => {
+    const tp = parseFloat(value)
+    if (isNaN(tp) || tp < 0) { setError('Invalid'); return }
+    setSaving(true)
+    try {
+      await modifyPosition(entry.orderId, entry.agentKey, entry.sl ?? undefined, tp)
+      setEditing(false)
+      onSaved()
+    } catch {
+      setError('Failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1">
+        <input
+          type="number"
+          step="any"
+          autoFocus
+          value={value}
+          onChange={e => { setValue(e.target.value); setError('') }}
+          onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') cancel() }}
+          className="w-24 px-1.5 py-0.5 text-xs font-mono bg-bg border border-blue/40 rounded text-text focus:outline-none focus:border-blue"
+        />
+        <button
+          onClick={save}
+          disabled={saving}
+          className="text-[10px] px-1.5 py-0.5 rounded bg-green/20 text-green hover:bg-green/30 disabled:opacity-40 transition-colors"
+        >
+          {saving ? '…' : '✓'}
+        </button>
+        <button
+          onClick={cancel}
+          className="text-[10px] px-1.5 py-0.5 rounded bg-surface2 text-muted hover:text-text transition-colors"
+        >
+          ✕
+        </button>
+        {error && <span className="text-red text-[10px]">{error}</span>}
+      </div>
+    )
+  }
+
+  return (
+    <button
+      onClick={startEdit}
+      title="Click to edit take-profit"
+      className="group flex items-center gap-1 font-mono text-muted text-xs hover:text-text transition-colors"
+    >
+      {entry.tp != null && entry.tp > 0
+        ? <span className="group-hover:text-green">{entry.tp.toFixed(dp)}</span>
+        : <span className="text-muted2 group-hover:text-muted">—</span>
+      }
+      <span className="text-muted2 text-[9px] opacity-0 group-hover:opacity-100 transition-opacity">✎</span>
+    </button>
+  )
+}
+
+// ── Close button ──────────────────────────────────────────────────────────────
+
+interface CloseButtonProps {
+  entry: PositionEntry
+  onClosed: () => void
+}
+
+function CloseButton({ entry, onClosed }: CloseButtonProps) {
+  const [closing, setClosing] = useState(false)
+  const [error, setError]     = useState('')
+
+  const handleClose = async () => {
+    if (!confirm(`Close ${entry.side} ${entry.executedQty.toFixed(2)} lots of ${entry.symbol}?`)) return
+    setClosing(true)
+    setError('')
+    try {
+      await closePosition(entry.orderId, entry.agentKey)
+      onClosed()
+    } catch {
+      setError('Failed')
+    } finally {
+      setClosing(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        onClick={handleClose}
+        disabled={closing}
+        className="text-[10px] px-2 py-0.5 rounded border border-red/30 text-red/70 hover:bg-red/10 hover:text-red disabled:opacity-40 transition-colors whitespace-nowrap"
+      >
+        {closing ? 'Closing…' : 'Close'}
+      </button>
+      {error && <span className="text-red text-[10px]">{error}</span>}
+    </div>
+  )
+}
+
+// ── Cancel button (pending orders) ───────────────────────────────────────────
+
+interface CancelButtonProps {
+  entry: PositionEntry
+  onCancelled: () => void
+}
+
+function CancelButton({ entry, onCancelled }: CancelButtonProps) {
+  const [cancelling, setCancelling] = useState(false)
+  const [error, setError]           = useState('')
+
+  const handleCancel = async () => {
+    if (!confirm(`Cancel ${entry.side} ${entry.origQty.toFixed(2)} lots of ${entry.symbol}?`)) return
+    setCancelling(true)
+    setError('')
+    try {
+      await cancelOrder(entry.orderId, entry.agentKey)
+      onCancelled()
+    } catch {
+      setError('Failed')
+    } finally {
+      setCancelling(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        onClick={handleCancel}
+        disabled={cancelling}
+        className="text-[10px] px-2 py-0.5 rounded border border-yellow/30 text-yellow/70 hover:bg-yellow/10 hover:text-yellow disabled:opacity-40 transition-colors whitespace-nowrap"
+      >
+        {cancelling ? 'Cancelling…' : 'Cancel'}
+      </button>
+      {error && <span className="text-red text-[10px]">{error}</span>}
+    </div>
+  )
+}
+
+// ── Main page ──────────────────────────────────────────────────────────────────
+
 export function Positions() {
   const [tab, setTab] = useState<Tab>('active')
   const [positions, setPositions] = useState<PositionEntry[]>([])
@@ -66,17 +318,17 @@ export function Positions() {
 
   useEffect(() => {
     load()
-    const id = setInterval(load, 15000)
+    const id = setInterval(load, 5000)
     return () => clearInterval(id)
   }, [load])
 
-  const currentPrices: Record<string, number> = {}
-  for (const fill of history) {
-    if (!currentPrices[fill.symbol]) currentPrices[fill.symbol] = fill.price
-  }
-
   const active  = positions.filter(p => p.status === 'OPEN' || p.status === 'PARTIALLY_FILLED')
   const pending = positions.filter(p => p.status === 'NEW')
+
+  const totalUnrealizedPnl = active.reduce((sum, p) =>
+    p.profit != null ? sum + p.profit + (p.swap ?? 0) : sum, 0
+  )
+  const hasMt5Pnl = active.some(p => p.profit != null)
 
   const TABS: { id: Tab; label: string; count: number }[] = [
     { id: 'active',  label: 'Active',  count: active.length },
@@ -120,14 +372,16 @@ export function Positions() {
             )}
           </div>
         </Card>
-        <Card title="Pending Orders">
-          <div className="flex items-end gap-2 mt-1">
-            <span className={`text-3xl font-bold font-mono ${pending.length > 0 ? 'text-yellow' : 'text-muted'}`}>
-              {pending.length}
-            </span>
-            {pending.length > 0 && (
-              <span className="text-muted text-xs mb-1">awaiting fill</span>
+        <Card title="Unrealised P&L">
+          <div className="mt-1">
+            {hasMt5Pnl ? (
+              <span className={`text-2xl font-bold font-mono ${totalUnrealizedPnl >= 0 ? 'text-green' : 'text-red'}`}>
+                {totalUnrealizedPnl >= 0 ? '+' : ''}${totalUnrealizedPnl.toFixed(2)}
+              </span>
+            ) : (
+              <span className="text-2xl font-bold font-mono text-muted">—</span>
             )}
+            <div className="text-xs text-muted mt-1">across open positions</div>
           </div>
         </Card>
         <Card title="Trade History">
@@ -175,26 +429,39 @@ export function Positions() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-border">
-                        {['Agent', 'Symbol', 'Side', 'Qty', 'Entry Price', 'Status', 'Mode', 'Unrealised P&L'].map(h => (
+                        {['Agent', 'Symbol', 'Side', 'Lots', 'Entry', 'Current', 'SL', 'TP', 'Unrealised P&L', ''].map(h => (
                           <Th key={h}>{h}</Th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {active.map((p, i) => (
-                        <tr key={i} className="border-b border-border/50 hover:bg-surface2 transition-colors">
-                          <td className="py-3 px-4 font-mono text-muted text-xs">{p.agentKey}</td>
-                          <td className="py-3 px-4 font-bold text-text">{p.symbol}</td>
-                          <td className="py-3 px-4">
-                            <span className={`font-bold ${p.side === 'BUY' ? 'text-green' : 'text-red'}`}>{p.side}</span>
-                          </td>
-                          <td className="py-3 px-4 font-mono">{fmt(p.executedQty, 6)}</td>
-                          <td className="py-3 px-4 font-mono">{fmt(p.price)}</td>
-                          <td className="py-3 px-4"><StatusBadge status={p.status} /></td>
-                          <td className="py-3 px-4"><Badge label={p.paper ? 'PAPER' : 'LIVE'} variant={p.paper ? 'paper' : 'live'} /></td>
-                          <td className="py-3 px-4"><PnLCell entry={p} currentPrices={currentPrices} /></td>
-                        </tr>
-                      ))}
+                      {active.map((p, i) => {
+                        const dp = priceDp(p.price)
+                        return (
+                          <tr key={i} className="border-b border-border/50 hover:bg-surface2 transition-colors">
+                            <td className="py-3 px-4 font-mono text-muted text-xs">{p.agentKey.split(':').slice(0,2).join(':')}</td>
+                            <td className="py-3 px-4 font-bold text-text">{p.symbol}</td>
+                            <td className="py-3 px-4">
+                              <span className={`font-bold ${p.side === 'BUY' ? 'text-green' : 'text-red'}`}>{p.side}</span>
+                            </td>
+                            <td className="py-3 px-4 font-mono">{p.executedQty.toFixed(2)}</td>
+                            <td className="py-3 px-4 font-mono">{p.price.toFixed(dp)}</td>
+                            <td className="py-3 px-4 font-mono text-text">
+                              {p.priceCurrent != null ? p.priceCurrent.toFixed(dp) : '—'}
+                            </td>
+                            <td className="py-3 px-4">
+                              <SlCell entry={p} dp={dp} onSaved={load} />
+                            </td>
+                            <td className="py-3 px-4">
+                              <TpCell entry={p} dp={dp} onSaved={load} />
+                            </td>
+                            <td className="py-3 px-4"><PnLCell entry={p} /></td>
+                            <td className="py-3 px-4">
+                              {p.market === 'mt5' && <CloseButton entry={p} onClosed={load} />}
+                            </td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -210,27 +477,34 @@ export function Positions() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-border">
-                        {['Agent', 'Symbol', 'Side', 'Type', 'Order Qty', 'Filled Qty', 'Price', 'Status', 'Mode'].map(h => (
+                        {['Agent', 'Symbol', 'Side', 'Type', 'Qty', 'Price', 'SL', 'Status', ''].map(h => (
                           <Th key={h}>{h}</Th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {pending.map((p, i) => (
-                        <tr key={i} className="border-b border-border/50 hover:bg-surface2 transition-colors">
-                          <td className="py-3 px-4 font-mono text-muted text-xs">{p.agentKey}</td>
-                          <td className="py-3 px-4 font-bold text-text">{p.symbol}</td>
-                          <td className="py-3 px-4">
-                            <span className={`font-bold ${p.side === 'BUY' ? 'text-green' : 'text-red'}`}>{p.side}</span>
-                          </td>
-                          <td className="py-3 px-4 text-muted">{p.type}</td>
-                          <td className="py-3 px-4 font-mono">{fmt(p.origQty, 6)}</td>
-                          <td className="py-3 px-4 font-mono">{fmt(p.executedQty, 6)}</td>
-                          <td className="py-3 px-4 font-mono">{p.price > 0 ? fmt(p.price) : '—'}</td>
-                          <td className="py-3 px-4"><StatusBadge status={p.status} /></td>
-                          <td className="py-3 px-4"><Badge label={p.paper ? 'PAPER' : 'LIVE'} variant={p.paper ? 'paper' : 'live'} /></td>
-                        </tr>
-                      ))}
+                      {pending.map((p, i) => {
+                        const dp = priceDp(p.price)
+                        return (
+                          <tr key={i} className="border-b border-border/50 hover:bg-surface2 transition-colors">
+                            <td className="py-3 px-4 font-mono text-muted text-xs">{p.agentKey.split(':').slice(0,2).join(':')}</td>
+                            <td className="py-3 px-4 font-bold text-text">{p.symbol}</td>
+                            <td className="py-3 px-4">
+                              <span className={`font-bold ${p.side === 'BUY' ? 'text-green' : 'text-red'}`}>{p.side}</span>
+                            </td>
+                            <td className="py-3 px-4 text-muted">{p.type}</td>
+                            <td className="py-3 px-4 font-mono">{p.origQty.toFixed(2)}</td>
+                            <td className="py-3 px-4 font-mono">{p.price > 0 ? p.price.toFixed(dp) : '—'}</td>
+                            <td className="py-3 px-4 font-mono text-muted text-xs">
+                              {p.sl != null && p.sl > 0 ? p.sl.toFixed(dp) : <span className="text-red/60">none</span>}
+                            </td>
+                            <td className="py-3 px-4"><StatusBadge status={p.status} /></td>
+                            <td className="py-3 px-4">
+                              {p.market === 'mt5' && <CancelButton entry={p} onCancelled={load} />}
+                            </td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -246,7 +520,7 @@ export function Positions() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-border">
-                        {['Time', 'Agent', 'Symbol', 'Side', 'Qty', 'Price', 'Value', 'Commission', 'Mode'].map(h => (
+                        {['Time', 'Agent', 'Symbol', 'Side', 'Qty', 'Price', 'Value', 'Commission'].map(h => (
                           <Th key={h}>{h}</Th>
                         ))}
                       </tr>
@@ -255,20 +529,19 @@ export function Positions() {
                       {history.map((f, i) => (
                         <tr key={i} className="border-b border-border/50 hover:bg-surface2 transition-colors">
                           <td className="py-3 px-4 text-muted whitespace-nowrap text-xs">{fmtTime(f.time)}</td>
-                          <td className="py-3 px-4 font-mono text-muted text-xs">{f.agentKey}</td>
+                          <td className="py-3 px-4 font-mono text-muted text-xs">{f.agentKey.split(':').slice(0,2).join(':')}</td>
                           <td className="py-3 px-4 font-bold text-text">{f.symbol}</td>
                           <td className="py-3 px-4">
                             <span className={`font-bold ${f.isBuyer ? 'text-green' : 'text-red'}`}>
                               {f.isBuyer ? 'BUY' : 'SELL'}
                             </span>
                           </td>
-                          <td className="py-3 px-4 font-mono">{fmt(f.qty, 6)}</td>
-                          <td className="py-3 px-4 font-mono">{fmt(f.price)}</td>
-                          <td className="py-3 px-4 font-mono text-text">${fmt(f.quoteQty, 2)}</td>
+                          <td className="py-3 px-4 font-mono">{f.qty.toFixed(2)}</td>
+                          <td className="py-3 px-4 font-mono">{fmt(f.price, priceDp(f.price))}</td>
+                          <td className="py-3 px-4 font-mono text-text">${f.quoteQty.toFixed(2)}</td>
                           <td className="py-3 px-4 font-mono text-muted text-xs">
-                            {fmt(f.commission, 6)} {f.commissionAsset}
+                            {f.commission.toFixed(4)} {f.commissionAsset}
                           </td>
-                          <td className="py-3 px-4"><Badge label={f.paper ? 'PAPER' : 'LIVE'} variant={f.paper ? 'paper' : 'live'} /></td>
                         </tr>
                       ))}
                     </tbody>

@@ -13,19 +13,26 @@ function rel(iso: string) {
   return `${Math.floor(d / 3600000)}h ago`
 }
 
+// Per-agent colour palette (cycles if > 8 agents)
+const AGENT_COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#a78bfa', '#ef4444', '#06b6d4', '#f97316', '#ec4899']
+
 function buildChartData(events: CycleResult[]) {
   const sorted = [...events].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime())
-  let cryptoPnl = 0
-  let mt5Pnl = 0
-  return sorted.map(e => {
-    if (e.market === 'crypto') cryptoPnl += e.pnlUsd ?? 0
-    if (e.market === 'mt5') mt5Pnl += e.pnlUsd ?? 0
-    return {
-      time: new Date(e.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      crypto: parseFloat(cryptoPnl.toFixed(2)),
-      mt5: parseFloat(mt5Pnl.toFixed(2)),
-    }
-  })
+  const agentKeys = Array.from(new Set(sorted.map(e => e.agentKey ?? `${e.market}:${e.symbol}`)))
+  const running: Record<string, number> = {}
+  agentKeys.forEach(k => { running[k] = 0 })
+
+  return {
+    data: sorted.map(e => {
+      const key = e.agentKey ?? `${e.market}:${e.symbol}`
+      running[key] = parseFloat((running[key] + (e.pnlUsd ?? 0)).toFixed(2))
+      return {
+        time: new Date(e.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        ...Object.fromEntries(agentKeys.map(k => [k, running[k]])),
+      }
+    }),
+    agentKeys,
+  }
 }
 
 export function Reports() {
@@ -49,7 +56,7 @@ export function Reports() {
   useEffect(() => { load() }, [load])
 
   const filtered = filter === 'all' ? trades : trades.filter(t => t.market === filter)
-  const chartData = buildChartData(trades)
+  const { data: chartData, agentKeys: chartAgentKeys } = buildChartData(trades)
 
   const StatCard = ({ market, data }: { market: string; data: ReportSummary['crypto'] }) => {
     const winRate = data.totalCycles > 0 ? ((data.buys + data.sells) / data.totalCycles * 100).toFixed(0) : '0'
@@ -104,21 +111,31 @@ export function Reports() {
         </div>
       )}
 
-      <Card title="Cycle Activity" className="mb-4">
+      <Card title="Cumulative P&L by Agent" className="mb-4">
         {chartData.length < 2
           ? <p className="text-muted text-sm">Not enough data for chart. Run a few cycles first.</p>
           : (
-            <ResponsiveContainer width="100%" height={200}>
+            <ResponsiveContainer width="100%" height={220}>
               <LineChart data={chartData}>
                 <XAxis dataKey="time" stroke="#2a2a32" tick={{ fill: '#6b7280', fontSize: 11, fontFamily: 'Inter' }} />
-                <YAxis stroke="#2a2a32" tick={{ fill: '#6b7280', fontSize: 10, fontFamily: 'Inter' }} />
+                <YAxis stroke="#2a2a32" tick={{ fill: '#6b7280', fontSize: 10, fontFamily: 'Inter' }} tickFormatter={v => `$${v}`} />
                 <Tooltip
                   contentStyle={{ background: '#111113', border: '1px solid #2a2a32', borderRadius: 8, fontSize: 12, fontFamily: 'Inter' }}
                   labelStyle={{ color: '#6b7280' }}
+                  formatter={(v: number) => [`$${v.toFixed(2)}`, undefined]}
                 />
-                <Legend wrapperStyle={{ fontSize: 12, fontFamily: 'Inter', color: '#6b7280' }} />
-                <Line type="monotone" dataKey="crypto" stroke="#3b82f6" strokeWidth={1.5} dot={false} />
-                <Line type="monotone" dataKey="mt5" stroke="#22c55e" strokeWidth={1.5} dot={false} />
+                <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'Inter', color: '#6b7280' }} />
+                {chartAgentKeys.map((key, i) => (
+                  <Line
+                    key={key}
+                    type="monotone"
+                    dataKey={key}
+                    name={key.split(':').slice(0, 2).join(':')}
+                    stroke={AGENT_COLORS[i % AGENT_COLORS.length]}
+                    strokeWidth={1.5}
+                    dot={false}
+                  />
+                ))}
               </LineChart>
             </ResponsiveContainer>
           )

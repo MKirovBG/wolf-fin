@@ -6,12 +6,12 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { existsSync, appendFileSync, readFileSync, writeFileSync } from 'fs'
 import pino from 'pino'
-import { getState, getAgent, upsertAgent, removeAgent, setAgentStatus, getLogs } from './state.js'
-import { dbGetCycleResults, dbGetCycleById, dbGetLogsForCycle, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor, makeAgentKey, dbGetStrategy, dbSaveStrategy, dbDeleteStrategy, dbGetMemories, dbClearMemories, dbDeleteMemory, dbGetActivePlan, dbGetAllPlans } from '../db/index.js'
-import { getRiskState, MAX_DAILY_LOSS_USD } from '../guardrails/riskState.js'
+import { getState, getAgent, upsertAgent, removeAgent, setAgentStatus, getLogs, subscribeToLogs, subscribeToAgentStatus } from './state.js'
+import { dbGetCycleResults, dbGetCycleResultsForAgent, dbGetCycleById, dbGetLogsForCycle, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor, makeAgentKey, dbGetStrategy, dbSaveStrategy, dbDeleteStrategy, dbGetMemories, dbClearMemories, dbDeleteMemory, dbGetActivePlan, dbGetAllPlans } from '../db/index.js'
+import { getRiskState } from '../guardrails/riskState.js'
 import { getRiskStateFor } from '../guardrails/riskStateStore.js'
 import { startAgentSchedule, pauseAgentSchedule, stopAgentSchedule } from '../scheduler/index.js'
-import { runAgentCycle } from '../agent/index.js'
+import { runAgentTick } from '../agent/index.js'
 import { getAdapter } from '../adapters/registry.js'
 import { binanceAdapter } from '../adapters/binance.js'
 import type { AgentConfig, AgentState } from '../types.js'
@@ -139,21 +139,32 @@ export async function startServer(): Promise<void> {
       agents: Object.values(agents),
       recentEvents,
       risk: getRiskState(),
-      maxDailyLossUsd: MAX_DAILY_LOSS_USD,
     }
   })
 
   // ── Agents ──────────────────────────────────────────────────────────────────
 
   app.get('/api/agents', async () => {
-    return Object.values(getState().agents)
+    // Include agentKey in every response so frontend never has to reconstruct it
+    return Object.entries(getState().agents).map(([key, agent]) => ({ ...agent, agentKey: key }))
   })
 
   app.post('/api/agents', async (req) => {
     const body = req.body as AgentConfig
-    const key = makeAgentKey(body.market, body.symbol, body.mt5AccountId)
+    const key = makeAgentKey(body.market, body.symbol, body.mt5AccountId, body.name)
+
+    // Detect agents sharing the same market+symbol+broker but different name
+    const conflicts = Object.entries(getState().agents)
+      .filter(([existingKey, a]) =>
+        existingKey !== key &&
+        a.config.market === body.market &&
+        a.config.symbol === body.symbol &&
+        (a.config.mt5AccountId ?? null) === (body.mt5AccountId ?? null),
+      )
+      .map(([, a]) => a.config.name ?? 'unnamed')
+
     upsertAgent(defaultAgentState(body))
-    return { ok: true, key }
+    return { ok: true, key, conflicts: conflicts.length > 0 ? conflicts : undefined }
   })
 
   app.delete('/api/agents/:key', async (req) => {
@@ -205,8 +216,15 @@ export async function startServer(): Promise<void> {
     const { key } = req.params as { key: string }
     const agent = getAgent(key)
     if (!agent) return { ok: false, message: 'Agent not found' }
-    runAgentCycle(agent.config).catch(err => log.error({ err, key }, 'manual trigger error'))
+    runAgentTick(agent.config).catch(err => log.error({ err, key }, 'manual trigger error'))
     return { ok: true }
+  })
+
+  app.get('/api/agents/:key/cycles', async (req, reply) => {
+    const key = decodeURIComponent((req.params as { key: string }).key)
+    const { limit } = req.query as { limit?: string }
+    if (!getAgent(key)) return reply.status(404).send({ error: 'Agent not found' })
+    return dbGetCycleResultsForAgent(key, limit ? parseInt(limit) : 100)
   })
 
   // ── System Prompt ────────────────────────────────────────────────────────────
@@ -231,6 +249,58 @@ export async function startServer(): Promise<void> {
     const maxId = dbGetMaxLogId()
     dbSetLogClearFloor(maxId)
     return { ok: true, clearedAt: maxId }
+  })
+
+  // ── SSE log stream — real-time push, replaces polling ────────────────────────
+  app.get('/api/events', async (req, reply) => {
+    const { agent, since } = req.query as { agent?: string; since?: string }
+    const floor = dbGetLogClearFloor()
+    const sinceId = Math.max(since ? parseInt(since) : 0, floor)
+
+    reply.raw.setHeader('Content-Type', 'text/event-stream')
+    reply.raw.setHeader('Cache-Control', 'no-cache')
+    reply.raw.setHeader('Connection', 'keep-alive')
+    reply.raw.setHeader('X-Accel-Buffering', 'no')
+    reply.raw.flushHeaders()
+
+    // Send any missed events since the client's last known ID
+    if (sinceId > 0) {
+      const missed = getLogs(sinceId, agent, 100)
+      for (const entry of [...missed].reverse()) {
+        reply.raw.write(`data: ${JSON.stringify(entry)}\n\n`)
+      }
+    }
+
+    // Subscribe to log events
+    const unsubscribeLogs = subscribeToLogs((entry) => {
+      if (agent && entry.agentKey !== agent) return
+      if (entry.id <= floor) return
+      try {
+        reply.raw.write(`data: ${JSON.stringify(entry)}\n\n`)
+      } catch { /* client disconnected */ }
+    })
+
+    // Subscribe to agent status/cycle changes — send as named 'agent' event
+    const unsubscribeStatus = subscribeToAgentStatus((event) => {
+      if (agent && event.agentKey !== agent) return
+      try {
+        reply.raw.write(`event: agent\ndata: ${JSON.stringify({ ...event.agent, agentKey: event.agentKey })}\n\n`)
+      } catch { /* client disconnected */ }
+    })
+
+    // Heartbeat every 20s to keep connection alive through proxies
+    const heartbeat = setInterval(() => {
+      try { reply.raw.write(': heartbeat\n\n') } catch { clearInterval(heartbeat); unsubscribeLogs(); unsubscribeStatus() }
+    }, 20_000)
+
+    req.raw.on('close', () => {
+      clearInterval(heartbeat)
+      unsubscribeLogs()
+      unsubscribeStatus()
+    })
+
+    // Keep the handler open — reply.raw handles the stream
+    await new Promise<void>(resolve => req.raw.on('close', resolve))
   })
 
   // ── Market Data (read-only snapshot, no agent/Claude involved) ───────────────
@@ -521,11 +591,11 @@ export async function startServer(): Promise<void> {
     if (agents.length === 0) return []
     const results = await Promise.allSettled(
       agents.map(async (agent) => {
-        const adapter = getAdapter(agent.config.market as 'crypto' | 'mt5')
+        const adapter = getAdapter(agent.config.market as 'crypto' | 'mt5', agent.config.mt5AccountId)
         const orders = await adapter.getOpenOrders(agent.config.symbol)
         return orders.map(o => ({
           ...o,
-          agentKey: makeAgentKey(agent.config.market, agent.config.symbol, agent.config.mt5AccountId),
+          agentKey: makeAgentKey(agent.config.market, agent.config.symbol, agent.config.mt5AccountId, agent.config.name),
           market: agent.config.market,
           paper: false,
         }))
@@ -535,16 +605,50 @@ export async function startServer(): Promise<void> {
     return reply.send(positions)
   })
 
+  app.post('/api/orders/:ticket/cancel', async (req, reply) => {
+    const ticket = parseInt((req.params as { ticket: string }).ticket, 10)
+    const { agentKey } = req.body as { agentKey: string }
+    const agentState = getState().agents[agentKey]
+    if (!agentState) return reply.status(404).send({ error: 'Agent not found' })
+    const adapter = getAdapter(agentState.config.market as 'crypto' | 'mt5', agentState.config.mt5AccountId)
+    await adapter.cancelOrder(agentState.config.symbol, ticket)
+    return reply.send({ ok: true, ticket })
+  })
+
+  app.post('/api/positions/:ticket/close', async (req, reply) => {
+    const ticket = parseInt((req.params as { ticket: string }).ticket, 10)
+    const { agentKey, volume } = req.body as { agentKey: string; volume?: number }
+    const agentState = getState().agents[agentKey]
+    if (!agentState) return reply.status(404).send({ error: 'Agent not found' })
+    const adapter = getAdapter(agentState.config.market as 'crypto' | 'mt5', agentState.config.mt5AccountId)
+    const mt5 = adapter as import('../adapters/mt5.js').MT5Adapter
+    if (typeof mt5.closePosition !== 'function') return reply.status(400).send({ error: 'close not supported for this market' })
+    const result = await mt5.closePosition(ticket, volume)
+    return reply.send(result)
+  })
+
+  app.post('/api/positions/:ticket/modify', async (req, reply) => {
+    const ticket = parseInt((req.params as { ticket: string }).ticket, 10)
+    const { agentKey, sl, tp } = req.body as { agentKey: string; sl?: number; tp?: number }
+    const agentState = getState().agents[agentKey]
+    if (!agentState) return reply.status(404).send({ error: 'Agent not found' })
+    const adapter = getAdapter(agentState.config.market as 'crypto' | 'mt5', agentState.config.mt5AccountId)
+    const mt5 = adapter as import('../adapters/mt5.js').MT5Adapter
+    if (typeof mt5.modifyPosition !== 'function') return reply.status(400).send({ error: 'modify not supported for this market' })
+    const result = await mt5.modifyPosition(ticket, sl, tp)
+    return reply.send(result)
+  })
+
   app.get('/api/trades', async (_req, reply) => {
     const agents = Object.values(getState().agents)
     if (agents.length === 0) return []
     const results = await Promise.allSettled(
       agents.map(async (agent) => {
-        const adapter = getAdapter(agent.config.market as 'crypto' | 'mt5')
+        const adapter = getAdapter(agent.config.market as 'crypto' | 'mt5', agent.config.mt5AccountId)
         const fills = await adapter.getTradeHistory(agent.config.symbol, 50)
         return fills.map(f => ({
           ...f,
-          agentKey: makeAgentKey(agent.config.market, agent.config.symbol, agent.config.mt5AccountId),
+          agentKey: makeAgentKey(agent.config.market, agent.config.symbol, agent.config.mt5AccountId, agent.config.name),
           market: agent.config.market,
           paper: false,
         }))
@@ -609,7 +713,7 @@ export async function startServer(): Promise<void> {
     const agent = getAgent(key)
     if (!agent) return reply.status(404).send({ error: 'Agent not found' })
     // Run a planning cycle asynchronously
-    runAgentCycle(agent.config, 'planning').catch(err => log.error({ err, key }, 'planning cycle error'))
+    runAgentTick(agent.config, 'planning').catch(err => log.error({ err, key }, 'planning cycle error'))
     return reply.send({ ok: true, message: 'Planning cycle triggered' })
   })
 

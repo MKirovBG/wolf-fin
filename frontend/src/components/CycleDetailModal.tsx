@@ -240,11 +240,6 @@ export function CycleDetailModal({ cycleId, onClose }: Props) {
                     {detail.agent.config.fetchMode !== 'manual' && (
                       <Meta label="Interval" value={iLabel(detail.agent.config.scheduleIntervalSeconds)} />
                     )}
-                    <Meta
-                      label="Max Daily Loss"
-                      value={`$${detail.agent.config.maxLossUsd}`}
-                      color="text-red"
-                    />
                     {detail.agent.config.leverage && (
                       <Meta label="Leverage" value={`${detail.agent.config.leverage}:1`} />
                     )}

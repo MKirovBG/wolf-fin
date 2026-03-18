@@ -97,4 +97,81 @@ export function computeIndicators(h1Candles) {
         bbWidth: bbWidth(h1Candles, 20),
     };
 }
+// ── Key Levels (Support / Resistance / Pivots) ────────────────────────────────
+// Computes key price levels from H4 and H1 candle history.
+// Returns levels sorted by proximity to current price.
+/**
+ * Detect swing highs/lows from a candle series.
+ * A swing high: candle[i].high is the highest in a window of (lookback) candles on each side.
+ * A swing low: candle[i].low is the lowest in a window of (lookback) candles on each side.
+ */
+function swingPoints(candles, lookback = 3) {
+    const highs = [];
+    const lows = [];
+    // Use candles[lookback..candles.length-lookback-1] so we have context on both sides
+    for (let i = lookback; i < candles.length - lookback; i++) {
+        const window = candles.slice(i - lookback, i + lookback + 1);
+        const isSwingHigh = candles[i].high === Math.max(...window.map(c => c.high));
+        const isSwingLow = candles[i].low === Math.min(...window.map(c => c.low));
+        if (isSwingHigh)
+            highs.push(candles[i].high);
+        if (isSwingLow)
+            lows.push(candles[i].low);
+    }
+    return { highs, lows };
+}
+export function computeKeyLevels(h4Candles, h1Candles, currentPrice) {
+    const levels = [];
+    // ── 1. Recent daily highs/lows (from H4 — 6 H4 candles = 1 day) ─────────
+    // Group H4 into 'days' and pull high/low per day (last 5 days = 30 H4 candles)
+    const days = Math.min(5, Math.floor(h4Candles.length / 6));
+    for (let d = 0; d < days; d++) {
+        const slice = h4Candles.slice(-(d + 1) * 6, d === 0 ? undefined : -d * 6);
+        if (slice.length === 0)
+            continue;
+        const dayHigh = Math.max(...slice.map(c => c.high));
+        const dayLow = Math.min(...slice.map(c => c.low));
+        const strength = d === 0 ? 3 : d === 1 ? 2 : 1;
+        const label = d === 0 ? 'today' : `${d + 1}d_ago`;
+        levels.push({ price: dayHigh, type: 'resistance', source: `daily_high_${label}`, strength });
+        levels.push({ price: dayLow, type: 'support', source: `daily_low_${label}`, strength });
+    }
+    // ── 2. Weekly pivot points (from last 5 H4 days ≈ 1 trading week) ────────
+    if (h4Candles.length >= 30) {
+        const weekCandles = h4Candles.slice(-30);
+        const wH = Math.max(...weekCandles.map(c => c.high));
+        const wL = Math.min(...weekCandles.map(c => c.low));
+        const wC = weekCandles[weekCandles.length - 1].close;
+        const pp = (wH + wL + wC) / 3;
+        levels.push({ price: pp, type: 'pivot', source: 'weekly_pp', strength: 3 });
+        levels.push({ price: 2 * pp - wL, type: 'resistance', source: 'weekly_r1', strength: 2 });
+        levels.push({ price: pp + (wH - wL), type: 'resistance', source: 'weekly_r2', strength: 2 });
+        levels.push({ price: 2 * pp - wH, type: 'support', source: 'weekly_s1', strength: 2 });
+        levels.push({ price: pp - (wH - wL), type: 'support', source: 'weekly_s2', strength: 2 });
+    }
+    // ── 3. H1 swing highs/lows (last 48 candles = 2 days) ──────────────────
+    const recentH1 = h1Candles.slice(-48);
+    const { highs: swingHighs, lows: swingLows } = swingPoints(recentH1, 3);
+    // Take the 4 most recent distinct swing highs and lows
+    const seen = new Set();
+    const dedupe = (arr) => arr.filter(p => {
+        // Round to 5 sig figs to merge near-identical levels
+        const rounded = parseFloat(p.toPrecision(5));
+        if (seen.has(rounded))
+            return false;
+        seen.add(rounded);
+        return true;
+    });
+    for (const p of dedupe(swingHighs).slice(-4)) {
+        levels.push({ price: p, type: 'swing_high', source: 'swing_h1', strength: 2 });
+    }
+    for (const p of dedupe(swingLows).slice(-4)) {
+        levels.push({ price: p, type: 'swing_low', source: 'swing_h1', strength: 2 });
+    }
+    // ── 4. Sort by proximity to current price, remove obvious duplicates ─────
+    return levels
+        .filter(l => l.price > 0)
+        .sort((a, b) => Math.abs(a.price - currentPrice) - Math.abs(b.price - currentPrice))
+        .slice(0, 12); // Keep top 12 closest levels
+}
 //# sourceMappingURL=indicators.js.map

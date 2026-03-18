@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { CycleThread as CycleThreadData } from '../hooks/useCycleThreads.ts'
+import type { TickThread as TickThreadData } from '../hooks/useTickThreads.ts'
 import type { LogEntry, LogEvent } from '../types/index.ts'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -20,9 +20,9 @@ function rel(iso: string) {
 function decisionColor(decision?: string): string {
   if (!decision) return 'text-muted bg-surface3 border-border'
   const u = decision.toUpperCase()
-  if (u.startsWith('BUY')) return 'text-green bg-green-dim border-green/30'
-  if (u.startsWith('SELL')) return 'text-red bg-red-dim border-red/30'
-  if (u.startsWith('HOLD')) return 'text-muted bg-surface3 border-border'
+  if (u.startsWith('BUY'))   return 'text-green bg-green-dim border-green/30'
+  if (u.startsWith('SELL'))  return 'text-red bg-red-dim border-red/30'
+  if (u.startsWith('HOLD'))  return 'text-muted bg-surface3 border-border'
   if (u.startsWith('CLOSE')) return 'text-yellow bg-yellow-dim border-yellow/30'
   if (u.startsWith('CANCEL')) return 'text-muted bg-surface3 border-border'
   if (u.startsWith('EMERGENCY') || u.startsWith('ERROR')) return 'text-red bg-red-dim border-red/30'
@@ -30,40 +30,40 @@ function decisionColor(decision?: string): string {
   return 'text-muted bg-surface3 border-border'
 }
 
-// ── Status border style ────────────────────────────────────────────────────────
+// ── Status helpers ─────────────────────────────────────────────────────────────
 
-function statusBorderClass(status: CycleThreadData['status']): string {
-  if (status === 'running') return 'border-l-2 border-l-green animate-pulse'
+function statusBorderClass(status: TickThreadData['status']): string {
+  if (status === 'running')  return 'border-l-2 border-l-green animate-pulse'
   if (status === 'complete') return 'border-l-2 border-l-green'
-  if (status === 'error') return 'border-l-2 border-l-red'
-  if (status === 'skipped') return 'border-l-2 border-l-muted2'
+  if (status === 'error')    return 'border-l-2 border-l-red'
+  if (status === 'skipped')  return 'border-l-2 border-l-muted2'
   return ''
 }
 
-function statusLabel(status: CycleThreadData['status']): string {
-  if (status === 'running') return 'LIVE'
+function statusLabel(status: TickThreadData['status']): string {
+  if (status === 'running')  return 'LIVE'
   if (status === 'complete') return 'DONE'
-  if (status === 'error') return 'ERROR'
-  if (status === 'skipped') return 'SKIP'
+  if (status === 'error')    return 'ERROR'
+  if (status === 'skipped')  return 'SKIP'
   return String(status).toUpperCase()
 }
 
-function statusLabelColor(status: CycleThreadData['status']): string {
-  if (status === 'running') return 'text-green'
+function statusLabelColor(status: TickThreadData['status']): string {
+  if (status === 'running')  return 'text-green'
   if (status === 'complete') return 'text-green'
-  if (status === 'error') return 'text-red'
+  if (status === 'error')    return 'text-red'
   return 'text-muted'
 }
 
-// ── Log entry color map ────────────────────────────────────────────────────────
+// ── Log entry colors ───────────────────────────────────────────────────────────
 
-const EVENT_COLOR: Record<LogEvent, string> = {
+const EVENT_COLOR: Partial<Record<LogEvent, string>> & { default: string } = {
   tick_start:         'text-green',
   tick_end:           'text-green',
   tick_error:         'text-red',
   tick_skip:          'text-muted',
   session_start:      'text-green',
-  session_reset:      'text-muted',
+  session_reset:      'text-yellow',
   cycle_start:        'text-green',
   cycle_end:          'text-green',
   cycle_error:        'text-red',
@@ -77,17 +77,15 @@ const EVENT_COLOR: Record<LogEvent, string> = {
   session_skip:       'text-muted',
   auto_execute:       'text-yellow',
   auto_execute_error: 'text-red',
-  memory_write:       'text-blue',
-  plan_created:       'text-green',
-  pnl_record:         'text-green',
+  default:            'text-text',
 }
 
-const EVENT_PREFIX: Record<LogEvent, string> = {
+const EVENT_PREFIX: Partial<Record<LogEvent, string>> & { default: string } = {
   tick_start:         '▶ TICK',
   tick_end:           '■ DONE',
   tick_error:         '✗ ERROR',
   tick_skip:          '— SKIP',
-  session_start:      '▶ SESSION',
+  session_start:      '◎ SESSION',
   session_reset:      '↺ RESET',
   cycle_start:        '▶ CYCLE',
   cycle_end:          '■ DONE',
@@ -102,15 +100,13 @@ const EVENT_PREFIX: Record<LogEvent, string> = {
   session_skip:       '— SKIP',
   auto_execute:       '⚡ EXEC',
   auto_execute_error: '✗ EXEC',
-  memory_write:       '🧠 MEM',
-  plan_created:       '📅 PLAN',
-  pnl_record:         '$ P&L',
+  default:            '·',
 }
 
 // ── Single log line ────────────────────────────────────────────────────────────
 
 function LogLine({ entry }: { entry: LogEntry }) {
-  const color = EVENT_COLOR[entry.event] ?? 'text-text'
+  const color  = EVENT_COLOR[entry.event] ?? EVENT_COLOR.default
   const prefix = EVENT_PREFIX[entry.event] ?? entry.event
   const isMultiLine = entry.message.includes('\n')
 
@@ -131,8 +127,6 @@ function LogLine({ entry }: { entry: LogEntry }) {
 // ── Tool call/result pair view ─────────────────────────────────────────────────
 
 function ToolPairs({ logs }: { logs: LogEntry[] }) {
-  // Group tool_call and tool_result into pairs
-  const items: LogEntry[] = []
   const calls = logs.filter(l => l.event === 'tool_call' || l.event === 'tool_result')
 
   return (
@@ -186,22 +180,38 @@ function Section({
   )
 }
 
-// ── Main CycleThread component ─────────────────────────────────────────────────
+// ── Main TickThread component ──────────────────────────────────────────────────
 
 interface Props {
-  thread: CycleThreadData
+  thread: TickThreadData
   defaultExpanded?: boolean
 }
 
-export function CycleThread({ thread, defaultExpanded = false }: Props) {
+export function TickThread({ thread, defaultExpanded = false }: Props) {
   const [expanded, setExpanded] = useState(defaultExpanded)
 
   const agentLabel = thread.agentKey.split(':').slice(0, 2).join(':')
+  const tickLabel  = thread.tickNumber > 0 ? `#${thread.tickNumber}` : ''
 
-  // Skipped cycles — compact pill, no expand
+  // ── Session event — informational pill ──────────────────────────────────────
+  if (thread.status === 'session_event') {
+    const entry = thread.logs[0]
+    const isReset = entry?.event === 'session_reset'
+    return (
+      <div className={`flex items-center gap-2 px-3 py-1.5 border rounded-md ${isReset ? 'bg-yellow-dim/20 border-yellow/20' : 'bg-green-dim/10 border-green/20'}`}>
+        <span className={`text-xs font-bold font-sans shrink-0 ${isReset ? 'text-yellow' : 'text-green'}`}>
+          {isReset ? '↺ NEW DAY' : '◎ SESSION'}
+        </span>
+        <span className="text-xs font-mono text-muted2 shrink-0">{agentLabel}</span>
+        <span className="text-xs text-muted2 truncate flex-1">{entry?.message ?? ''}</span>
+        <span className="text-xs text-muted2 shrink-0">{rel(thread.startTime)}</span>
+      </div>
+    )
+  }
+
+  // ── Skipped — compact pill ──────────────────────────────────────────────────
   if (thread.status === 'skipped') {
-    const skipLog = thread.logs[0]
-    const msg = skipLog?.message ?? 'Skipped'
+    const msg = thread.logs[0]?.message ?? 'Skipped'
     return (
       <div className="flex items-center gap-2 px-3 py-1.5 bg-surface border border-border/50 rounded-md opacity-60 hover:opacity-80 transition-opacity">
         <span className="text-xs font-bold text-muted font-sans shrink-0">— SKIP</span>
@@ -212,7 +222,7 @@ export function CycleThread({ thread, defaultExpanded = false }: Props) {
     )
   }
 
-  // Collapsed row
+  // ── Collapsed row ───────────────────────────────────────────────────────────
   if (!expanded) {
     return (
       <div
@@ -220,39 +230,31 @@ export function CycleThread({ thread, defaultExpanded = false }: Props) {
         onClick={() => setExpanded(true)}
       >
         <div className="flex items-center gap-3 px-4 py-3">
-          {/* Status dot */}
           <span className={`text-xs font-bold font-sans shrink-0 ${statusLabelColor(thread.status)}`}>
             {statusLabel(thread.status)}
           </span>
-
-          {/* Agent key */}
+          {tickLabel && (
+            <span className="text-xs font-mono text-muted2 shrink-0">{tickLabel}</span>
+          )}
           <span className="text-xs font-mono text-muted shrink-0">{agentLabel}</span>
-
-          {/* Decision badge */}
           {thread.decision && (
             <span className={`inline-block px-2 py-0.5 rounded border text-xs font-bold font-sans shrink-0 ${decisionColor(thread.decision)}`}>
               {thread.decision}
             </span>
           )}
-
-          {/* Reason preview */}
           {thread.reason && (
             <span className="text-xs text-muted truncate flex-1 hidden sm:block">
               "{thread.reason.slice(0, 80)}{thread.reason.length > 80 ? '...' : ''}"
             </span>
           )}
-
-          {/* Time */}
           <span className="text-xs text-muted2 shrink-0 ml-auto">{rel(thread.startTime)}</span>
-
-          {/* Expand icon */}
           <span className="text-muted2 text-xs shrink-0">▼</span>
         </div>
       </div>
     )
   }
 
-  // Expanded view
+  // ── Expanded view ───────────────────────────────────────────────────────────
   return (
     <div className={`bg-surface border border-border rounded-lg overflow-hidden ${statusBorderClass(thread.status)}`}>
       {/* Header */}
@@ -263,7 +265,7 @@ export function CycleThread({ thread, defaultExpanded = false }: Props) {
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center gap-2 flex-wrap">
             <span className={`text-xs font-bold font-sans ${statusLabelColor(thread.status)}`}>
-              {thread.status === 'running' ? '● LIVE' : '■'} CYCLE
+              {thread.status === 'running' ? '● LIVE' : '■'} TICK{tickLabel ? ` ${tickLabel}` : ''}
             </span>
             <span className="text-xs font-mono text-muted">{thread.agentKey}</span>
             <span className="text-xs text-muted2 font-mono">
@@ -283,7 +285,7 @@ export function CycleThread({ thread, defaultExpanded = false }: Props) {
               </>
             )}
             <span className="text-muted2">·</span>
-            <span className="text-xs text-muted font-sans">Iterations: <span className="text-text">{thread.iterationCount}</span></span>
+            <span className="text-xs text-muted font-sans">Tool calls: <span className="text-text">{thread.iterationCount}</span></span>
           </div>
           {thread.reason && (
             <p className="text-xs text-muted leading-relaxed max-w-2xl">{thread.reason}</p>
@@ -292,7 +294,7 @@ export function CycleThread({ thread, defaultExpanded = false }: Props) {
         <span className="text-muted2 text-xs shrink-0 ml-4 mt-0.5">▲</span>
       </div>
 
-      {/* Expandable sections — themed scrollable body */}
+      {/* Sections */}
       <div className="overflow-y-auto" style={{ maxHeight: '560px', scrollbarWidth: 'thin', scrollbarColor: '#2a2a32 #111113' }}>
         <Section
           title="Decision & Reason"

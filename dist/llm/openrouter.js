@@ -1,5 +1,14 @@
 // Wolf-Fin — OpenRouter LLM provider (OpenAI-compatible API)
 // Translates between Anthropic message format (internal canonical) and OpenAI format.
+// ── Typed errors ──────────────────────────────────────────────────────────────
+export class RateLimitError extends Error {
+    resetAt;
+    constructor(message, resetAt) {
+        super(message);
+        this.resetAt = resetAt;
+        this.name = 'RateLimitError';
+    }
+}
 // ── Translators ───────────────────────────────────────────────────────────────
 function toOAITools(tools) {
     return tools.map(t => ({
@@ -108,6 +117,11 @@ export class OpenRouterProvider {
         });
         if (!res.ok) {
             const err = await res.text();
+            if (res.status === 429) {
+                const resetHeader = res.headers.get('X-RateLimit-Reset');
+                const resetAt = resetHeader ? parseInt(resetHeader, 10) : undefined;
+                throw new RateLimitError(`OpenRouter API error 429: ${err}`, resetAt);
+            }
             throw new Error(`OpenRouter API error ${res.status}: ${err}`);
         }
         const data = await res.json();

@@ -1,4 +1,6 @@
 import type { AgentConfig } from '../types.js';
 export type { AgentConfig } from '../types.js';
-export declare function runAgentCycle(config: AgentConfig): Promise<void>;
+export declare function buildSystemPrompt(config: AgentConfig, agentKey: string, sessionSummary?: string | null): string;
+export declare function runAgentTick(config: AgentConfig, tickType?: 'trading' | 'planning'): Promise<void>;
+export declare const runAgentCycle: typeof runAgentTick;
 //# sourceMappingURL=index.d.ts.map

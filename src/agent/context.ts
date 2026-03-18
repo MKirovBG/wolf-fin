@@ -5,6 +5,7 @@ import { fetchFearGreed } from '../adapters/feargreed.js'
 import { fetchCryptoMarket } from '../adapters/coingecko.js'
 import { fetchCryptoNews } from '../adapters/cryptopanic.js'
 import { fetchUpcomingEvents } from '../adapters/calendar.js'
+import { fetchForexNews } from '../adapters/finnhubNews.js'
 
 /**
  * Assembles a MarketContext for the given symbol and market.
@@ -31,9 +32,13 @@ export async function buildMarketContext(
     return ctx
   }
 
-  // Forex: calendar events only (Fear & Greed and CryptoPanic are crypto-specific)
-  const upcomingEvents = await fetchUpcomingEvents()
+  // Forex/MT5: calendar events + Finnhub forex news
+  const [upcomingEvents, forexNews] = await Promise.all([
+    fetchUpcomingEvents(),
+    fetchForexNews(symbol),
+  ])
   const ctx: MarketContext = {}
   if (upcomingEvents.length > 0) ctx.upcomingEvents = upcomingEvents
+  if (forexNews.length > 0) ctx.forexNews = forexNews
   return ctx
 }

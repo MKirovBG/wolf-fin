@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getAgents } from '../api/client.ts'
 import type { AgentState } from '../types/index.ts'
@@ -8,15 +8,26 @@ export function Agents() {
   const [agents, setAgents] = useState<AgentState[]>([])
   const navigate = useNavigate()
 
-  const load = useCallback(async () => {
-    try { setAgents(await getAgents()) } catch { /* ignore */ }
+  // Initial load
+  useEffect(() => {
+    getAgents().then(setAgents).catch(() => {})
   }, [])
 
+  // SSE — update individual agent cards in real-time
   useEffect(() => {
-    load()
-    const id = setInterval(load, 5000)
-    return () => clearInterval(id)
-  }, [load])
+    const es = new EventSource('/api/events')
+    es.addEventListener('agent', (e: MessageEvent) => {
+      try {
+        const updated = JSON.parse(e.data) as AgentState & { agentKey: string }
+        setAgents(prev =>
+          prev.some(a => a.agentKey === updated.agentKey)
+            ? prev.map(a => a.agentKey === updated.agentKey ? updated : a)
+            : [...prev, updated]
+        )
+      } catch { /* ignore */ }
+    })
+    return () => es.close()
+  }, [])
 
   const running = agents.filter(a => a.status === 'running').length
 
@@ -28,6 +39,7 @@ export function Agents() {
           <h1 className="text-xl font-bold text-text">Agents</h1>
           <p className="text-muted text-sm mt-1">
             {agents.length} agent{agents.length !== 1 ? 's' : ''} · {running} running
+            <span className="ml-2 text-[9px] px-1.5 py-0.5 rounded text-green bg-green-dim">● LIVE</span>
           </p>
         </div>
         <button
@@ -53,12 +65,9 @@ export function Agents() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {agents.map(agent => {
-            const key = agent.config.market === 'mt5' && agent.config.mt5AccountId
-              ? `mt5:${agent.config.symbol}:${agent.config.mt5AccountId}`
-              : `${agent.config.market}:${agent.config.symbol}`
-            return <AgentCard key={key} agent={agent} onRefresh={load} />
-          })}
+          {agents.map(agent => (
+            <AgentCard key={agent.agentKey} agent={agent} onRefresh={() => getAgents().then(setAgents).catch(() => {})} />
+          ))}
         </div>
       )}
 

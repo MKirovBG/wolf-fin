@@ -116,6 +116,28 @@ export function initDb(): void {
 
   // Migration: add pnl_usd column to existing databases
   try { db.exec('ALTER TABLE cycle_results ADD COLUMN pnl_usd REAL') } catch { /* column already exists */ }
+
+  // Migration: add prompt_template and guardrails columns to agents table
+  try { db.exec('ALTER TABLE agents ADD COLUMN prompt_template TEXT') } catch { /* column already exists */ }
+  try { db.exec('ALTER TABLE agents ADD COLUMN guardrails TEXT') } catch { /* column already exists */ }
+  // Keep max_loss_usd for backward compat — new agents won't use it
+  try { db.exec('ALTER TABLE agents ADD COLUMN max_loss_usd REAL DEFAULT 0') } catch { /* column already exists */ }
+
+  // Agent sessions table (session-based tick architecture)
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_sessions (
+        agent_key    TEXT NOT NULL,
+        session_date TEXT NOT NULL,
+        tick_count   INTEGER NOT NULL DEFAULT 0,
+        messages     TEXT NOT NULL DEFAULT '[]',
+        summary      TEXT,
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL,
+        PRIMARY KEY (agent_key, session_date)
+      )
+    `)
+  } catch { /* already exists */ }
 }
 
 // ── Agents ──────────────────────────────────────────────────────────────────
@@ -138,22 +160,25 @@ export function dbGetAllAgents(): AgentState[] {
   }))
 }
 
-export function makeAgentKey(market: string, symbol: string, mt5AccountId?: number): string {
-  if (market === 'mt5' && mt5AccountId) return `mt5:${symbol}:${mt5AccountId}`
-  return `${market}:${symbol}`
+export function makeAgentKey(market: string, symbol: string, mt5AccountId?: number, name?: string): string {
+  const namePart = name ? `:${name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')}` : ''
+  if (market === 'mt5' && mt5AccountId) return `mt5:${symbol}:${mt5AccountId}${namePart}`
+  return `${market}:${symbol}${namePart}`
 }
 
 export function dbUpsertAgent(agent: AgentState): void {
-  const key = makeAgentKey(agent.config.market, agent.config.symbol, agent.config.mt5AccountId)
+  const key = makeAgentKey(agent.config.market, agent.config.symbol, agent.config.mt5AccountId, agent.config.name)
   db.prepare(`
-    INSERT INTO agents (key, config, status, cycle_count, started_at, last_cycle)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO agents (key, config, status, cycle_count, started_at, last_cycle, prompt_template, guardrails)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET
-      config      = excluded.config,
-      status      = excluded.status,
-      cycle_count = excluded.cycle_count,
-      started_at  = excluded.started_at,
-      last_cycle  = excluded.last_cycle
+      config          = excluded.config,
+      status          = excluded.status,
+      cycle_count     = excluded.cycle_count,
+      started_at      = excluded.started_at,
+      last_cycle      = excluded.last_cycle,
+      prompt_template = excluded.prompt_template,
+      guardrails      = excluded.guardrails
   `).run(
     key,
     JSON.stringify(agent.config),
@@ -161,6 +186,8 @@ export function dbUpsertAgent(agent: AgentState): void {
     agent.cycleCount,
     agent.startedAt,
     agent.lastCycle ? JSON.stringify(agent.lastCycle) : null,
+    agent.config.promptTemplate ?? null,
+    agent.config.guardrails ? JSON.stringify(agent.config.guardrails) : null,
   )
 }
 
@@ -253,6 +280,11 @@ export function dbGetCycleResults(market?: string, limit = 500): Array<CycleResu
     ? db.prepare('SELECT * FROM cycle_results WHERE market = ? ORDER BY id DESC LIMIT ?').all(market, limit)
     : db.prepare('SELECT * FROM cycle_results ORDER BY id DESC LIMIT ?').all(limit)
   return (rows as CycleRow[]).map(rowToCycle)
+}
+
+export function dbGetCycleResultsForAgent(agentKey: string, limit = 100): Array<CycleResult & { id: number; agentKey: string }> {
+  const rows = db.prepare('SELECT * FROM cycle_results WHERE agent_key = ? ORDER BY id DESC LIMIT ?').all(agentKey, limit) as CycleRow[]
+  return rows.map(rowToCycle)
 }
 
 export function dbGetCycleById(id: number): (CycleResult & { id: number; agentKey: string }) | null {
@@ -469,4 +501,56 @@ export function dbGetAllPlans(agentKey: string, limit = 10): PlanDoc[] {
     plan_text: string; created_at: string; cycle_count_at: number | null; active: number
   }>
   return rows.map(r => ({ id: r.id, agentKey: r.agent_key, sessionDate: r.session_date, sessionLabel: r.session_label ?? undefined, marketBias: r.market_bias, keyLevels: r.key_levels ?? undefined, riskNotes: r.risk_notes ?? undefined, planText: r.plan_text, createdAt: r.created_at, cycleCountAt: r.cycle_count_at ?? undefined, active: !!r.active }))
+}
+
+// ── Agent Sessions (tick-based conversation persistence) ───────────────────────
+
+export interface AgentSessionData {
+  agentKey: string
+  sessionDate: string
+  tickCount: number
+  messages: Array<{ role: 'user' | 'assistant'; content: unknown }>
+  summary: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export function dbGetTodaySession(agentKey: string): AgentSessionData | null {
+  const today = new Date().toISOString().slice(0, 10)
+  const row = db.prepare('SELECT * FROM agent_sessions WHERE agent_key = ? AND session_date = ?').get(agentKey, today) as {
+    agent_key: string; session_date: string; tick_count: number
+    messages: string; summary: string | null; created_at: string; updated_at: string
+  } | undefined
+  if (!row) return null
+  return {
+    agentKey: row.agent_key,
+    sessionDate: row.session_date,
+    tickCount: row.tick_count,
+    messages: JSON.parse(row.messages),
+    summary: row.summary,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+export function dbSaveSession(agentKey: string, data: {
+  sessionDate: string
+  tickCount: number
+  messages: unknown[]
+  summary?: string | null
+}): void {
+  const now = new Date().toISOString()
+  db.prepare(`
+    INSERT INTO agent_sessions (agent_key, session_date, tick_count, messages, summary, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(agent_key, session_date) DO UPDATE SET
+      tick_count = excluded.tick_count,
+      messages   = excluded.messages,
+      summary    = excluded.summary,
+      updated_at = excluded.updated_at
+  `).run(agentKey, data.sessionDate, data.tickCount, JSON.stringify(data.messages), data.summary ?? null, now, now)
+}
+
+export function dbDeleteSession(agentKey: string, sessionDate: string): void {
+  db.prepare('DELETE FROM agent_sessions WHERE agent_key = ? AND session_date = ?').run(agentKey, sessionDate)
 }

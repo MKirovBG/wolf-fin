@@ -1,12 +1,12 @@
 import { useEffect, useState, useCallback } from 'react'
+import { Link } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, Cell } from 'recharts'
 import { getStatus } from '../api/client.ts'
-import type { StatusResponse, CycleResult } from '../types/index.ts'
+import type { StatusResponse, CycleResult, AgentState } from '../types/index.ts'
 import { Card } from '../components/Card.tsx'
 import { ThreadedLogsPanel } from '../components/ThreadedLogsPanel.tsx'
 import { Badge, decisionVariant } from '../components/Badge.tsx'
 import { AgentStatusBadge } from '../components/AgentStatusBadge.tsx'
-import { RiskBar } from '../components/RiskBar.tsx'
 
 function rel(iso: string) {
   const d = Date.now() - new Date(iso).getTime()
@@ -29,17 +29,9 @@ function buildActivityData(events: CycleResult[]) {
   return Object.values(buckets).slice(-20)
 }
 
-const REFRESH_OPTS = [
-  { label: '5s',  ms: 5000  },
-  { label: '15s', ms: 15000 },
-  { label: '30s', ms: 30000 },
-  { label: 'Off', ms: 0     },
-]
-
 export function Dashboard() {
   const [data, setData] = useState<StatusResponse | null>(null)
   const [lastUpdate, setLastUpdate] = useState('')
-  const [refreshMs, setRefreshMs] = useState(10000)
 
   const load = useCallback(async () => {
     try {
@@ -48,12 +40,30 @@ export function Dashboard() {
     } catch { /* ignore */ }
   }, [])
 
+  // Initial load
+  useEffect(() => { load() }, [load])
+
+  // SSE: apply individual agent updates in real-time, no polling needed
   useEffect(() => {
-    load()
-    if (refreshMs === 0) return
-    const id = setInterval(load, refreshMs)
-    return () => clearInterval(id)
-  }, [load, refreshMs])
+    const es = new EventSource('/api/events')
+    es.addEventListener('agent', (e: MessageEvent) => {
+      try {
+        const updated = JSON.parse(e.data) as AgentState & { agentKey: string }
+        setLastUpdate(new Date().toLocaleTimeString())
+        setData(prev => {
+          if (!prev) return prev
+          const agents = prev.agents.some(a => a.agentKey === updated.agentKey)
+            ? prev.agents.map(a => a.agentKey === updated.agentKey ? updated : a)
+            : [...prev.agents, updated]
+          const recentEvents = updated.lastCycle
+            ? [updated.lastCycle, ...prev.recentEvents].slice(0, 100)
+            : prev.recentEvents
+          return { ...prev, agents, recentEvents }
+        })
+      } catch { /* ignore */ }
+    })
+    return () => es.close()
+  }, [])
 
   const agents = data?.agents ?? []
   const running = agents.filter(a => a.status === 'running').length
@@ -61,7 +71,12 @@ export function Dashboard() {
   const idle    = agents.filter(a => a.status === 'idle').length
   const events  = data?.recentEvents ?? []
   const risk    = data?.risk ?? { dailyPnlUsd: 0, remainingBudgetUsd: 0, positionNotionalUsd: 0 }
-  const maxLoss = data?.maxDailyLossUsd ?? 200
+
+  // Compute P&L stats from recent events that have pnlUsd
+  const closedTrades   = events.filter(e => e.pnlUsd != null)
+  const totalPnl       = closedTrades.reduce((s, e) => s + (e.pnlUsd ?? 0), 0)
+  const wins           = closedTrades.filter(e => (e.pnlUsd ?? 0) > 0).length
+  const winRate        = closedTrades.length > 0 ? Math.round(wins / closedTrades.length * 100) : null
 
   const activityData = buildActivityData(events)
 
@@ -78,26 +93,10 @@ export function Dashboard() {
         <h1 className="text-xl font-bold text-text">Dashboard</h1>
         <div className="flex items-center gap-3">
           <span className="text-sm text-muted">Updated {lastUpdate}</span>
-          <div className="flex items-center gap-1">
-            <span className="text-xs text-muted mr-1">Refresh:</span>
-            {REFRESH_OPTS.map(o => (
-              <button
-                key={o.label}
-                onClick={() => setRefreshMs(o.ms)}
-                className={`px-2.5 py-1 text-xs rounded-lg border transition-colors ${
-                  refreshMs === o.ms ? 'border-green text-green bg-green-dim' : 'border-border text-muted hover:border-muted hover:text-text'
-                }`}
-              >
-                {o.label}
-              </button>
-            ))}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[9px] px-1.5 py-0.5 rounded text-green bg-green-dim">● LIVE</span>
+            <button onClick={load} className="px-2.5 py-1 text-xs border border-border text-muted rounded-lg hover:border-muted2 hover:text-text transition-colors">↻</button>
           </div>
-          <button
-            onClick={load}
-            className="px-3 py-1.5 text-sm border border-border text-muted rounded-lg hover:border-muted2 hover:text-text transition-colors"
-          >
-            ↻ Refresh
-          </button>
         </div>
       </div>
 
@@ -112,28 +111,30 @@ export function Dashboard() {
           </div>
         </Card>
 
-        <Card title="Today's P&L">
+        <Card title="Closed Trade P&L">
           <div className="mt-1">
-            <div className={`text-2xl font-bold font-mono ${risk.dailyPnlUsd >= 0 ? 'text-green' : 'text-red'}`}>
-              {risk.dailyPnlUsd >= 0 ? '+' : ''}${risk.dailyPnlUsd.toFixed(2)}
+            <div className={`text-2xl font-bold font-mono ${totalPnl >= 0 ? 'text-green' : 'text-red'}`}>
+              {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
             </div>
-            <div className="text-muted text-xs mt-1.5">Position notional: ${risk.positionNotionalUsd.toFixed(2)}</div>
+            <div className="flex gap-3 mt-1.5 text-xs text-muted">
+              <span>{closedTrades.length} closed</span>
+              {winRate !== null && <span className={winRate >= 50 ? 'text-green' : 'text-yellow'}>{winRate}% win rate</span>}
+            </div>
           </div>
         </Card>
 
-        <Card title="Risk Budget">
+        <Card title="Open Exposure">
           <div className="mt-1">
-            <div className={`text-xl font-bold font-mono ${risk.remainingBudgetUsd > maxLoss * 0.5 ? 'text-green' : risk.remainingBudgetUsd > maxLoss * 0.2 ? 'text-yellow' : 'text-red'}`}>
-              ${risk.remainingBudgetUsd.toFixed(2)}
+            <div className="text-xl font-bold font-mono text-text">
+              ${risk.positionNotionalUsd.toFixed(0)}
             </div>
-            <div className="text-muted text-xs mt-1.5">of ${maxLoss.toFixed(2)} daily limit</div>
-            <div className="mt-2"><RiskBar remaining={risk.remainingBudgetUsd} total={maxLoss} /></div>
+            <div className="text-muted text-xs mt-1.5">notional across all positions</div>
           </div>
         </Card>
 
         <Card title="Activity">
           <div className="flex flex-col gap-2 mt-1">
-            <div className="flex justify-between text-sm"><span className="text-muted">Total Cycles</span><span className="text-text font-semibold">{events.length}</span></div>
+            <div className="flex justify-between text-sm"><span className="text-muted">Total Ticks</span><span className="text-text font-semibold">{events.length}</span></div>
             {decisionDist.map(d => (
               <div key={d.name} className="flex justify-between text-sm">
                 <span style={{ color: d.color }}>{d.name}</span>
@@ -193,26 +194,35 @@ export function Dashboard() {
         <Card title="Agent Overview" className="mb-4">
           <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
             {agents.map(a => {
-              const key = a.config.market === 'mt5' && a.config.mt5AccountId
-                ? `mt5:${a.config.symbol}:${a.config.mt5AccountId}`
-                : `${a.config.market}:${a.config.symbol}`
+              const key = a.agentKey
+              const model = a.config.llmModel ?? (a.config.llmProvider === 'openrouter' ? 'openrouter' : 'claude')
+              const shortModel = model.split('/').pop()?.replace('claude-', '').replace('anthropic/', '') ?? model
               return (
-                <div key={key} className="bg-surface2 rounded-lg p-3 flex flex-col gap-1.5">
+                <Link key={key} to={`/agents/k/${encodeURIComponent(key)}`} className="bg-surface2 rounded-lg p-3 flex flex-col gap-1.5 hover:bg-surface transition-colors border border-transparent hover:border-border">
                   <div className="flex justify-between items-center">
-                    <span className="text-text text-sm font-bold">{a.config.symbol}</span>
+                    <div>
+                      <span className="text-text text-sm font-bold">{a.config.symbol}</span>
+                      {a.config.name && <span className="text-muted text-xs ml-1.5">({a.config.name})</span>}
+                    </div>
                     <AgentStatusBadge status={a.status} showLabel={false} />
                   </div>
-                  <div className="flex gap-1.5">
+                  <div className="flex gap-1.5 flex-wrap">
                     <Badge label={a.config.market.toUpperCase()} variant={a.config.market} />
+                    <span className="text-[10px] text-muted border border-border rounded px-1 py-0.5">{shortModel}</span>
                   </div>
                   {a.lastCycle && (
                     <div className="flex items-center gap-1.5 mt-0.5">
                       <Badge label={a.lastCycle.decision.split(' ')[0]} variant={decisionVariant(a.lastCycle.decision)} />
                       <span className="text-muted text-xs">{rel(a.lastCycle.time)}</span>
+                      {a.lastCycle.pnlUsd != null && (
+                        <span className={`text-xs font-mono ml-auto ${a.lastCycle.pnlUsd >= 0 ? 'text-green' : 'text-red'}`}>
+                          {a.lastCycle.pnlUsd >= 0 ? '+' : ''}${a.lastCycle.pnlUsd.toFixed(2)}
+                        </span>
+                      )}
                     </div>
                   )}
-                  <div className="text-muted text-xs">{a.cycleCount} cycles · {a.config.fetchMode}</div>
-                </div>
+                  <div className="text-muted text-xs">{a.cycleCount} ticks · {a.config.fetchMode}</div>
+                </Link>
               )
             })}
           </div>
@@ -233,7 +243,7 @@ export function Dashboard() {
               <table className="w-full text-sm">
                 <thead>
                   <tr>
-                    {['Time', 'Symbol', 'Market', 'Decision', 'Reason', 'Mode'].map(h => (
+                    {['Time', 'Symbol', 'Decision', 'P&L', 'Reason'].map(h => (
                       <th key={h} className="text-left text-xs font-semibold uppercase tracking-wider text-muted pb-3 pr-4 border-b border-border">{h}</th>
                     ))}
                   </tr>
@@ -242,11 +252,14 @@ export function Dashboard() {
                   {events.map((e, i) => (
                     <tr key={i} className="hover:bg-surface2 border-b border-border/50 transition-colors">
                       <td className="py-2.5 pr-4 text-muted whitespace-nowrap text-xs">{rel(e.time)}</td>
-                      <td className="py-2.5 pr-4 font-semibold">{e.symbol}</td>
-                      <td className="py-2.5 pr-4"><Badge label={e.market} variant={e.market} /></td>
-                      <td className="py-2.5 pr-4"><Badge label={e.decision} variant={decisionVariant(e.decision)} /></td>
+                      <td className="py-2.5 pr-4 font-semibold text-sm">{e.symbol}<span className="text-muted text-xs ml-1">({e.market})</span></td>
+                      <td className="py-2.5 pr-4"><Badge label={e.decision.split(' ')[0]} variant={decisionVariant(e.decision)} /></td>
+                      <td className="py-2.5 pr-4 font-mono text-sm">
+                        {e.pnlUsd != null
+                          ? <span className={e.pnlUsd >= 0 ? 'text-green' : 'text-red'}>{e.pnlUsd >= 0 ? '+' : ''}${e.pnlUsd.toFixed(2)}</span>
+                          : <span className="text-muted">—</span>}
+                      </td>
                       <td className="py-2.5 pr-4 text-muted max-w-[300px] truncate text-xs">{e.reason || '—'}</td>
-                      <td className="py-2.5"><Badge label={e.paper ? 'PAPER' : 'LIVE'} variant={e.paper ? 'paper' : 'live'} /></td>
                     </tr>
                   ))}
                 </tbody>

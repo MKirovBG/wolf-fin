@@ -1,5 +1,5 @@
 // Wolf-Fin MT5 Adapter — calls the Python mt5-bridge over localhost HTTP
-import { computeIndicators } from './indicators.js';
+import { computeIndicators, computeKeyLevels } from './indicators.js';
 // ── Bridge HTTP helpers ──────────────────────────────────────────────────────
 const BASE = () => `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`;
 async function mt5Get(path) {
@@ -23,15 +23,13 @@ async function mt5Post(path, body) {
     return res.json();
 }
 // ── Symbol conversion ────────────────────────────────────────────────────────
+//
+// Broker symbols are used exactly as-is — no mapping, no suffix manipulation.
+// The agent-create UI loads symbols directly from the connected broker so the
+// stored symbol is always the exact name the broker recognises.
 function toMt5Symbol(s) {
+    // Strip any legacy underscores (e.g. EUR_USD typed manually) and uppercase.
     return s.toUpperCase().replace(/_/g, '');
-}
-function fromMt5Symbol(s) {
-    // 6-char all-alpha → forex pair: EURUSD → EUR_USD
-    if (s.length === 6 && /^[A-Z]{6}$/.test(s)) {
-        return `${s.slice(0, 3)}_${s.slice(3)}`;
-    }
-    return s;
 }
 // ── Pip helpers (use MT5 symbol info when available, fallback to heuristic) ──
 function isCommodity(symbol) {
@@ -92,7 +90,7 @@ export class MT5Adapter {
             { asset: 'BALANCE', free: snap.account.balance, locked: 0 },
             { asset: 'FREE_MARGIN', free: snap.account.free_margin, locked: 0 },
         ];
-        // Map positions to open orders
+        // Map positions to open orders (generic interface)
         const openOrders = snap.positions.map(p => ({
             orderId: p.ticket,
             clientOrderId: `mt5-${p.ticket}`,
@@ -107,12 +105,39 @@ export class MT5Adapter {
             time: new Date(p.time).getTime(),
             updateTime: Date.now(),
         }));
+        // Rich MT5 position detail — includes sl/tp/currentProfit for LLM reasoning
+        const positions = snap.positions.map(p => ({
+            ticket: p.ticket,
+            symbol: p.symbol,
+            side: p.side,
+            volume: p.volume,
+            priceOpen: p.priceOpen,
+            priceCurrent: p.priceCurrent,
+            profit: p.profit,
+            swap: p.swap,
+            sl: p.sl > 0 ? p.sl : null,
+            tp: p.tp > 0 ? p.tp : null,
+            comment: p.comment,
+        }));
+        // Pending limit/stop orders for this symbol
+        const pendingOrders = snap.pending_orders.map(o => ({
+            ticket: o.ticket,
+            symbol: o.symbol,
+            type: o.type, // BUY_LIMIT | SELL_LIMIT | BUY_STOP | SELL_STOP
+            volume: o.volume_initial,
+            priceTarget: o.price_open,
+            priceCurrent: o.price_current,
+            sl: o.sl > 0 ? o.sl : null,
+            tp: o.tp > 0 ? o.tp : null,
+            comment: o.comment,
+        }));
         // Pip value: for standard forex, point * contract_size
         // For 6-char forex pairs: pipValue = point * contractSize (e.g. 0.0001 * 100000 = 10 USD per lot)
         const contractSize = info.trade_contract_size || 100_000;
         const pipValue = point * contractSize;
+        const keyLevels = computeKeyLevels(h4, h1, mid);
         return {
-            symbol: fromMt5Symbol(snap.symbol) || symbol,
+            symbol: snap.symbol || symbol,
             timestamp: Date.now(),
             market: 'mt5',
             price: { bid, ask, last: mid },
@@ -125,7 +150,16 @@ export class MT5Adapter {
             candles: { m1, m15, h1, h4 },
             indicators: computeIndicators(h1),
             account: { balances, openOrders },
+            positions, // rich MT5 position detail (sl, tp, profit, priceCurrent, swap)
+            pendingOrders, // pending limit/stop orders not yet filled
             risk: riskState,
+            accountInfo: {
+                balance: snap.account.balance,
+                equity: snap.account.equity,
+                freeMargin: snap.account.free_margin,
+                usedMargin: snap.account.margin,
+                leverage: snap.account.leverage,
+            },
             forex: {
                 spread: info.spread * point / pipSizeHeuristic(symbol, point),
                 pipValue,
@@ -134,6 +168,7 @@ export class MT5Adapter {
                 swapLong: info.swap_long,
                 swapShort: info.swap_short,
             },
+            keyLevels,
         };
     }
     async getOrderBook(symbol, depth = 20) {
@@ -164,12 +199,20 @@ export class MT5Adapter {
         ];
     }
     async getOpenOrders(symbol) {
-        const path = symbol ? `/positions?symbol=${toMt5Symbol(symbol)}` : '/positions';
-        const positions = await mt5Get(this.buildUrl(path));
-        return positions.map(p => ({
+        const sym = symbol ? toMt5Symbol(symbol) : undefined;
+        const posPath = sym ? `/positions?symbol=${sym}` : '/positions';
+        const ordPath = sym
+            ? `/orders?symbol=${sym}&accountId=${this.accountId ?? ''}`
+            : `/orders?accountId=${this.accountId ?? ''}`;
+        // Fetch both open positions AND pending limit/stop orders in parallel
+        const [positions, pendingOrders] = await Promise.all([
+            mt5Get(this.buildUrl(posPath)),
+            mt5Get(this.buildUrl(ordPath)).catch(() => []),
+        ]);
+        const openPositions = positions.map(p => ({
             orderId: p.ticket,
-            clientOrderId: `mt5-${p.ticket}`,
-            symbol: fromMt5Symbol(p.symbol),
+            clientOrderId: `mt5-pos-${p.ticket}`,
+            symbol: p.symbol,
             side: p.side,
             type: 'MARKET',
             price: p.priceOpen,
@@ -179,12 +222,32 @@ export class MT5Adapter {
             timeInForce: 'GTC',
             time: new Date(p.time).getTime(),
             updateTime: Date.now(),
+            profit: p.profit,
+            swap: p.swap,
+            sl: p.sl,
+            tp: p.tp,
+            priceCurrent: p.priceCurrent,
         }));
+        const pending = pendingOrders.map(o => ({
+            orderId: o.ticket,
+            clientOrderId: `mt5-pending-${o.ticket}`,
+            symbol: o.symbol,
+            side: o.type.startsWith('BUY') ? 'BUY' : 'SELL',
+            type: o.type, // BUY_LIMIT | SELL_LIMIT | BUY_STOP | SELL_STOP
+            price: o.price_open,
+            origQty: o.volume_initial,
+            executedQty: 0,
+            status: 'NEW', // pending, not yet filled
+            timeInForce: 'GTC',
+            time: new Date(o.time).getTime(),
+            updateTime: Date.now(),
+        }));
+        return [...openPositions, ...pending];
     }
     async getTradeHistory(symbol, limit = 50) {
         const deals = await mt5Get(this.buildUrl(`/history/deals?symbol=${toMt5Symbol(symbol)}&limit=${limit}`));
         return deals.map(d => ({
-            symbol: fromMt5Symbol(d.symbol),
+            symbol: d.symbol,
             id: d.ticket,
             orderId: d.order,
             price: d.price,
@@ -196,6 +259,12 @@ export class MT5Adapter {
             isBuyer: d.type === 0, // DEAL_TYPE_BUY
             isMaker: false,
         }));
+    }
+    /** Rich deal history with profit/loss and exit reason (sl, tp, etc.) for LLM reasoning */
+    async getDeals(symbol, days = 1, limit = 20) {
+        const sym = symbol ? `&symbol=${toMt5Symbol(symbol)}` : '';
+        const acct = this.accountId ? `&accountId=${this.accountId}` : '';
+        return mt5Get(this.buildUrl(`/history/deals?days=${days}&limit=${limit}${sym}${acct}`));
     }
     async placeOrder(params) {
         const magic = parseInt(process.env.MT5_MAGIC ?? '123456');
@@ -211,19 +280,38 @@ export class MT5Adapter {
         };
         if (this.accountId)
             body.accountId = this.accountId;
-        if (params.price != null)
+        // MARKET orders must NOT include a price — MT5 executes at best available.
+        // Sending a price for MARKET causes error 10015 (Invalid price).
+        // For LIMIT/STOP orders, price is required.
+        if (params.type !== 'MARKET' && params.price != null)
             body.price = params.price;
-        // Compute stop-loss from stopPips if provided
+        // Compute absolute stop-loss price from stopPips.
+        // For MARKET orders, use params.price as the reference execution estimate (agent provides it).
         if (params.stopPrice != null) {
             body.sl = params.stopPrice;
         }
-        else if (params.stopPips != null && params.price != null) {
-            const pipSz = pipSizeHeuristic(params.symbol);
-            body.sl = params.side === 'BUY'
-                ? params.price - params.stopPips * pipSz
-                : params.price + params.stopPips * pipSz;
+        else if (params.stopPips != null) {
+            const refPrice = params.price; // agent-supplied reference (bid for SELL, ask for BUY)
+            if (refPrice != null) {
+                const pipSz = pipSizeHeuristic(params.symbol);
+                body.sl = params.side === 'BUY'
+                    ? refPrice - params.stopPips * pipSz
+                    : refPrice + params.stopPips * pipSz;
+            }
         }
-        const result = await mt5Post('/order', body);
+        let result;
+        try {
+            result = await mt5Post('/order', body);
+        }
+        catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            // 10015 = Invalid price — give the agent an actionable error instead of a raw 502
+            if (msg.includes('10015')) {
+                throw new Error(`Price rejected by broker (MT5 #10015) — market has moved since you read the snapshot. ` +
+                    `For MARKET orders: omit the price field. For LIMIT orders: use the current bid/ask from this tick's snapshot.`);
+            }
+            throw err;
+        }
         return {
             orderId: result.order,
             clientOrderId: `mt5-${result.deal}`,
@@ -237,19 +325,55 @@ export class MT5Adapter {
         };
     }
     async cancelOrder(_symbol, orderId) {
-        // Try closing as position first, then as pending order
-        const closeBody = { ticket: Number(orderId) };
+        const body = { ticket: Number(orderId) };
         if (this.accountId)
-            closeBody.accountId = this.accountId;
-        const cancelBody = { ticket: Number(orderId) };
-        if (this.accountId)
-            cancelBody.accountId = this.accountId;
+            body.accountId = this.accountId;
         try {
-            await mt5Post('/order/close', closeBody);
+            await mt5Post('/order/cancel', body);
         }
         catch {
-            await mt5Post('/order/cancel', cancelBody);
+            // Fall back to close (handles case where agent calls cancel on an open position)
+            try {
+                await mt5Post('/order/close', body);
+            }
+            catch (closeErr) {
+                const msg = closeErr instanceof Error ? closeErr.message : String(closeErr);
+                // 404 = already gone — not an error, just stale state
+                if (msg.includes('404') || msg.includes('not found'))
+                    return;
+                throw closeErr;
+            }
         }
+    }
+    async closePosition(ticket, volume) {
+        const body = { ticket };
+        if (this.accountId)
+            body.accountId = this.accountId;
+        if (volume != null)
+            body.volume = volume;
+        try {
+            const res = await mt5Post('/order/close', body);
+            return { closed: true, ticket, dealTicket: res.deal };
+        }
+        catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (msg.includes('404') || msg.includes('not found')) {
+                // Position already closed externally — return gracefully so agent knows
+                return { closed: false, ticket, alreadyClosed: true };
+            }
+            throw err;
+        }
+    }
+    async modifyPosition(ticket, sl, tp) {
+        const body = { ticket };
+        if (this.accountId)
+            body.accountId = this.accountId;
+        if (sl != null)
+            body.sl = sl;
+        if (tp != null)
+            body.tp = tp;
+        const res = await mt5Post('/order/modify', body);
+        return { ok: true, ticket: res.ticket, sl: res.sl, tp: res.tp };
     }
     async getSpread(symbol) {
         const info = await mt5Get(this.buildUrl(`/symbol-info/${toMt5Symbol(symbol)}`));

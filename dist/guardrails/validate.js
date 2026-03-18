@@ -1,19 +1,16 @@
 // Wolf-Fin Guardrails — pre-execution order validation
-import { isDailyLimitHit, MAX_POSITION_USD, getRiskState } from './riskState.js';
-// Binance spot minimum order sizes (BTCUSDT defaults — override per symbol if needed)
-const MIN_NOTIONAL_USD = 10; // Binance LOT_SIZE / MIN_NOTIONAL for most pairs
-const MIN_QTY = 0.00001; // minimum BTC quantity
-const MAX_QTY = 9000; // sanity cap
+import { MAX_POSITION_USD, getRiskState } from './riskState.js';
+// Binance spot minimum order sizes — configurable via .env or per-symbol in future
+// Defaults match Binance BTCUSDT minimums; adjust for other pairs via environment.
+const MIN_NOTIONAL_USD = parseFloat(process.env.MIN_ORDER_NOTIONAL_USD ?? '10');
+const MIN_QTY = parseFloat(process.env.MIN_ORDER_QTY ?? '0.00001');
+const MAX_QTY = parseFloat(process.env.MAX_ORDER_QTY ?? '9000');
 /**
  * Validate an order before sending to Binance.
  * Returns { ok: true } when the order passes all checks, or { ok: false, reason } otherwise.
  */
 export function validateOrder(params, currentPrice) {
-    // 1. Daily loss gate
-    if (isDailyLimitHit()) {
-        return { ok: false, reason: 'Daily loss limit reached — trading halted for today' };
-    }
-    // 2. Quantity sanity
+    // 1. Quantity sanity
     if (params.quantity <= 0) {
         return { ok: false, reason: `Invalid quantity: ${params.quantity}` };
     }
@@ -23,7 +20,7 @@ export function validateOrder(params, currentPrice) {
     if (params.quantity > MAX_QTY) {
         return { ok: false, reason: `Quantity ${params.quantity} exceeds maximum ${MAX_QTY}` };
     }
-    // 3. Minimum notional (price × qty >= MIN_NOTIONAL_USD)
+    // 2. Minimum notional (price × qty >= MIN_NOTIONAL_USD)
     const price = params.price ?? currentPrice;
     const notional = price * params.quantity;
     if (notional < MIN_NOTIONAL_USD) {
@@ -32,7 +29,7 @@ export function validateOrder(params, currentPrice) {
             reason: `Order notional $${notional.toFixed(2)} below minimum $${MIN_NOTIONAL_USD}`,
         };
     }
-    // 4. Maximum position size
+    // 3. Maximum position size
     const risk = getRiskState();
     const projectedNotional = params.side === 'BUY'
         ? risk.positionNotionalUsd + notional
@@ -43,14 +40,7 @@ export function validateOrder(params, currentPrice) {
             reason: `Order would bring position to $${projectedNotional.toFixed(2)}, exceeding limit $${MAX_POSITION_USD}`,
         };
     }
-    // 5. Remaining budget check for buys
-    if (params.side === 'BUY' && notional > risk.remainingBudgetUsd) {
-        return {
-            ok: false,
-            reason: `Order cost $${notional.toFixed(2)} exceeds remaining daily budget $${risk.remainingBudgetUsd.toFixed(2)}`,
-        };
-    }
-    // 6. LIMIT orders must have a price
+    // 4. LIMIT orders must have a price
     if (params.type === 'LIMIT' && (params.price == null || params.price <= 0)) {
         return { ok: false, reason: 'LIMIT order missing valid price' };
     }

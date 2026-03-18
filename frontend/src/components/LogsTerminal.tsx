@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { getLogs, clearLogs } from '../api/client.ts'
 import type { LogEntry, LogEvent } from '../types/index.ts'
 
@@ -10,6 +10,12 @@ interface Props {
 // ── Styling maps ──────────────────────────────────────────────────────────────
 
 const EVENT_COLOR: Record<LogEvent, string> = {
+  tick_start:         'text-green',
+  tick_end:           'text-green',
+  tick_error:         'text-red',
+  tick_skip:          'text-muted',
+  session_start:      'text-green',
+  session_reset:      'text-muted',
   cycle_start:        'text-green',
   cycle_end:          'text-green',
   cycle_error:        'text-red',
@@ -23,9 +29,18 @@ const EVENT_COLOR: Record<LogEvent, string> = {
   session_skip:       'text-muted',
   auto_execute:       'text-blue',
   auto_execute_error: 'text-red',
+  memory_write:       'text-blue',
+  plan_created:       'text-green',
+  pnl_record:         'text-green',
 }
 
 const EVENT_PREFIX: Record<LogEvent, string> = {
+  tick_start:         '▶ TICK',
+  tick_end:           '■ DONE',
+  tick_error:         '✗ ERROR',
+  tick_skip:          '— SKIP',
+  session_start:      '▶ SESSION',
+  session_reset:      '↺ RESET',
   cycle_start:        '▶ CYCLE',
   cycle_end:          '■ DONE',
   cycle_error:        '✗ ERROR',
@@ -39,6 +54,9 @@ const EVENT_PREFIX: Record<LogEvent, string> = {
   session_skip:       '— SKIP',
   auto_execute:       '⚡ EXEC',
   auto_execute_error: '✗ EXEC',
+  memory_write:       '🧠 MEM',
+  plan_created:       '📅 PLAN',
+  pnl_record:         '$ P&L',
 }
 
 function timeStr(iso: string) {
@@ -92,35 +110,46 @@ export function LogsTerminal({ agentKey, maxHeight = 480 }: Props) {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [paused, setPaused] = useState(false)
   const [filter, setFilter] = useState<string>('all')
+  const [connected, setConnected] = useState(false)
   const lastIdRef = useRef<number>(0)
+  const pausedRef = useRef(paused)
+  pausedRef.current = paused
 
-  const fetchLogs = useCallback(async () => {
-    if (paused) return
-    try {
-      const fresh = await getLogs(lastIdRef.current || undefined, agentKey)
-      if (fresh.length === 0) return
-      // fresh is newest-first; prepend to keep newest at top
-      setLogs(prev => {
-        const combined = [...fresh, ...prev].slice(0, 500)
-        lastIdRef.current = Math.max(...combined.map(l => l.id))
-        return combined
-      })
-    } catch { /* ignore */ }
-  }, [paused, agentKey])
-
-  // Initial load
+  // Initial load from REST, then switch to SSE for live updates
   useEffect(() => {
     getLogs(undefined, agentKey).then(initial => {
-      setLogs(initial) // already newest-first from server
+      setLogs(initial)
       if (initial.length > 0) lastIdRef.current = Math.max(...initial.map(l => l.id))
     }).catch(() => {})
   }, [agentKey])
 
-  // Poll for new logs
+  // SSE subscription for real-time log push
   useEffect(() => {
-    const id = setInterval(fetchLogs, 1500)
-    return () => clearInterval(id)
-  }, [fetchLogs])
+    const params = new URLSearchParams()
+    if (agentKey) params.set('agent', agentKey)
+    if (lastIdRef.current > 0) params.set('since', String(lastIdRef.current))
+
+    const url = `/api/events?${params}`
+    const es = new EventSource(url)
+
+    es.onopen = () => setConnected(true)
+    es.onerror = () => setConnected(false)
+
+    es.onmessage = (e) => {
+      if (pausedRef.current) return
+      try {
+        const entry = JSON.parse(e.data) as LogEntry
+        setLogs(prev => {
+          if (prev.some(l => l.id === entry.id)) return prev
+          const updated = [entry, ...prev].slice(0, 500)
+          lastIdRef.current = Math.max(lastIdRef.current, entry.id)
+          return updated
+        })
+      } catch { /* ignore parse errors */ }
+    }
+
+    return () => { es.close(); setConnected(false) }
+  }, [agentKey])
 
 const filteredLogs = filter === 'all'
     ? logs
@@ -164,6 +193,10 @@ const filteredLogs = filter === 'all'
         <div className="flex-1" />
 
         <span className="text-muted2 text-[10px]">{filteredLogs.length} lines</span>
+
+        <span className={`text-[9px] px-1.5 py-0.5 rounded ${connected ? 'text-green bg-green-dim' : 'text-muted bg-surface2'}`}>
+          {connected ? '● LIVE' : '○ ...'}
+        </span>
 
         <button
           onClick={() => setPaused(p => !p)}

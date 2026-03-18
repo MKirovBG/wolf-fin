@@ -36,9 +36,13 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
     defaultValues: agent.config,
   })
 
+  // Only reset form when config values actually change on the server (not on every re-render).
+  // Using JSON snapshot prevents the form wiping unsaved edits on every polling refresh.
+  const configSnapshot = JSON.stringify(agent.config)
   useEffect(() => {
     reset(agent.config)
-  }, [agent.config, reset])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [configSnapshot])
 
   const fetchMode = watch('fetchMode')
   const llmProvider = watch('llmProvider')
@@ -68,7 +72,6 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
       const saved: Partial<AgentConfig> = {
         ...data,
         scheduleIntervalSeconds: Number(data.scheduleIntervalSeconds),
-        maxLossUsd: Number(data.maxLossUsd),
         leverage: data.leverage ? Number(data.leverage) : undefined,
       }
       await updateAgentConfig(agentKey, saved)
@@ -124,16 +127,22 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
           </div>
         )}
 
-        {/* Risk */}
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs font-medium text-muted uppercase tracking-wider block mb-2">Max Daily Loss $</label>
-            <input type="number" step="1" {...register('maxLossUsd')} />
-          </div>
-          <div>
-            <label className="text-xs font-medium text-muted uppercase tracking-wider block mb-2">Leverage</label>
-            <input type="number" min="1" max="3000" placeholder="e.g. 100" {...register('leverage', { setValueAs: v => v === '' || v == null ? undefined : Number(v) })} />
-          </div>
+        {/* Leverage */}
+        <div>
+          <label className="text-xs font-medium text-muted uppercase tracking-wider block mb-2">Leverage</label>
+          <input type="number" min="1" max="3000" placeholder="e.g. 100" {...register('leverage', { setValueAs: v => v === '' || v == null ? undefined : Number(v) })} />
+        </div>
+
+        {/* Max daily loss */}
+        <div>
+          <label className="text-xs font-medium text-muted uppercase tracking-wider block mb-2">Max Daily Loss (USD)</label>
+          <input
+            type="number"
+            min="1"
+            step="1"
+            placeholder="e.g. 50 — auto-pauses when daily P&L ≤ -this"
+            {...register('maxDailyLossUsd', { setValueAs: v => v === '' || v == null ? undefined : Number(v) })}
+          />
         </div>
 
         {/* Custom prompt */}
@@ -206,10 +215,9 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
 
 export function AgentCard({ agent }: Props) {
   const navigate = useNavigate()
-  const { market, symbol, mt5AccountId } = agent.config
-  const agentPath = market === 'mt5' && mt5AccountId
-    ? `/agents/mt5/${symbol}/${mt5AccountId}`
-    : `/agents/${market}/${symbol}`
+  const { market, symbol } = agent.config
+  // agentKey comes directly from the API — no reconstruction needed
+  const agentPath = `/agents/k/${encodeURIComponent(agent.agentKey)}`
 
   return (
     <div
@@ -224,6 +232,9 @@ export function AgentCard({ agent }: Props) {
             <Badge label={market.toUpperCase()} variant={market} />
             {agent.config.leverage && (
               <span className="text-xs text-muted border border-border rounded px-1.5 py-0.5">{agent.config.leverage}:1</span>
+            )}
+            {agent.config.name && (
+              <span className="text-xs text-muted ml-2">— {agent.config.name}</span>
             )}
           </div>
           <AgentStatusBadge status={agent.status} />
@@ -246,7 +257,6 @@ export function AgentCard({ agent }: Props) {
         {agent.startedAt && (
           <div className="text-muted">Started <span className="text-text font-medium ml-1">{rel(agent.startedAt)}</span></div>
         )}
-        <div className="text-muted">Max Loss <span className="text-text font-medium ml-1">${agent.config.maxLossUsd}</span></div>
         <div className="text-muted">LLM <span className="text-text font-medium ml-1">{agent.config.llmProvider ?? 'anthropic'}</span></div>
       </div>
 

@@ -1,16 +1,23 @@
 export type AgentStatus = 'idle' | 'running' | 'paused';
+export interface GuardrailsConfig {
+    sessionOpenCheck: boolean;
+    extremeSpreadCheck: boolean;
+    stopPipsRequired: boolean;
+}
 export interface AgentConfig {
+    name?: string;
     symbol: string;
-    market: 'crypto' | 'forex' | 'mt5';
-    maxIterations: number;
+    market: 'crypto' | 'mt5';
     fetchMode: 'manual' | 'scheduled' | 'autonomous';
     scheduleIntervalSeconds: number;
-    maxLossUsd: number;
     leverage?: number;
     customPrompt?: string;
+    promptTemplate?: string;
+    guardrails?: Partial<GuardrailsConfig>;
     mt5AccountId?: number;
     llmProvider?: 'anthropic' | 'openrouter';
     llmModel?: string;
+    maxDailyLossUsd?: number;
 }
 export interface AgentState {
     config: AgentConfig;
@@ -21,7 +28,7 @@ export interface AgentState {
 }
 export interface CycleResult {
     symbol: string;
-    market: 'crypto' | 'forex' | 'mt5';
+    market: 'crypto' | 'mt5';
     paper: boolean;
     decision: string;
     reason: string;
@@ -31,7 +38,7 @@ export interface CycleResult {
     mt5AccountId?: number;
 }
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
-export type LogEvent = 'cycle_start' | 'cycle_end' | 'cycle_error' | 'tool_call' | 'tool_result' | 'tool_error' | 'claude_thinking' | 'decision' | 'guardrail_block' | 'session_skip' | 'cycle_skip' | 'auto_execute' | 'auto_execute_error';
+export type LogEvent = 'tick_start' | 'tick_end' | 'tick_error' | 'tick_skip' | 'session_start' | 'session_reset' | 'cycle_start' | 'cycle_end' | 'cycle_error' | 'cycle_skip' | 'tool_call' | 'tool_result' | 'tool_error' | 'claude_thinking' | 'decision' | 'guardrail_block' | 'session_skip' | 'auto_execute' | 'auto_execute_error' | 'memory_write' | 'plan_created' | 'pnl_record';
 export interface LogEntry {
     id: number;
     time: string;

@@ -797,3 +797,53 @@ def cancel_order(req: CancelRequest) -> dict:
         raise HTTPException(502, detail=f"Cancel rejected: {result.retcode} — {result.comment}")
 
     return {"retcode": result.retcode, "comment": result.comment}
+
+
+# ── Modify position SL/TP ─────────────────────────────────────────────────────
+
+class ModifyRequest(BaseModel):
+    ticket: int
+    sl: Optional[float] = None   # new stop-loss price; 0 = remove SL
+    tp: Optional[float] = None   # new take-profit price; 0 = remove TP
+    accountId: Optional[int] = None
+
+
+@app.post("/order/modify")
+def modify_position(req: ModifyRequest) -> dict:
+    require_connected()
+    ensure_account(req.accountId)
+
+    positions = mt5.positions_get(ticket=req.ticket)
+    if not positions or len(positions) == 0:
+        raise HTTPException(404, detail=f"Position {req.ticket} not found")
+
+    pos = positions[0]
+
+    # Build the SLTP modification request
+    # Use existing values for whichever field was not provided
+    new_sl = req.sl if req.sl is not None else pos.sl
+    new_tp = req.tp if req.tp is not None else pos.tp
+
+    request: dict[str, Any] = {
+        "action": mt5.TRADE_ACTION_SLTP,
+        "symbol": pos.symbol,
+        "position": req.ticket,
+        "sl": new_sl,
+        "tp": new_tp,
+    }
+
+    result = mt5.order_send(request)
+    if result is None:
+        code, msg = mt5.last_error()
+        raise HTTPException(502, detail=f"Modify failed: {code} — {msg}")
+
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        raise HTTPException(502, detail=f"Modify rejected: {result.retcode} — {result.comment}")
+
+    return {
+        "retcode": result.retcode,
+        "ticket": req.ticket,
+        "sl": new_sl,
+        "tp": new_tp,
+        "comment": result.comment,
+    }

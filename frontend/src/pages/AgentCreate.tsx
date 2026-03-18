@@ -1,8 +1,10 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { addAgent, getMt5Accounts, getOpenRouterModels, searchSymbols } from '../api/client.ts'
-import type { AgentConfig, Mt5AccountInfo, OpenRouterModel } from '../types/index.ts'
+import type { AgentConfig, GuardrailsConfig, Mt5AccountInfo, OpenRouterModel } from '../types/index.ts'
 import { useToast } from '../components/Toast.tsx'
+import { PromptEditor } from '../components/PromptEditor.tsx'
+import { GuardrailsEditor } from '../components/GuardrailsEditor.tsx'
 
 // ── Interval helpers ───────────────────────────────────────────────────────────
 const INTERVALS = [2, 5, 10, 15, 20, 30, 60, 300, 900, 1800, 3600, 14400]
@@ -13,21 +15,24 @@ function intervalLabel(s: number): string {
 }
 
 // ── Section wrapper ────────────────────────────────────────────────────────────
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children, hint }: { title: string; children: React.ReactNode; hint?: string }) {
   return (
     <div className="bg-surface border border-border rounded-lg p-5">
-      <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-4">{title}</div>
+      <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-1">{title}</div>
+      {hint && <p className="text-xs text-muted2 mb-4 leading-relaxed">{hint}</p>}
+      {!hint && <div className="mb-4" />}
       {children}
     </div>
   )
 }
 
 // ── Field wrapper ──────────────────────────────────────────────────────────────
-function Field({ label, children, half }: { label: string; children: React.ReactNode; half?: boolean }) {
+function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
-    <div className={half ? 'col-span-1' : ''}>
+    <div>
       <label className="text-xs font-medium text-muted uppercase tracking-wider block mb-2">{label}</label>
       {children}
+      {hint && <p className="text-xs text-muted mt-1.5 leading-relaxed">{hint}</p>}
     </div>
   )
 }
@@ -118,100 +123,35 @@ function SymbolSearch({
   )
 }
 
-// ── Custom instructions with warning flow ──────────────────────────────────────
-function CustomInstructionsField({
-  value, onChange,
-}: {
-  value: string
-  onChange: (v: string) => void
-}) {
-  const [unlocked, setUnlocked] = useState(false)
-  const [warning, setWarning] = useState(false)
-
-  if (!unlocked && !warning) {
-    return (
-      <div className="space-y-2">
-        <div className="text-xs text-muted leading-relaxed bg-surface2 border border-border rounded-lg p-3">
-          Custom instructions are appended to the base system prompt and can affect trading behavior.
-          {value && (
-            <div className="mt-2 font-mono text-xs text-muted2 truncate">{value.slice(0, 80)}{value.length > 80 ? '...' : ''}</div>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={() => setWarning(true)}
-          className="px-3 py-1.5 text-xs border border-border text-muted rounded-lg hover:border-yellow hover:text-yellow transition-colors"
-        >
-          {value ? 'Edit Instructions' : 'Add Custom Instructions'}
-        </button>
-      </div>
-    )
-  }
-
-  if (warning) {
-    return (
-      <div className="bg-yellow-dim border border-yellow/40 rounded-lg p-4 space-y-3">
-        <p className="text-sm text-yellow font-medium">Editing the system prompt can significantly affect agent behavior.</p>
-        <p className="text-xs text-yellow/80 leading-relaxed">
-          The base prompt controls all trading logic, risk rules, and tool usage.
-          Only modify if you fully understand the impact. Incorrect instructions may cause unexpected trades.
-        </p>
-        <div className="flex gap-2 pt-1">
-          <button
-            type="button"
-            onClick={() => setWarning(false)}
-            className="px-4 py-2 text-xs border border-border text-muted rounded-lg hover:border-muted2 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => { setWarning(false); setUnlocked(true) }}
-            className="px-4 py-2 text-xs border border-yellow/50 text-yellow bg-yellow-dim rounded-lg hover:bg-yellow/10 transition-colors"
-          >
-            I understand — unlock editing
-          </button>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-2">
-      <textarea
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        placeholder="Additional instructions appended to the agent system prompt…"
-        rows={5}
-        className="font-mono text-xs"
-      />
-      <button
-        type="button"
-        onClick={() => setUnlocked(false)}
-        className="text-xs text-muted hover:text-muted2 transition-colors"
-      >
-        Lock
-      </button>
-    </div>
-  )
-}
-
 // ── Main page ──────────────────────────────────────────────────────────────────
 export function AgentCreate() {
   const navigate = useNavigate()
   const toast = useToast()
 
+  // Basic
+  const [agentName, setAgentName] = useState('')
   const [market, setMarket] = useState<'crypto' | 'mt5'>('crypto')
   const [symbol, setSymbol] = useState('')
-  const [fetchMode, setFetchMode] = useState<'manual' | 'scheduled' | 'autonomous'>('scheduled')
-  const [intervalSec, setIntervalSec] = useState(60)
-  const [maxLossUsd, setMaxLossUsd] = useState(200)
-  const [leverage, setLeverage] = useState<number | ''>('')
-  const [customPrompt, setCustomPrompt] = useState('')
-  const [llmProvider, setLlmProvider] = useState<'anthropic' | 'openrouter'>('anthropic')
-  const [llmModel, setLlmModel] = useState('')
   const [mt5AccountId, setMt5AccountId] = useState<number | undefined>()
 
+  // Schedule
+  const [fetchMode, setFetchMode] = useState<'manual' | 'scheduled' | 'autonomous'>('scheduled')
+  const [intervalSec, setIntervalSec] = useState(60)
+
+  // LLM
+  const [leverage, setLeverage] = useState<number | ''>('')
+  const [maxDailyLossUsd, setMaxDailyLossUsd] = useState<number | ''>('')
+  const [llmProvider, setLlmProvider] = useState<'anthropic' | 'openrouter'>('anthropic')
+  const [llmModel, setLlmModel] = useState('')
+
+  // Prompt
+  const [promptTemplate, setPromptTemplate] = useState('')
+  const [customPrompt, setCustomPrompt] = useState('')
+
+  // Guardrails
+  const [guardrails, setGuardrails] = useState<Partial<GuardrailsConfig>>({})
+
+  // UI state
   const [mt5Accounts, setMt5Accounts] = useState<Mt5AccountInfo[]>([])
   const [selectedAccount, setSelectedAccount] = useState<Mt5AccountInfo | null>(null)
   const [orModels, setOrModels] = useState<OpenRouterModel[]>([])
@@ -248,25 +188,27 @@ export function AgentCreate() {
     setErr(null); setSubmitting(true)
     try {
       const config: AgentConfig = {
+        name: agentName.trim() || undefined,
         symbol: symbol.toUpperCase().trim(),
         market,
         fetchMode,
         scheduleIntervalSeconds: intervalSec,
-        maxLossUsd,
         leverage: leverage !== '' ? Number(leverage) : undefined,
+        maxDailyLossUsd: maxDailyLossUsd !== '' ? Number(maxDailyLossUsd) : undefined,
         customPrompt: customPrompt || undefined,
+        promptTemplate: promptTemplate || undefined,
+        guardrails: Object.keys(guardrails).length > 0 ? guardrails : undefined,
         llmProvider,
         llmModel: llmModel || undefined,
         mt5AccountId,
       }
       const res = await addAgent(config)
       if (!res.ok) { setErr('Failed to create agent'); return }
-      const sym = symbol.toUpperCase().trim()
-      toast.success(`Agent ${sym} created`)
-      const path = market === 'mt5' && mt5AccountId
-        ? `/agents/mt5/${sym}/${mt5AccountId}`
-        : `/agents/${market}/${sym}`
-      navigate(path)
+      const conflictMsg = res.conflicts?.length
+        ? ` (note: ${res.conflicts.join(', ')} also trading this symbol)`
+        : ''
+      toast.success(`Agent ${symbol.toUpperCase().trim()} created${conflictMsg}`)
+      navigate(`/agents/k/${encodeURIComponent(res.key)}`)
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Unknown error')
     } finally {
@@ -285,86 +227,95 @@ export function AgentCreate() {
 
       <form onSubmit={handleSubmit} className="space-y-4">
 
-        {/* ── 1. Market & Account ──────────────────────────────────────────── */}
-        <Section title="1 · Market & Broker">
-          <Field label="Market">
-            <select value={market} onChange={e => setMarket(e.target.value as typeof market)} className="w-full">
-              <option value="crypto">Crypto — Binance</option>
-              <option value="mt5">MetaTrader 5</option>
-            </select>
-          </Field>
+        {/* ── 1. Basic ────────────────────────────────────────────────────── */}
+        <Section title="1 · Basic" hint="Name your agent and choose which market and symbol to trade.">
+          <div className="space-y-4">
+            <Field label="Agent Name (optional)" hint="Give this agent a unique name to run multiple agents on the same symbol with different strategies.">
+              <input
+                type="text"
+                placeholder="e.g. XAUUSD Scalper, Gold Trend Follower…"
+                value={agentName}
+                onChange={e => setAgentName(e.target.value)}
+                className="w-full"
+              />
+            </Field>
 
-          {market === 'mt5' && (
-            <div className="mt-4">
-              {mt5Accounts.length === 0 ? (
-                <p className="text-sm text-muted py-2">No accounts found — register accounts in the MT5 bridge first.</p>
-              ) : (
-                <div className="grid grid-cols-2 gap-4 items-start">
-                  <Field label="MT5 Account">
-                    <select
-                      value={mt5AccountId ?? ''}
-                      onChange={e => setMt5AccountId(e.target.value ? Number(e.target.value) : undefined)}
-                      className="w-full"
-                    >
-                      <option value="">— Select account —</option>
-                      {mt5Accounts.map(a => (
-                        <option key={a.login} value={a.login}>
-                          {a.name} · {a.mode} · #{a.login}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
+            <Field label="Market">
+              <select value={market} onChange={e => setMarket(e.target.value as typeof market)} className="w-full">
+                <option value="crypto">Crypto — Binance</option>
+                <option value="mt5">MetaTrader 5</option>
+              </select>
+            </Field>
 
-                  {selectedAccount && (
-                    <div className="bg-bg border border-border rounded-lg p-3 text-sm">
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-                        <div className="text-muted">Balance
-                          <span className="text-text font-medium ml-2">
-                            {selectedAccount.balance != null
-                              ? `${selectedAccount.currency ?? 'USD'} ${selectedAccount.balance.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
-                              : '—'}
-                          </span>
-                        </div>
-                        <div className="text-muted">Mode
-                          <span className={`font-semibold ml-2 ${selectedAccount.mode === 'LIVE' ? 'text-red' : 'text-yellow'}`}>
-                            {selectedAccount.mode}
-                          </span>
-                        </div>
-                        <div className="text-muted">Server
-                          <span className="text-muted2 ml-2 text-xs">{selectedAccount.server}</span>
-                        </div>
-                        <div className="text-muted">Login
-                          <span className="text-muted2 ml-2 text-xs">#{selectedAccount.login}</span>
+            {market === 'mt5' && (
+              <div>
+                {mt5Accounts.length === 0 ? (
+                  <p className="text-sm text-muted py-2">No accounts found — register accounts in the MT5 bridge first.</p>
+                ) : (
+                  <div className="grid grid-cols-2 gap-4 items-start">
+                    <Field label="MT5 Account">
+                      <select
+                        value={mt5AccountId ?? ''}
+                        onChange={e => setMt5AccountId(e.target.value ? Number(e.target.value) : undefined)}
+                        className="w-full"
+                      >
+                        <option value="">— Select account —</option>
+                        {mt5Accounts.map(a => (
+                          <option key={a.login} value={a.login}>
+                            {a.name} · {a.mode} · #{a.login}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+
+                    {selectedAccount && (
+                      <div className="bg-bg border border-border rounded-lg p-3 text-sm">
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                          <div className="text-muted">Balance
+                            <span className="text-text font-medium ml-2">
+                              {selectedAccount.balance != null
+                                ? `${selectedAccount.currency ?? 'USD'} ${selectedAccount.balance.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+                                : '—'}
+                            </span>
+                          </div>
+                          <div className="text-muted">Mode
+                            <span className={`font-semibold ml-2 ${selectedAccount.mode === 'LIVE' ? 'text-red' : 'text-yellow'}`}>
+                              {selectedAccount.mode}
+                            </span>
+                          </div>
+                          <div className="text-muted">Server
+                            <span className="text-muted2 ml-2 text-xs">{selectedAccount.server}</span>
+                          </div>
+                          <div className="text-muted">Login
+                            <span className="text-muted2 ml-2 text-xs">#{selectedAccount.login}</span>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  )}
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <Field label="Symbol">
+              <SymbolSearch
+                market={market}
+                accountId={mt5AccountId}
+                value={symbol}
+                onChange={setSymbol}
+              />
+              {symbol && (
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="text-xs text-muted">Selected:</span>
+                  <span className="text-green font-mono font-bold text-sm bg-green-dim border border-green/20 px-2.5 py-0.5 rounded-lg">{symbol}</span>
                 </div>
               )}
-            </div>
-          )}
+            </Field>
+          </div>
         </Section>
 
-        {/* ── 2. Symbol ────────────────────────────────────────────────────── */}
-        <Section title="2 · Symbol">
-          <Field label="Search & Select Symbol">
-            <SymbolSearch
-              market={market}
-              accountId={mt5AccountId}
-              value={symbol}
-              onChange={setSymbol}
-            />
-          </Field>
-          {symbol && (
-            <div className="mt-2 flex items-center gap-2">
-              <span className="text-xs text-muted">Selected:</span>
-              <span className="text-green font-mono font-bold text-sm bg-green-dim border border-green/20 px-2.5 py-0.5 rounded-lg">{symbol}</span>
-            </div>
-          )}
-        </Section>
-
-        {/* ── 3. Schedule ──────────────────────────────────────────────────── */}
-        <Section title="3 · Schedule">
+        {/* ── 2. Schedule ──────────────────────────────────────────────────── */}
+        <Section title="2 · Schedule" hint="How often the agent runs and whether it follows market session awareness.">
           <div className="grid grid-cols-2 gap-4">
             <Field label="Fetch Mode">
               <select value={fetchMode} onChange={e => setFetchMode(e.target.value as typeof fetchMode)} className="w-full">
@@ -384,45 +335,40 @@ export function AgentCreate() {
           </div>
         </Section>
 
-        {/* ── 4. Risk & Sizing ─────────────────────────────────────────────── */}
-        <Section title="4 · Risk & Sizing">
-          <div className="grid grid-cols-3 gap-4">
-            <Field label="Max Daily Loss $">
-              <input
-                type="number"
-                min="1"
-                value={maxLossUsd}
-                onChange={e => setMaxLossUsd(Number(e.target.value))}
-                className="w-full"
-              />
-            </Field>
+        {/* ── 3. LLM ───────────────────────────────────────────────────────── */}
+        <Section title="3 · LLM" hint="Choose the AI model and configure account leverage for position sizing.">
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="LLM Provider">
+                <select value={llmProvider} onChange={e => setLlmProvider(e.target.value as typeof llmProvider)} className="w-full">
+                  <option value="anthropic">Anthropic (Claude)</option>
+                  <option value="openrouter">OpenRouter</option>
+                </select>
+              </Field>
 
-            <Field label="Leverage">
-              <input
-                type="number"
-                min="1"
-                max="3000"
-                placeholder="e.g. 100"
-                value={leverage}
-                onChange={e => setLeverage(e.target.value === '' ? '' : Number(e.target.value))}
-                className="w-full"
-              />
-            </Field>
-          </div>
-          <p className="text-xs text-muted mt-3 leading-relaxed">
-            Leverage is informational — the agent uses it for position sizing context. The global max-position guardrail is set via the <span className="text-text font-mono">MAX_POSITION_USD</span> environment variable.
-          </p>
-        </Section>
-
-        {/* ── 5. AI Model ──────────────────────────────────────────────────── */}
-        <Section title="5 · AI Model">
-          <div className="grid grid-cols-2 gap-4 mb-4">
-            <Field label="LLM Provider">
-              <select value={llmProvider} onChange={e => setLlmProvider(e.target.value as typeof llmProvider)} className="w-full">
-                <option value="anthropic">Anthropic (Claude)</option>
-                <option value="openrouter">OpenRouter</option>
-              </select>
-            </Field>
+              <Field label="Leverage" hint="Informational — agent uses it for margin calculation.">
+                <input
+                  type="number"
+                  min="1"
+                  max="3000"
+                  placeholder="e.g. 100"
+                  value={leverage}
+                  onChange={e => setLeverage(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full"
+                />
+              </Field>
+              <Field label="Max Daily Loss (USD)" hint="Agent auto-pauses when today's realized P&L drops to -this amount.">
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="e.g. 50"
+                  value={maxDailyLossUsd}
+                  onChange={e => setMaxDailyLossUsd(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full"
+                />
+              </Field>
+            </div>
 
             {llmProvider === 'openrouter' && (
               <Field label="OpenRouter Model">
@@ -444,12 +390,36 @@ export function AgentCreate() {
               </Field>
             )}
           </div>
+        </Section>
 
-          {/* Custom instructions */}
-          <div>
-            <label className="text-xs font-medium text-muted uppercase tracking-wider block mb-2">Custom Instructions</label>
-            <CustomInstructionsField value={customPrompt} onChange={setCustomPrompt} />
+        {/* ── 4. System Prompt ─────────────────────────────────────────────── */}
+        <Section title="4 · System Prompt" hint="Optionally write a custom prompt template using {{pill}} tokens. Leave empty to use the default Wolf-Fin prompt.">
+          <PromptEditor
+            value={promptTemplate}
+            onChange={setPromptTemplate}
+            market={market}
+          />
+
+          {/* Legacy: additional instructions */}
+          <div className="mt-4">
+            <label className="text-xs font-medium text-muted uppercase tracking-wider block mb-2">Additional Instructions (appended to prompt)</label>
+            <textarea
+              value={customPrompt}
+              onChange={e => setCustomPrompt(e.target.value)}
+              placeholder="Extra instructions appended after the base or custom prompt…"
+              rows={4}
+              className="w-full font-mono text-xs"
+            />
           </div>
+        </Section>
+
+        {/* ── 5. Guardrails ────────────────────────────────────────────────── */}
+        <Section title="5 · Guardrails" hint="Toggle order validation rules. All guardrails are enabled by default.">
+          <GuardrailsEditor
+            value={guardrails}
+            onChange={setGuardrails}
+            market={market}
+          />
         </Section>
 
         {/* ── Submit ───────────────────────────────────────────────────────── */}

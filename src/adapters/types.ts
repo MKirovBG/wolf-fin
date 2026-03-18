@@ -29,6 +29,12 @@ export interface Order {
   timeInForce: string
   time: number
   updateTime: number
+  // MT5-specific (optional — only present for MT5 open positions)
+  profit?: number        // broker-computed unrealized P&L in account currency
+  swap?: number          // accrued overnight swap
+  sl?: number            // stop-loss price (0 = none)
+  tp?: number            // take-profit price (0 = none)
+  priceCurrent?: number  // current market price of the position
 }
 
 export interface Fill {
@@ -75,6 +81,15 @@ export interface RiskState {
   positionNotionalUsd: number
 }
 
+// ── Key Levels (Support / Resistance / Pivots) ───────────────────────────────
+
+export interface KeyLevel {
+  price: number
+  type: 'resistance' | 'support' | 'pivot' | 'swing_high' | 'swing_low'
+  source: string   // e.g. 'daily_high', 'weekly_pivot', 'swing_h1'
+  strength: number // 1 = minor, 2 = moderate, 3 = major
+}
+
 // ── Enrichment / Market Context ───────────────────────────────────────────────
 
 export interface MarketContext {
@@ -86,6 +101,8 @@ export interface MarketContext {
   upcomingEvents?: { name: string; country: string; impact: string; time: number }[]
   /** Macro crypto market data from CoinGecko */
   cryptoMarket?: { btcDominance: number; totalMarketCapUsd: number }
+  /** Recent forex news headlines with sentiment tags — only present for mt5 market */
+  forexNews?: { headline: string; sentiment: 'bullish' | 'bearish' | 'neutral'; source: string; url: string }[]
 }
 
 // ── Market Snapshot ───────────────────────────────────────────────────────────
@@ -128,6 +145,20 @@ export interface MarketSnapshot {
     swapLong: number     // overnight swap rate long
     swapShort: number    // overnight swap rate short
   }
+  /** MT5-specific: rich open position details (sl, tp, profit, swap, priceCurrent) */
+  positions?: Record<string, unknown>[]
+  /** MT5-specific: pending limit/stop orders not yet filled */
+  pendingOrders?: Record<string, unknown>[]
+  /** MT5-specific: live account financials (balance, equity, margin, leverage) */
+  accountInfo?: {
+    balance: number
+    equity: number
+    freeMargin: number
+    usedMargin: number
+    leverage: number
+  }
+  /** Auto-computed support/resistance/pivot levels — sorted by proximity to current price */
+  keyLevels?: KeyLevel[]
 }
 
 // ── Order Types ───────────────────────────────────────────────────────────────

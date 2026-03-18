@@ -2,13 +2,14 @@
 // ── Tool input schemas ────────────────────────────────────────────────────────
 const MARKET_FIELD = {
     type: 'string',
-    enum: ['crypto', 'forex', 'mt5'],
-    description: 'Market type. "crypto" routes to Binance, "forex" routes to Alpaca, "mt5" routes to MetaTrader 5.',
+    enum: ['crypto', 'mt5'],
+    description: 'Market type. "crypto" routes to Binance, "mt5" routes to MetaTrader 5.',
 };
 const ALL_TOOLS = [
     {
         name: 'get_snapshot',
-        description: 'Fetch the current market snapshot for a symbol. Returns price, 24h stats, multi-timeframe candles, pre-computed technical indicators (RSI, EMA, ATR, VWAP, BB width), account balances, open orders, risk state, and market context enrichment.',
+        description: 'Fetch the current market snapshot for a symbol. Returns price, 24h stats, multi-timeframe candles, pre-computed technical indicators (RSI, EMA, ATR, VWAP, BB width), account balances, open orders, risk state, and market context enrichment. ' +
+            'NOTE: A fresh snapshot is already pre-fetched and injected at the top of each tick message — only call this tool if you need to re-check conditions AFTER placing an order, or for a different symbol.',
         input_schema: {
             type: 'object',
             properties: {
@@ -58,7 +59,7 @@ const ALL_TOOLS = [
     },
     {
         name: 'place_order',
-        description: 'Place a new order. Guardrails will validate the order against position limits and the daily loss budget before execution. Prefer LIMIT orders to control slippage. For forex, always specify stopPips.',
+        description: 'Place a new order. Guardrails will validate the order against position limits and the daily loss budget before execution. Prefer LIMIT orders to control slippage. For MT5, always specify stopPips.',
         input_schema: {
             type: 'object',
             properties: {
@@ -66,17 +67,17 @@ const ALL_TOOLS = [
                 market: MARKET_FIELD,
                 side: { type: 'string', enum: ['BUY', 'SELL'], description: 'Order direction' },
                 type: { type: 'string', enum: ['LIMIT', 'MARKET'], description: 'Order type. Use LIMIT unless speed is critical.' },
-                quantity: { type: 'number', description: 'Base asset quantity (units for forex, e.g. 1000 = micro-lot)' },
+                quantity: { type: 'number', description: 'Base asset quantity (crypto: units; MT5: lots, e.g. 0.01 = micro-lot)' },
                 price: { type: 'number', description: 'Limit price (required for LIMIT orders)' },
                 timeInForce: { type: 'string', enum: ['GTC', 'IOC', 'FOK'], description: 'Time in force for LIMIT orders (default GTC)' },
-                stopPips: { type: 'number', description: 'Forex only: stop-loss distance in pips. Required for forex orders.' },
+                stopPips: { type: 'number', description: 'MT5 only: stop-loss distance in pips. Required for MT5 orders.' },
             },
             required: ['symbol', 'market', 'side', 'type', 'quantity'],
         },
     },
     {
         name: 'cancel_order',
-        description: 'Cancel an existing open order by orderId.',
+        description: 'Cancel a pending limit or stop order by orderId. For MT5: use this ONLY for pending orders (visible in the Orders tab). To close an already-open position use close_position instead.',
         input_schema: {
             type: 'object',
             properties: {
@@ -87,12 +88,145 @@ const ALL_TOOLS = [
             required: ['symbol', 'market', 'orderId'],
         },
     },
+    {
+        name: 'close_position',
+        description: 'MT5 only — close an open position by its ticket number. Use this to take profit, cut a loss, or exit any open trade. ' +
+            'Get the ticket from get_open_orders (the orderId field). ' +
+            'NEVER use place_order with the opposite side to close a position — that opens a second trade instead of closing the existing one. ' +
+            'Optionally specify volume for a partial close.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                ticket: { type: 'number', description: 'Position ticket number (orderId from get_open_orders)' },
+                market: MARKET_FIELD,
+                volume: { type: 'number', description: 'Volume to close in lots (omit to close the full position)' },
+            },
+            required: ['ticket', 'market'],
+        },
+    },
+    {
+        name: 'modify_position',
+        description: 'MT5 only — modify the stop-loss and/or take-profit price of an open position. ' +
+            'Use this to: trail a stop (move SL closer to price as trade moves in your favour), ' +
+            'move SL to breakeven (set SL = entry price once in profit), or update TP. ' +
+            'You MUST provide at least one of sl or tp. Pass 0 to remove a level. ' +
+            'Get the ticket from get_open_orders.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                ticket: { type: 'number', description: 'Position ticket number' },
+                market: MARKET_FIELD,
+                sl: { type: 'number', description: 'New stop-loss price. Pass 0 to remove existing SL.' },
+                tp: { type: 'number', description: 'New take-profit price. Pass 0 to remove existing TP.' },
+            },
+            required: ['ticket', 'market'],
+        },
+    },
+    {
+        name: 'save_memory',
+        description: `Persist a trading observation, key price level, pattern, or risk note to long-term memory.
+Call this when you discover something worth remembering across future cycles and sessions:
+- A support or resistance level that has held multiple times
+- A pattern you've observed in this symbol's behaviour
+- A risk condition to always watch for
+- A session-specific behaviour (e.g. "London open often fades initial move")
+Memories are automatically injected into your system prompt each cycle.`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                category: { type: 'string', enum: ['pattern', 'risk', 'price_level', 'session', 'general'], description: 'Memory category' },
+                key: { type: 'string', description: 'Short unique label, e.g. "1.0800_support" or "london_open_fade"' },
+                value: { type: 'string', description: 'What you observed. Be specific and concise (max 200 words).' },
+                confidence: { type: 'number', description: 'Your confidence in this observation (0.0 to 1.0)' },
+                ttl_hours: { type: 'number', description: 'Optional: expire this memory after N hours. Omit for permanent.' }
+            },
+            required: ['category', 'key', 'value', 'confidence']
+        }
+    },
+    {
+        name: 'read_memories',
+        description: `Query your long-term memory for this symbol. Top memories are already injected into your system prompt, but use this tool to search for something specific or to see more entries.`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                category: { type: 'string', enum: ['pattern', 'risk', 'price_level', 'session', 'general', 'all'], description: 'Filter by category, or "all"' },
+                limit: { type: 'number', description: 'Max memories to return (default 10)' }
+            },
+            required: []
+        }
+    },
+    {
+        name: 'delete_memory',
+        description: `Remove a memory that is no longer valid. Use this when a support level breaks, a pattern stops working, or old information would mislead future decisions.`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                category: { type: 'string', enum: ['pattern', 'risk', 'price_level', 'session', 'general'] },
+                key: { type: 'string', description: 'The key of the memory to delete' }
+            },
+            required: ['category', 'key']
+        }
+    },
+    {
+        name: 'save_plan',
+        description: `Write a session trading plan. Use this at the start of a trading session to record your market bias, key levels to watch, and intent for the session. Only one active plan exists per day per agent.`,
+        input_schema: {
+            type: 'object',
+            properties: {
+                market_bias: { type: 'string', enum: ['bullish', 'bearish', 'neutral', 'range'], description: 'Your directional bias for this session' },
+                key_levels: { type: 'string', description: 'JSON array of key levels: [{price, type, rationale}]. E.g. [{"price":1.0800,"type":"support","rationale":"held 3 times this week"}]' },
+                risk_notes: { type: 'string', description: 'Any risk conditions or filters for this session (news, spread, timing)' },
+                plan_text: { type: 'string', description: 'Full session plan in plain text: what setups you are looking for, entry conditions, targets' },
+                session_label: { type: 'string', description: 'Optional: session name e.g. "London", "New York", "Daily"' }
+            },
+            required: ['market_bias', 'plan_text']
+        }
+    },
+    {
+        name: 'get_plan',
+        description: `Retrieve your current active session plan. Call this to check if current market action aligns with your session intent before making a trading decision.`,
+        input_schema: {
+            type: 'object',
+            properties: {},
+            required: []
+        }
+    },
+    {
+        name: 'get_trade_history',
+        description: 'Fetch your recent closed trades (deals) for a symbol. ' +
+            'Use this when: (a) a position you opened is no longer showing in get_open_orders — check if it was stopped out or hit TP; ' +
+            '(b) you want to review your P&L and exit reasons before sizing a new trade; ' +
+            '(c) you suspect an external close happened. ' +
+            'Returns entry/exit price, volume, profit/loss, and the exit reason in the comment field ("sl" = stopped out, "tp" = take profit hit, "" = manual/external close).',
+        input_schema: {
+            type: 'object',
+            properties: {
+                symbol: { type: 'string', description: 'Trading pair symbol, e.g. "XAUUSD"' },
+                market: MARKET_FIELD,
+                days: { type: 'number', description: 'How many days back to look (default 1, max 7)' },
+                limit: { type: 'number', description: 'Max deals to return (default 20)' },
+            },
+            required: ['symbol', 'market'],
+        },
+    },
 ];
-/** Returns the tool list for the given market, excluding tools unsupported by that market. */
-export function getTools(market) {
-    // MT5 retail brokers (e.g. Equiti) do not publish DOM data — exclude get_order_book
-    if (market === 'mt5')
-        return ALL_TOOLS.filter(t => t.name !== 'get_order_book');
-    return ALL_TOOLS;
+const TRADING_ONLY_TOOLS = new Set(['place_order', 'close_position', 'cancel_order', 'modify_position']);
+/** Returns the tool list for the given market, excluding tools unsupported by that market.
+ *  When cycleType is 'planning', trading execution tools are excluded. */
+export function getTools(market, cycleType) {
+    let tools = ALL_TOOLS;
+    if (market === 'mt5') {
+        // Exclude order_book (MT5 retail brokers don't publish DOM)
+        // Include close_position (MT5 uses ticket-based closes, NOT opposite-side orders)
+        tools = tools.filter(t => t.name !== 'get_order_book');
+    }
+    else {
+        // Crypto: exclude MT5-specific tools
+        tools = tools.filter(t => t.name !== 'close_position' && t.name !== 'get_trade_history');
+    }
+    if (cycleType === 'planning') {
+        tools = tools.filter(t => !TRADING_ONLY_TOOLS.has(t.name));
+    }
+    return tools;
 }
 //# sourceMappingURL=definitions.js.map

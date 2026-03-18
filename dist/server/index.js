@@ -5,12 +5,12 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, appendFileSync, readFileSync, writeFileSync } from 'fs';
 import pino from 'pino';
-import { getState, getAgent, upsertAgent, removeAgent, getLogs } from './state.js';
-import { dbGetCycleResults, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor } from '../db/index.js';
-import { getRiskState, MAX_DAILY_LOSS_USD } from '../guardrails/riskState.js';
+import { getState, getAgent, upsertAgent, removeAgent, getLogs, subscribeToLogs, subscribeToAgentStatus } from './state.js';
+import { dbGetCycleResults, dbGetCycleResultsForAgent, dbGetCycleById, dbGetLogsForCycle, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor, makeAgentKey, dbGetStrategy, dbSaveStrategy, dbDeleteStrategy, dbGetMemories, dbClearMemories, dbDeleteMemory, dbGetActivePlan, dbGetAllPlans } from '../db/index.js';
+import { getRiskState } from '../guardrails/riskState.js';
 import { getRiskStateFor } from '../guardrails/riskStateStore.js';
 import { startAgentSchedule, pauseAgentSchedule, stopAgentSchedule } from '../scheduler/index.js';
-import { runAgentCycle } from '../agent/index.js';
+import { runAgentTick } from '../agent/index.js';
 import { getAdapter } from '../adapters/registry.js';
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 const PORT = parseInt(process.env.PORT ?? '3000', 10);
@@ -19,7 +19,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ENV_KEYS = [
     'ANTHROPIC_API_KEY', 'CLAUDE_MODEL',
     'OPENROUTER_API_KEY',
-    'ALPACA_API_KEY', 'ALPACA_API_SECRET', 'ALPACA_PAPER_KEY', 'ALPACA_PAPER_SECRET',
     'BINANCE_API_KEY', 'BINANCE_API_SECRET',
     'FINNHUB_KEY', 'TWELVE_DATA_KEY', 'COINGECKO_KEY',
 ];
@@ -60,39 +59,6 @@ async function testConnection(service) {
                     return { ok: false, message: `HTTP ${r.status}` };
                 const data = await r.json();
                 return { ok: true, message: `Connected — ${data.data.length} models available` };
-            }
-            case 'alpaca': {
-                const messages = [];
-                // Test data API with live keys
-                if (process.env.ALPACA_API_KEY && process.env.ALPACA_API_SECRET) {
-                    // Use a US stock snapshot — available on all account tiers, no subscription needed
-                    const dr = await fetch('https://data.alpaca.markets/v2/stocks/AAPL/snapshot', {
-                        headers: { 'APCA-API-KEY-ID': process.env.ALPACA_API_KEY, 'APCA-API-SECRET-KEY': process.env.ALPACA_API_SECRET },
-                    });
-                    if (dr.ok) {
-                        const snap = await dr.json();
-                        const price = snap?.latestTrade?.p;
-                        messages.push(price ? `Data API OK — AAPL $${price}` : 'Data API OK');
-                    }
-                    else {
-                        messages.push(`Data API HTTP ${dr.status}`);
-                    }
-                }
-                // Test trading API (paper or live)
-                const paper = process.env.ALPACA_PAPER !== 'false';
-                const tradingBase = paper ? 'https://paper-api.alpaca.markets' : 'https://api.alpaca.markets';
-                const key = paper ? process.env.ALPACA_PAPER_KEY : process.env.ALPACA_API_KEY;
-                const secret = paper ? process.env.ALPACA_PAPER_SECRET : process.env.ALPACA_API_SECRET;
-                if (key && secret) {
-                    const tr = await fetch(`${tradingBase}/v2/account`, {
-                        headers: { 'APCA-API-KEY-ID': key, 'APCA-API-SECRET-KEY': secret },
-                    });
-                    messages.push(tr.ok ? (paper ? 'Paper trading OK' : 'Live trading OK') : `Trading API HTTP ${tr.status}`);
-                }
-                if (messages.length === 0)
-                    return { ok: false, message: 'No Alpaca keys set' };
-                const allOk = messages.every(m => m.includes('OK'));
-                return { ok: allOk, message: messages.join(' | ') };
             }
             case 'binance': {
                 const binKey = process.env.BINANCE_API_KEY?.trim();
@@ -168,20 +134,25 @@ export async function startServer() {
             agents: Object.values(agents),
             recentEvents,
             risk: getRiskState(),
-            maxDailyLossUsd: MAX_DAILY_LOSS_USD,
         };
     });
     // ── Agents ──────────────────────────────────────────────────────────────────
     app.get('/api/agents', async () => {
-        return Object.values(getState().agents);
+        // Include agentKey in every response so frontend never has to reconstruct it
+        return Object.entries(getState().agents).map(([key, agent]) => ({ ...agent, agentKey: key }));
     });
     app.post('/api/agents', async (req) => {
         const body = req.body;
-        const key = `${body.market}:${body.symbol}`;
-        if (getAgent(key))
-            return { ok: false, message: 'Agent already exists' };
+        const key = makeAgentKey(body.market, body.symbol, body.mt5AccountId, body.name);
+        // Detect agents sharing the same market+symbol+broker but different name
+        const conflicts = Object.entries(getState().agents)
+            .filter(([existingKey, a]) => existingKey !== key &&
+            a.config.market === body.market &&
+            a.config.symbol === body.symbol &&
+            (a.config.mt5AccountId ?? null) === (body.mt5AccountId ?? null))
+            .map(([, a]) => a.config.name ?? 'unnamed');
         upsertAgent(defaultAgentState(body));
-        return { ok: true, key };
+        return { ok: true, key, conflicts: conflicts.length > 0 ? conflicts : undefined };
     });
     app.delete('/api/agents/:key', async (req) => {
         const { key } = req.params;
@@ -231,8 +202,25 @@ export async function startServer() {
         const agent = getAgent(key);
         if (!agent)
             return { ok: false, message: 'Agent not found' };
-        runAgentCycle(agent.config).catch(err => log.error({ err, key }, 'manual trigger error'));
+        runAgentTick(agent.config).catch(err => log.error({ err, key }, 'manual trigger error'));
         return { ok: true };
+    });
+    app.get('/api/agents/:key/cycles', async (req, reply) => {
+        const key = decodeURIComponent(req.params.key);
+        const { limit } = req.query;
+        if (!getAgent(key))
+            return reply.status(404).send({ error: 'Agent not found' });
+        return dbGetCycleResultsForAgent(key, limit ? parseInt(limit) : 100);
+    });
+    // ── System Prompt ────────────────────────────────────────────────────────────
+    app.get('/api/system-prompt/:key', async (req, reply) => {
+        const { key } = req.params;
+        const agent = getAgent(key);
+        if (!agent)
+            return reply.status(404).send({ error: 'Agent not found' });
+        const { buildSystemPrompt } = await import('../agent/index.js');
+        const prompt = buildSystemPrompt(agent.config, key);
+        return reply.send({ prompt });
     });
     // ── Logs ────────────────────────────────────────────────────────────────────
     app.get('/api/logs', async (req) => {
@@ -246,11 +234,67 @@ export async function startServer() {
         dbSetLogClearFloor(maxId);
         return { ok: true, clearedAt: maxId };
     });
+    // ── SSE log stream — real-time push, replaces polling ────────────────────────
+    app.get('/api/events', async (req, reply) => {
+        const { agent, since } = req.query;
+        const floor = dbGetLogClearFloor();
+        const sinceId = Math.max(since ? parseInt(since) : 0, floor);
+        reply.raw.setHeader('Content-Type', 'text/event-stream');
+        reply.raw.setHeader('Cache-Control', 'no-cache');
+        reply.raw.setHeader('Connection', 'keep-alive');
+        reply.raw.setHeader('X-Accel-Buffering', 'no');
+        reply.raw.flushHeaders();
+        // Send any missed events since the client's last known ID
+        if (sinceId > 0) {
+            const missed = getLogs(sinceId, agent, 100);
+            for (const entry of [...missed].reverse()) {
+                reply.raw.write(`data: ${JSON.stringify(entry)}\n\n`);
+            }
+        }
+        // Subscribe to log events
+        const unsubscribeLogs = subscribeToLogs((entry) => {
+            if (agent && entry.agentKey !== agent)
+                return;
+            if (entry.id <= floor)
+                return;
+            try {
+                reply.raw.write(`data: ${JSON.stringify(entry)}\n\n`);
+            }
+            catch { /* client disconnected */ }
+        });
+        // Subscribe to agent status/cycle changes — send as named 'agent' event
+        const unsubscribeStatus = subscribeToAgentStatus((event) => {
+            if (agent && event.agentKey !== agent)
+                return;
+            try {
+                reply.raw.write(`event: agent\ndata: ${JSON.stringify({ ...event.agent, agentKey: event.agentKey })}\n\n`);
+            }
+            catch { /* client disconnected */ }
+        });
+        // Heartbeat every 20s to keep connection alive through proxies
+        const heartbeat = setInterval(() => {
+            try {
+                reply.raw.write(': heartbeat\n\n');
+            }
+            catch {
+                clearInterval(heartbeat);
+                unsubscribeLogs();
+                unsubscribeStatus();
+            }
+        }, 20_000);
+        req.raw.on('close', () => {
+            clearInterval(heartbeat);
+            unsubscribeLogs();
+            unsubscribeStatus();
+        });
+        // Keep the handler open — reply.raw handles the stream
+        await new Promise(resolve => req.raw.on('close', resolve));
+    });
     // ── Market Data (read-only snapshot, no agent/Claude involved) ───────────────
     app.get('/api/market/:market/:symbol', async (req, reply) => {
         const { market, symbol } = req.params;
-        if (market !== 'crypto' && market !== 'forex' && market !== 'mt5') {
-            return reply.status(400).send({ error: 'market must be crypto, forex, or mt5' });
+        if (market !== 'crypto' && market !== 'mt5') {
+            return reply.status(400).send({ error: 'market must be crypto or mt5' });
         }
         try {
             const adapter = getAdapter(market);
@@ -291,60 +335,24 @@ export async function startServer() {
                 risk: getRiskStateFor(market),
             };
         };
-        return { crypto: summary('crypto'), forex: summary('forex'), mt5: summary('mt5') };
+        return { crypto: summary('crypto'), mt5: summary('mt5') };
     });
     app.get('/api/reports/trades', async (req) => {
         const { market } = req.query;
         return dbGetCycleResults(market);
     });
-    async function fetchAlpacaEntry(paper) {
-        const id = paper ? 'alpaca-paper' : 'alpaca-live';
-        const mode = paper ? 'PAPER' : 'LIVE';
-        const keyId = paper ? (process.env.ALPACA_PAPER_KEY ?? '') : (process.env.ALPACA_API_KEY ?? '');
-        const secret = paper ? (process.env.ALPACA_PAPER_SECRET ?? '') : (process.env.ALPACA_API_SECRET ?? '');
-        if (!keyId)
-            throw new Error('Keys not configured');
-        const base = paper ? 'https://paper-api.alpaca.markets' : 'https://api.alpaca.markets';
-        const h = { 'APCA-API-KEY-ID': keyId, 'APCA-API-SECRET-KEY': secret };
-        const [acct, pos, acts] = await Promise.all([
-            fetch(`${base}/v2/account`, { headers: h }).then(r => { if (!r.ok)
-                throw new Error(`account HTTP ${r.status}`); return r.json(); }),
-            fetch(`${base}/v2/positions`, { headers: h }).then(r => { if (!r.ok)
-                return []; return r.json(); }),
-            fetch(`${base}/v2/account/activities/FILL?page_size=30`, { headers: h }).then(r => { if (!r.ok)
-                return []; return r.json(); }),
-        ]);
-        return {
-            id, exchange: 'alpaca', mode, connected: true,
-            summary: {
-                equity: parseFloat(acct.equity ?? '0'),
-                cash: parseFloat(acct.cash ?? '0'),
-                buyingPower: parseFloat(acct.buying_power ?? '0'),
-                portfolioValue: parseFloat(acct.portfolio_value ?? '0'),
-                unrealizedPl: parseFloat(acct.unrealized_pl ?? '0'),
-                dayPl: parseFloat(acct.pl ?? '0'),
-                status: acct.status ?? 'UNKNOWN',
-            },
-            positions: pos.map(p => ({
-                symbol: p.symbol,
-                side: p.side === 'long' ? 'BUY' : 'SELL',
-                qty: Math.abs(parseFloat(p.qty ?? '0')),
-                avgEntry: parseFloat(p.avg_entry_price ?? '0'),
-                currentPrice: parseFloat(p.current_price ?? '0'),
-                marketValue: parseFloat(p.market_value ?? '0'),
-                unrealizedPl: parseFloat(p.unrealized_pl ?? '0'),
-                unrealizedPlPct: parseFloat(p.unrealized_plpc ?? '0') * 100,
-                costBasis: parseFloat(p.cost_basis ?? '0'),
-            })),
-            recentFills: acts.map(a => ({
-                symbol: a.symbol,
-                side: a.side === 'buy' ? 'BUY' : 'SELL',
-                qty: parseFloat(a.qty ?? '0'),
-                price: parseFloat(a.price ?? '0'),
-                time: a.transaction_time,
-            })),
-        };
-    }
+    // ── Cycle detail — full context for a single cycle ───────────────────────────
+    app.get('/api/cycles/:id', async (req, reply) => {
+        const { id } = req.params;
+        const cycle = dbGetCycleById(parseInt(id, 10));
+        if (!cycle)
+            return reply.status(404).send({ error: 'Cycle not found' });
+        // Fetch the agent config for context
+        const agentState = getAgent(cycle.agentKey);
+        // Fetch all log entries that occurred during this cycle's execution window
+        const logs = dbGetLogsForCycle(cycle.agentKey, cycle.time);
+        return reply.send({ cycle, agent: agentState ?? null, logs });
+    });
     async function fetchBinanceEntry() {
         const { createHmac } = await import('crypto');
         const binKey = process.env.BINANCE_API_KEY?.trim() ?? '';
@@ -380,25 +388,40 @@ export async function startServer() {
     }
     async function fetchMt5Entries() {
         const base = `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`;
+        const health = await fetch(`${base}/health`)
+            .then(r => r.ok ? r.json() : { connected: false })
+            .catch(() => ({ connected: false }));
+        const activeLogin = health.account?.login;
         // Get registered accounts list
         const accountsRes = await fetch(`${base}/accounts`);
         if (!accountsRes.ok)
             throw new Error(`MT5 bridge HTTP ${accountsRes.status}`);
         const accountsData = await accountsRes.json();
         if (accountsData.accounts.length === 0) {
-            // No registered accounts — fall back to currently active account
-            const health = await fetch(`${base}/health`).then(r => r.json());
-            const fullAcct = await fetch(`${base}/account`).then(r => r.json()).catch(() => null);
-            const positions = await fetch(`${base}/positions`).then(r => r.json()).catch(() => []);
+            // No registered accounts — return the currently active account only
+            const fullAcct = await fetch(`${base}/account`).then(r => r.ok ? r.json() : null).catch(() => null);
+            const positions = await fetch(`${base}/positions`).then(r => r.ok ? r.json() : []).catch(() => []);
             const mode = fullAcct?.trade_mode === 2 ? 'LIVE' : 'DEMO';
             return [{
-                    id: `mt5-${health.account?.login ?? 'unknown'}`,
+                    id: `mt5-${activeLogin ?? 'unknown'}`,
                     exchange: 'mt5', mode, connected: health.connected,
                     summary: fullAcct ? { balance: fullAcct.balance, equity: fullAcct.equity, margin: fullAcct.margin, freeMargin: fullAcct.free_margin, profit: fullAcct.profit, leverage: fullAcct.leverage, login: fullAcct.login, server: fullAcct.server } : undefined,
                     positions,
                 }];
         }
-        return Promise.all(accountsData.accounts.map(async (acc) => {
+        // MT5 can only serve the currently active account — fetch data only for that account.
+        // Other registered accounts are shown as inactive (no error — just not connected right now).
+        const results = await Promise.all(accountsData.accounts.map(async (acc) => {
+            // If this account is NOT the active one, show it as inactive rather than trying to fetch
+            if (activeLogin !== undefined && acc.login !== activeLogin) {
+                return {
+                    id: `mt5-${acc.login}`,
+                    exchange: 'mt5',
+                    mode: 'DEMO',
+                    connected: false,
+                    error: 'Not active — MT5 supports one connection at a time. Switch accounts in the MT5 bridge to view this account.',
+                };
+            }
             try {
                 const [acctData, positions] = await Promise.all([
                     fetch(`${base}/account?accountId=${acc.login}`).then(r => { if (!r.ok)
@@ -417,6 +440,7 @@ export async function startServer() {
                 return { id: `mt5-${acc.login}`, exchange: 'mt5', mode: 'DEMO', connected: false, error: e instanceof Error ? e.message : `Failed to fetch account ${acc.login}` };
             }
         }));
+        return results;
     }
     // ── Symbol search ────────────────────────────────────────────────────────────
     const CRYPTO_SYMBOLS = [
@@ -424,11 +448,6 @@ export async function startServer() {
         'LINKUSDT', 'LTCUSDT', 'MATICUSDT', 'UNIUSDT', 'ATOMUSDT', 'ETCUSDT', 'XLMUSDT', 'ALGOUSDT',
         'VETUSDT', 'FILUSDT', 'THETAUSDT', 'AAVEUSDT', 'MKRUSDT', 'AXSUSDT', 'SANDUSDT', 'MANAUSDT',
         'DOGEUSDT', 'SHIBUSDT', 'TRXUSDT', 'NEARUSDT', 'FTMUSDT', 'HBARUSDT', 'ICPUSDT', 'EGLDUSDT',
-    ];
-    const FOREX_SYMBOLS = [
-        'EUR_USD', 'GBP_USD', 'USD_JPY', 'USD_CHF', 'USD_CAD', 'AUD_USD', 'NZD_USD',
-        'EUR_GBP', 'EUR_JPY', 'GBP_JPY', 'AUD_JPY', 'CHF_JPY', 'EUR_CHF', 'EUR_CAD',
-        'GBP_CAD', 'AUD_CAD', 'NZD_JPY', 'EUR_AUD', 'GBP_AUD', 'EUR_NZD',
     ];
     app.get('/api/symbols', async (req, reply) => {
         const { market, search = '', accountId } = req.query;
@@ -454,10 +473,6 @@ export async function startServer() {
         if (market === 'crypto') {
             const results = q ? CRYPTO_SYMBOLS.filter(s => s.toLowerCase().includes(q)) : CRYPTO_SYMBOLS;
             return reply.send(results.map(s => ({ symbol: s, description: s.replace('USDT', ' / USDT') })));
-        }
-        if (market === 'forex') {
-            const results = q ? FOREX_SYMBOLS.filter(s => s.toLowerCase().includes(q)) : FOREX_SYMBOLS;
-            return reply.send(results.map(s => ({ symbol: s, description: s.replace('_', ' / ') })));
         }
         return reply.send([]);
     });
@@ -512,10 +527,6 @@ export async function startServer() {
     });
     app.get('/api/accounts', async (_req, reply) => {
         const jobs = [];
-        if (process.env.ALPACA_PAPER_KEY)
-            jobs.push(fetchAlpacaEntry(true).catch(err => ({ id: 'alpaca-paper', exchange: 'alpaca', mode: 'PAPER', connected: false, error: String(err) })));
-        if (process.env.ALPACA_API_KEY)
-            jobs.push(fetchAlpacaEntry(false).catch(err => ({ id: 'alpaca-live', exchange: 'alpaca', mode: 'LIVE', connected: false, error: String(err) })));
         if (process.env.BINANCE_API_KEY)
             jobs.push(fetchBinanceEntry().catch(err => ({ id: 'binance-main', exchange: 'binance', mode: (process.env.BINANCE_TESTNET === 'true' ? 'TESTNET' : 'LIVE'), connected: false, error: String(err) })));
         // MT5 bridge — try all registered accounts; silently skip if bridge is not running
@@ -530,11 +541,11 @@ export async function startServer() {
         if (agents.length === 0)
             return [];
         const results = await Promise.allSettled(agents.map(async (agent) => {
-            const adapter = getAdapter(agent.config.market);
+            const adapter = getAdapter(agent.config.market, agent.config.mt5AccountId);
             const orders = await adapter.getOpenOrders(agent.config.symbol);
             return orders.map(o => ({
                 ...o,
-                agentKey: `${agent.config.market}:${agent.config.symbol}`,
+                agentKey: makeAgentKey(agent.config.market, agent.config.symbol, agent.config.mt5AccountId, agent.config.name),
                 market: agent.config.market,
                 paper: false,
             }));
@@ -542,16 +553,52 @@ export async function startServer() {
         const positions = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
         return reply.send(positions);
     });
+    app.post('/api/orders/:ticket/cancel', async (req, reply) => {
+        const ticket = parseInt(req.params.ticket, 10);
+        const { agentKey } = req.body;
+        const agentState = getState().agents[agentKey];
+        if (!agentState)
+            return reply.status(404).send({ error: 'Agent not found' });
+        const adapter = getAdapter(agentState.config.market, agentState.config.mt5AccountId);
+        await adapter.cancelOrder(agentState.config.symbol, ticket);
+        return reply.send({ ok: true, ticket });
+    });
+    app.post('/api/positions/:ticket/close', async (req, reply) => {
+        const ticket = parseInt(req.params.ticket, 10);
+        const { agentKey, volume } = req.body;
+        const agentState = getState().agents[agentKey];
+        if (!agentState)
+            return reply.status(404).send({ error: 'Agent not found' });
+        const adapter = getAdapter(agentState.config.market, agentState.config.mt5AccountId);
+        const mt5 = adapter;
+        if (typeof mt5.closePosition !== 'function')
+            return reply.status(400).send({ error: 'close not supported for this market' });
+        const result = await mt5.closePosition(ticket, volume);
+        return reply.send(result);
+    });
+    app.post('/api/positions/:ticket/modify', async (req, reply) => {
+        const ticket = parseInt(req.params.ticket, 10);
+        const { agentKey, sl, tp } = req.body;
+        const agentState = getState().agents[agentKey];
+        if (!agentState)
+            return reply.status(404).send({ error: 'Agent not found' });
+        const adapter = getAdapter(agentState.config.market, agentState.config.mt5AccountId);
+        const mt5 = adapter;
+        if (typeof mt5.modifyPosition !== 'function')
+            return reply.status(400).send({ error: 'modify not supported for this market' });
+        const result = await mt5.modifyPosition(ticket, sl, tp);
+        return reply.send(result);
+    });
     app.get('/api/trades', async (_req, reply) => {
         const agents = Object.values(getState().agents);
         if (agents.length === 0)
             return [];
         const results = await Promise.allSettled(agents.map(async (agent) => {
-            const adapter = getAdapter(agent.config.market);
+            const adapter = getAdapter(agent.config.market, agent.config.mt5AccountId);
             const fills = await adapter.getTradeHistory(agent.config.symbol, 50);
             return fills.map(f => ({
                 ...f,
-                agentKey: `${agent.config.market}:${agent.config.symbol}`,
+                agentKey: makeAgentKey(agent.config.market, agent.config.symbol, agent.config.mt5AccountId, agent.config.name),
                 market: agent.config.market,
                 paper: false,
             }));
@@ -559,6 +606,56 @@ export async function startServer() {
         const trades = results.flatMap(r => r.status === 'fulfilled' ? r.value : [])
             .sort((a, b) => b.time - a.time);
         return reply.send(trades);
+    });
+    // ── Agent Strategy ────────────────────────────────────────────────────────────
+    app.get('/api/agents/:key/strategy', async (req) => {
+        const { key } = req.params;
+        return dbGetStrategy(key) ?? {};
+    });
+    app.put('/api/agents/:key/strategy', async (req, reply) => {
+        const { key } = req.params;
+        const body = req.body;
+        dbSaveStrategy({ ...body, agentKey: key });
+        return reply.send({ ok: true });
+    });
+    app.delete('/api/agents/:key/strategy', async (req, reply) => {
+        const { key } = req.params;
+        dbDeleteStrategy(key);
+        return reply.send({ ok: true });
+    });
+    // ── Agent Memory ──────────────────────────────────────────────────────────────
+    app.get('/api/agents/:key/memories', async (req) => {
+        const { key } = req.params;
+        const { category } = req.query;
+        return dbGetMemories(key, category, 100);
+    });
+    app.delete('/api/agents/:key/memories', async (req, reply) => {
+        const { key } = req.params;
+        dbClearMemories(key);
+        return reply.send({ ok: true });
+    });
+    app.delete('/api/agents/:key/memories/:category/:memKey', async (req, reply) => {
+        const { key, category, memKey } = req.params;
+        dbDeleteMemory(key, category, decodeURIComponent(memKey));
+        return reply.send({ ok: true });
+    });
+    // ── Agent Plans ───────────────────────────────────────────────────────────────
+    app.get('/api/agents/:key/plans', async (req) => {
+        const { key } = req.params;
+        return dbGetAllPlans(key, 10);
+    });
+    app.get('/api/agents/:key/plan/active', async (req) => {
+        const { key } = req.params;
+        return dbGetActivePlan(key) ?? {};
+    });
+    app.post('/api/agents/:key/plan', async (req, reply) => {
+        const { key } = req.params;
+        const agent = getAgent(key);
+        if (!agent)
+            return reply.status(404).send({ error: 'Agent not found' });
+        // Run a planning cycle asynchronously
+        runAgentTick(agent.config, 'planning').catch(err => log.error({ err, key }, 'planning cycle error'));
+        return reply.send({ ok: true, message: 'Planning cycle triggered' });
     });
     // ── Serve React frontend ─────────────────────────────────────────────────────
     const frontendDist = join(__dirname, '../../frontend-dist');
@@ -580,7 +677,7 @@ export async function startServer() {
     await app.listen({ port: PORT, host: '0.0.0.0' });
     log.info({ port: PORT }, `server running at http://localhost:${PORT}`);
     // ── Startup connectivity checks ──────────────────────────────────────────────
-    const services = ['anthropic', 'alpaca', 'binance', 'finnhub', 'twelvedata', 'coingecko'];
+    const services = ['anthropic', 'binance', 'finnhub', 'twelvedata', 'coingecko'];
     log.info('checking service connectivity...');
     for (const service of services) {
         testConnection(service).then(result => {

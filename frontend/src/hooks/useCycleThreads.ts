@@ -17,13 +17,15 @@ export interface CycleThread {
   errorLogs: LogEntry[]
 }
 
-const DECISION_RE = /^([A-Z_]+)[\s:–—-]+(.*)$/s
-
 function parseDecisionLog(message: string): { decision?: string; reason?: string } {
-  const m = message.match(DECISION_RE)
-  if (!m) return {}
-  const decision = m[1].trim()
-  const reason = m[2].trim()
+  // Message format: "DECISION: BUY 0.01 @ 5002.73 — reason" or "DECISION: HOLD — reason"
+  // Strip leading "DECISION: " prefix produced by the agent logger
+  const body = message.replace(/^DECISION:\s*/i, '').trim()
+  if (!body) return {}
+  // First UPPERCASE word is the action (BUY / SELL / HOLD / CLOSE / CANCEL / ERROR / EMERGENCY_STOP …)
+  const decision = body.match(/^([A-Z_]+)/)?.[1]
+  // Reason is everything after the — / – separator
+  const reason = body.match(/[—–]\s*(.+)$/s)?.[1]?.trim()
   return { decision, reason }
 }
 

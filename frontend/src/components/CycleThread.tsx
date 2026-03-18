@@ -180,6 +180,20 @@ export function CycleThread({ thread, defaultExpanded = false }: Props) {
 
   const agentLabel = thread.agentKey.split(':').slice(0, 2).join(':')
 
+  // Skipped cycles — compact pill, no expand
+  if (thread.status === 'skipped') {
+    const skipLog = thread.logs[0]
+    const msg = skipLog?.message ?? 'Skipped'
+    return (
+      <div className="flex items-center gap-2 px-3 py-1.5 bg-surface border border-border/50 rounded-md opacity-60 hover:opacity-80 transition-opacity">
+        <span className="text-xs font-bold text-muted font-sans shrink-0">— SKIP</span>
+        <span className="text-xs font-mono text-muted2 shrink-0">{agentLabel}</span>
+        <span className="text-xs text-muted2 truncate flex-1">{msg}</span>
+        <span className="text-xs text-muted2 shrink-0">{rel(thread.startTime)}</span>
+      </div>
+    )
+  }
+
   // Collapsed row
   if (!expanded) {
     return (

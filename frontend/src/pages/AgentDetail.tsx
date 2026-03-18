@@ -165,7 +165,10 @@ export function AgentDetail() {
       </div>
 
       {/* ── Tab content ─────────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-auto px-6 py-5" style={{ minHeight: 0 }}>
+      <div
+        className={`flex-1 px-6 py-5 ${tab === 'logs' ? 'overflow-hidden flex flex-col' : 'overflow-auto'}`}
+        style={{ minHeight: 0 }}
+      >
 
         {/* OVERVIEW TAB */}
         {tab === 'overview' && (
@@ -242,7 +245,7 @@ export function AgentDetail() {
 
         {/* LOGS TAB */}
         {tab === 'logs' && (
-          <div style={{ height: 'calc(100vh - 220px)' }}>
+          <div className="h-full flex flex-col">
             <ThreadedLogsPanel agentKey={agentKey} />
           </div>
         )}

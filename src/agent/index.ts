@@ -175,7 +175,32 @@ REASON: <1-2 sentences of evidence>`
 
 // ── Cycle user message with signal priority ────────────────────────────────────
 
-function buildCycleUserMessage(config: AgentConfig): string {
+function buildCycleUserMessage(config: AgentConfig, cycleType: 'trading' | 'planning' = 'trading'): string {
+  if (cycleType === 'planning') {
+    return `Run a PLANNING CYCLE for ${config.symbol} (${config.market}).
+
+Your ONLY goal is to produce a structured session plan. Do NOT place, cancel, or close any orders.
+
+REQUIRED STEPS — complete all of them in order:
+1. Call get_snapshot to assess current market state (price, indicators, open positions, account balance)
+2. Analyse the multi-timeframe picture from the snapshot data:
+   - Overall trend direction (EMA20 vs EMA50)
+   - Momentum state (RSI overbought/oversold/neutral)
+   - Volatility (ATR, BB width)
+   - Key price levels visible in the data
+3. Identify 2–4 key price levels (support, resistance, or pivots) with clear rationale
+4. Decide your session bias: bullish / bearish / neutral / range — and explain why
+5. Define exactly what setup would trigger a trade entry this session (be specific)
+6. Note any risk filters: news timing, spread conditions, session hours
+7. REQUIRED: Call save_plan with your complete plan. This is mandatory — do not skip it.
+8. Optional: Call save_memory for any observations worth persisting beyond this session (e.g. a level that has held multiple times)
+
+REQUIRED OUTPUT after all tool calls:
+PLAN: <one sentence stating your session bias and primary trade setup>
+
+You MUST call save_plan before finishing. A planning cycle with no plan saved is a failure.`
+  }
+
   return `Run a trading cycle for ${config.symbol} (${config.market}).
 
 SIGNAL PRIORITY (evaluate in order):
@@ -334,7 +359,7 @@ export async function runAgentCycle(config: AgentConfig, cycleType: 'trading' | 
   }
 
   try {
-  logEvent(agentKey, 'info', 'cycle_start', `Starting cycle for ${config.symbol} (${config.market})`)
+  logEvent(agentKey, 'info', 'cycle_start', `Starting ${cycleType === 'planning' ? 'PLANNING' : 'trading'} cycle for ${config.symbol} (${config.market})`)
   log.info({ symbol: config.symbol, market: config.market }, 'agent cycle start')
 
   if (isDailyLimitHitFor(config.market)) {
@@ -344,7 +369,7 @@ export async function runAgentCycle(config: AgentConfig, cycleType: 'trading' | 
   }
 
   const messages: Anthropic.MessageParam[] = [
-    { role: 'user', content: buildCycleUserMessage(config) },
+    { role: 'user', content: buildCycleUserMessage(config, cycleType) },
   ]
 
   const systemPrompt = buildSystemPrompt(config, agentKey)

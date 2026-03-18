@@ -13,6 +13,7 @@ import {
   dbLogEvent,
   dbGetLogs,
   dbGetMaxLogId,
+  makeAgentKey,
 } from '../db/index.js'
 
 // ── Cycle in-flight lock — prevents concurrent runs for the same agent ────────
@@ -76,7 +77,7 @@ export function getAgent(key: string): AgentState | undefined {
 }
 
 export function upsertAgent(agent: AgentState): void {
-  const key = `${agent.config.market}:${agent.config.symbol}`
+  const key = makeAgentKey(agent.config.market, agent.config.symbol, agent.config.mt5AccountId)
   state.agents[key] = agent
   dbUpsertAgent(agent)
 }

@@ -38,31 +38,35 @@ export function startAgentSchedule(config: AgentConfig): void {
     tasks.delete(key)
   }
 
-  // In manual mode just mark running — user triggers cycles via button
+  // In manual mode mark running and fire one immediate tick, then wait for Trigger presses
   if (config.fetchMode === 'manual') {
     setAgentStatus(key, 'running')
-    log.info({ key }, 'agent registered in manual mode')
+    log.info({ key }, 'agent registered in manual mode — firing initial tick')
+    runAgentTick(config).catch(err => log.error({ key, err }, 'manual mode initial tick error'))
     return
   }
 
   const intervalMs = resolveIntervalMs(config)
 
-  const handle = setInterval(async () => {
+  const runTick = async () => {
     // Autonomous mode: skip if MT5 market is closed
     if (config.fetchMode === 'autonomous' && config.market === 'mt5' && !isForexSessionOpen()) {
       log.debug({ key }, 'autonomous — market closed, skipping')
       return
     }
-
     try {
       await runAgentTick(config)
     } catch (err) {
       log.error({ key, err }, 'agent cycle error')
     }
-  }, intervalMs)
+  }
 
-  tasks.set(key, handle)
+  // Run first tick immediately (no session gate — let the agent assess conditions itself)
   setAgentStatus(key, 'running')
+  runAgentTick(config).catch(err => log.error({ key, err }, 'agent start tick error'))
+
+  const handle = setInterval(runTick, intervalMs)
+  tasks.set(key, handle)
   log.info({ key, intervalMs, mode: config.fetchMode }, 'agent schedule started')
 }
 

@@ -364,11 +364,21 @@ export class MT5Adapter implements IMarketAdapter {
   }
 
   async getOpenOrders(symbol?: string): Promise<Order[]> {
-    const path = symbol ? `/positions?symbol=${toMt5Symbol(symbol)}` : '/positions'
-    const positions = await mt5Get<BridgePosition[]>(this.buildUrl(path))
-    return positions.map(p => ({
+    const sym = symbol ? toMt5Symbol(symbol) : undefined
+    const posPath = sym ? `/positions?symbol=${sym}` : '/positions'
+    const ordPath = sym
+      ? `/orders?symbol=${sym}&accountId=${this.accountId ?? ''}`
+      : `/orders?accountId=${this.accountId ?? ''}`
+
+    // Fetch both open positions AND pending limit/stop orders in parallel
+    const [positions, pendingOrders] = await Promise.all([
+      mt5Get<BridgePosition[]>(this.buildUrl(posPath)),
+      mt5Get<BridgePendingOrder[]>(this.buildUrl(ordPath)).catch(() => [] as BridgePendingOrder[]),
+    ])
+
+    const openPositions: Order[] = positions.map(p => ({
       orderId: p.ticket,
-      clientOrderId: `mt5-${p.ticket}`,
+      clientOrderId: `mt5-pos-${p.ticket}`,
       symbol: p.symbol,
       side: p.side,
       type: 'MARKET',
@@ -380,6 +390,23 @@ export class MT5Adapter implements IMarketAdapter {
       time: new Date(p.time).getTime(),
       updateTime: Date.now(),
     }))
+
+    const pending: Order[] = pendingOrders.map(o => ({
+      orderId: o.ticket,
+      clientOrderId: `mt5-pending-${o.ticket}`,
+      symbol: o.symbol,
+      side: o.type.startsWith('BUY') ? 'BUY' : 'SELL',
+      type: o.type,        // BUY_LIMIT | SELL_LIMIT | BUY_STOP | SELL_STOP
+      price: o.price_open,
+      origQty: o.volume_initial,
+      executedQty: 0,
+      status: 'NEW',       // pending, not yet filled
+      timeInForce: 'GTC',
+      time: new Date(o.time).getTime(),
+      updateTime: Date.now(),
+    }))
+
+    return [...openPositions, ...pending]
   }
 
   async getTradeHistory(symbol: string, limit = 50): Promise<Fill[]> {

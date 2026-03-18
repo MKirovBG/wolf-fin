@@ -235,6 +235,16 @@ function summariseToolResult(name: string, result: unknown): string {
       if (o.blocked) return `BLOCKED — ${o.reason}`
       return `status=${o.status} orderId=${o.orderId}`
     }
+    if (name === 'get_open_orders') {
+      const orders = result as Array<{ orderId?: number; side?: string; type?: string; status?: string; price?: number; origQty?: number }>
+      if (!Array.isArray(orders) || orders.length === 0) return '[] (no open positions or pending orders)'
+      const open = orders.filter(o => o.status === 'OPEN')
+      const pending = orders.filter(o => o.status === 'NEW')
+      const parts: string[] = []
+      if (open.length > 0) parts.push(`${open.length} open: ${open.map(o => `#${o.orderId} ${o.side} ${o.origQty}@${o.price}`).join(', ')}`)
+      if (pending.length > 0) parts.push(`${pending.length} pending: ${pending.map(o => `#${o.orderId} ${o.type} ${o.origQty}@${o.price}`).join(', ')}`)
+      return parts.join(' | ')
+    }
     if (name === 'cancel_order') return 'cancelled'
     if (name === 'close_position') {
       const o = result as { closed?: boolean; ticket?: number }

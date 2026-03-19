@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { Badge, decisionVariant } from './Badge.tsx'
 import { AgentStatusBadge } from './AgentStatusBadge.tsx'
-import { updateAgentConfig, deleteAgent, getOpenRouterModels } from '../api/client.ts'
-import type { AgentState, AgentConfig, OpenRouterModel } from '../types/index.ts'
+import { updateAgentConfig, deleteAgent, getOpenRouterModels, getOllamaModels } from '../api/client.ts'
+import type { AgentState, AgentConfig, OpenRouterModel, OllamaModel } from '../types/index.ts'
 import { useToast } from './Toast.tsx'
 
 interface Props {
@@ -55,8 +55,11 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
   const [orLoading, setOrLoading] = useState(false)
   const [orError, setOrError] = useState<string | null>(null)
   const [showFreeOnly, setShowFreeOnly] = useState(
-    () => (agent.config.openRouterModel ?? '').endsWith(':free')
+    () => (agent.config.llmModel ?? '').endsWith(':free')
   )
+  const [olModels, setOlModels] = useState<OllamaModel[]>([])
+  const [olLoading, setOlLoading] = useState(false)
+  const [olError, setOlError] = useState<string | null>(null)
 
   useEffect(() => {
     if (llmProvider === 'openrouter') {
@@ -66,6 +69,14 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
         .then(setOrModels)
         .catch(() => setOrError('Could not load models — check your OpenRouter API key'))
         .finally(() => setOrLoading(false))
+    }
+    if (llmProvider === 'ollama') {
+      setOlError(null)
+      setOlLoading(true)
+      getOllamaModels()
+        .then(setOlModels)
+        .catch(() => setOlError('Could not reach Ollama — is it running?'))
+        .finally(() => setOlLoading(false))
     }
   }, [llmProvider])
 
@@ -209,6 +220,7 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
           <select {...register('llmProvider')}>
             <option value="anthropic">Anthropic (Claude)</option>
             <option value="openrouter">OpenRouter</option>
+            <option value="ollama">Ollama (Local)</option>
           </select>
         </div>
 
@@ -260,6 +272,34 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
                     ? `${orModels.filter(m => parseFloat(m.promptCost ?? '1') === 0).length} free models`
                     : `${orModels.filter(m => parseFloat(m.promptCost ?? '1') > 0).length} paid models`
                   } · cost shown as input/output per 1M tokens
+                </p>
+              </>
+            )}
+            {agent.config.llmModel && (
+              <p className="text-xs text-muted mt-1.5">Current: <span className="font-mono text-text">{agent.config.llmModel}</span></p>
+            )}
+          </div>
+        )}
+
+        {llmProvider === 'ollama' && (
+          <div>
+            <label className="text-xs font-medium text-muted uppercase tracking-wider">Local Model</label>
+            {olLoading ? (
+              <p className="text-sm text-muted py-2">Loading models…</p>
+            ) : olError ? (
+              <p className="text-sm text-red py-2">{olError}</p>
+            ) : (
+              <>
+                <select {...register('llmModel')} className="mt-2">
+                  <option value="">— Select model —</option>
+                  {olModels.map(m => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}{m.size ? ` · ${m.size}` : ''}{m.family ? ` · ${m.family}` : ''}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-amber-400 mt-1">
+                  Not all local models support tool calling. Models without tool support will fail during agent cycles.
                 </p>
               </>
             )}

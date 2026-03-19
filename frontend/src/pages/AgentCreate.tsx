@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { addAgent, getMt5Accounts, getOpenRouterModels, searchSymbols } from '../api/client.ts'
-import type { AgentConfig, GuardrailsConfig, Mt5AccountInfo, OpenRouterModel } from '../types/index.ts'
+import { addAgent, getMt5Accounts, getOpenRouterModels, getOllamaModels, searchSymbols } from '../api/client.ts'
+import type { AgentConfig, GuardrailsConfig, Mt5AccountInfo, OpenRouterModel, OllamaModel } from '../types/index.ts'
 import { useToast } from '../components/Toast.tsx'
 import { PromptEditor } from '../components/PromptEditor.tsx'
 import { GuardrailsEditor } from '../components/GuardrailsEditor.tsx'
@@ -143,7 +143,7 @@ export function AgentCreate() {
   const [dailyTargetUsd, setDailyTargetUsd] = useState<number | ''>(500)
   const [maxRiskPercent, setMaxRiskPercent] = useState<number | ''>(10)
   const [maxDailyLossUsd, setMaxDailyLossUsd] = useState<number | ''>('')
-  const [llmProvider, setLlmProvider] = useState<'anthropic' | 'openrouter'>('anthropic')
+  const [llmProvider, setLlmProvider] = useState<'anthropic' | 'openrouter' | 'ollama'>('anthropic')
   const [llmModel, setLlmModel] = useState('')
 
   // Prompt
@@ -160,6 +160,9 @@ export function AgentCreate() {
   const [orLoading, setOrLoading] = useState(false)
   const [orError, setOrError] = useState<string | null>(null)
   const [showFreeOnly, setShowFreeOnly] = useState(false)
+  const [olModels, setOlModels] = useState<OllamaModel[]>([])
+  const [olLoading, setOlLoading] = useState(false)
+  const [olError, setOlError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -176,6 +179,13 @@ export function AgentCreate() {
         .then(setOrModels)
         .catch(() => setOrError('Could not load models — check your OpenRouter API key'))
         .finally(() => setOrLoading(false))
+    }
+    if (llmProvider === 'ollama') {
+      setOlError(null); setOlLoading(true)
+      getOllamaModels()
+        .then(setOlModels)
+        .catch(() => setOlError('Could not reach Ollama — is it running?'))
+        .finally(() => setOlLoading(false))
     }
   }, [llmProvider])
 
@@ -348,6 +358,7 @@ export function AgentCreate() {
                 <select value={llmProvider} onChange={e => setLlmProvider(e.target.value as typeof llmProvider)} className="w-full">
                   <option value="anthropic">Anthropic (Claude)</option>
                   <option value="openrouter">OpenRouter</option>
+                  <option value="ollama">Ollama (Local)</option>
                 </select>
               </Field>
 
@@ -446,6 +457,31 @@ export function AgentCreate() {
                         ? `${orModels.filter(m => parseFloat(m.promptCost ?? '1') === 0).length} free models`
                         : `${orModels.filter(m => parseFloat(m.promptCost ?? '1') > 0).length} paid models`
                       } · cost shown as input/output per 1M tokens
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
+
+            {llmProvider === 'ollama' && (
+              <div>
+                <label className="text-xs font-medium text-muted uppercase tracking-wider">Local Model</label>
+                {olLoading ? (
+                  <p className="text-sm text-muted py-2">Loading models…</p>
+                ) : olError ? (
+                  <p className="text-sm text-red py-2">{olError}</p>
+                ) : (
+                  <>
+                    <select value={llmModel} onChange={e => setLlmModel(e.target.value)} className="w-full mt-2">
+                      <option value="">— Select model —</option>
+                      {olModels.map(m => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}{m.size ? ` · ${m.size}` : ''}{m.family ? ` · ${m.family}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] text-amber-400 mt-1">
+                      Not all local models support tool calling. Models without tool support will fail during agent cycles.
                     </p>
                   </>
                 )}

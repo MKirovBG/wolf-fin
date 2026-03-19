@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, type ReactNode } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import { getAgents, startAgent, pauseAgent, stopAgent, triggerAgent, resetAgentData, getAgentCycles, getAgentStats } from '../api/client.ts'
+import { getAgents, startAgent, pauseAgent, stopAgent, triggerAgent, resetAgentData, getAgentCycles, getAgentStats, updateAgentConfig } from '../api/client.ts'
 import type { CycleResult, AgentStats, LogEntry } from '../types/index.ts'
 import type { AgentState } from '../types/index.ts'
 import { Badge, decisionVariant } from '../components/Badge.tsx'

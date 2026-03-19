@@ -1,4 +1,4 @@
-import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, CycleDetail, LogEntry, PositionEntry, FillEntry, AccountEntry, Mt5AccountInfo, OpenRouterModel, StrategyDoc, AgentMemory, AgentPlan, AgentStats } from '../types/index.ts'
+import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, CycleDetail, LogEntry, PositionEntry, FillEntry, AccountEntry, Mt5AccountInfo, OpenRouterModel, OllamaModel, StrategyDoc, AgentMemory, AgentPlan, AgentStats } from '../types/index.ts'
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, options)
@@ -86,6 +86,7 @@ export const getAgentCycles = (key: string, limit = 100) =>
 export const getAccounts = () => api<AccountEntry[]>('/api/accounts')
 export const getMt5Accounts = () => api<Mt5AccountInfo[]>('/api/mt5-accounts')
 export const getOpenRouterModels = () => api<OpenRouterModel[]>('/api/openrouter/models')
+export const getOllamaModels = () => api<OllamaModel[]>('/api/ollama/models')
 export const searchSymbols = (market: string, search: string, accountId?: number) => {
   const p = new URLSearchParams({ market, search })
   if (accountId) p.set('accountId', String(accountId))

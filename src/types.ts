@@ -19,8 +19,8 @@ export interface AgentConfig {
   promptTemplate?: string        // full system prompt with {{pill}} tokens; if empty uses default
   guardrails?: Partial<GuardrailsConfig>  // defaults: all true
   mt5AccountId?: number          // Which MT5 account this agent trades with
-  llmProvider?: 'anthropic' | 'openrouter'  // defaults to 'anthropic'
-  llmModel?: string              // OpenRouter model ID e.g. "openai/gpt-4o" or "anthropic/claude-opus-4-5"
+  llmProvider?: 'anthropic' | 'openrouter' | 'ollama'  // defaults to 'anthropic'
+  llmModel?: string              // Model ID e.g. "openai/gpt-4o", "anthropic/claude-opus-4-5", "llama3.1:latest"
   dailyTargetUsd?: number        // Daily profit target in USD — used for position sizing (default 500)
   maxRiskPercent?: number        // Max % of equity at risk per trade (default 10)
   maxDailyLossUsd?: number       // Auto-pause agent when today's realized P&L drops below -maxDailyLossUsd

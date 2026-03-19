@@ -16,6 +16,7 @@ const SERVICES: ServiceRow[] = [
   { label: 'Anthropic', envKey: 'ANTHROPIC_API_KEY', service: 'anthropic', description: 'Claude AI — required when using Anthropic as LLM provider', required: false, placeholder: 'sk-ant-api03-...' },
   { label: 'Claude Model', envKey: 'CLAUDE_MODEL', service: '', description: 'Leave blank to use default (claude-opus-4-5-20251101)', required: false, placeholder: 'claude-haiku-4-5-20251001' },
   { label: 'OpenRouter', envKey: 'OPENROUTER_API_KEY', service: 'openrouter', description: 'OpenRouter — access 100+ models (GPT-4o, Gemini, Llama, etc.) as LLM provider', required: false, placeholder: 'sk-or-v1-...' },
+  { label: 'Ollama URL', envKey: 'OLLAMA_URL', service: 'ollama', description: 'Local LLM server — default http://localhost:11434', required: false, placeholder: 'http://localhost:11434' },
   { label: 'Binance API Key', envKey: 'BINANCE_API_KEY', service: 'binance', description: 'Crypto exchange — required for crypto trading', required: true, placeholder: 'Your Binance key' },
   { label: 'Binance Secret', envKey: 'BINANCE_API_SECRET', service: '', description: 'Shown only once at creation', required: true, placeholder: 'Your Binance secret' },
   { label: 'Finnhub', envKey: 'FINNHUB_KEY', service: 'finnhub', description: 'Economic calendar — optional enrichment', required: false, placeholder: 'Your Finnhub key' },

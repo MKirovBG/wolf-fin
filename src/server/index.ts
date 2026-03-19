@@ -27,6 +27,7 @@ const ENV_KEYS = [
   'OPENROUTER_API_KEY',
   'BINANCE_API_KEY', 'BINANCE_API_SECRET',
   'FINNHUB_KEY', 'TWELVE_DATA_KEY', 'COINGECKO_KEY',
+  'OLLAMA_URL',
 ] as const
 
 function envPresent(key: string): boolean {
@@ -89,6 +90,13 @@ async function testConnection(service: string): Promise<{ ok: boolean; message: 
         const base = 'https://api.binance.com'
         const r = await fetch(`${base}/api/v3/ping`)
         return r.ok ? { ok: true, message: 'Ping OK (no keys set — auth not verified)' } : { ok: false, message: `HTTP ${r.status}` }
+      }
+      case 'ollama': {
+        const baseUrl = process.env.OLLAMA_URL || 'http://localhost:11434'
+        const r = await fetch(`${baseUrl}/api/tags`)
+        if (!r.ok) return { ok: false, message: `HTTP ${r.status}` }
+        const data = await r.json() as { models: unknown[] }
+        return { ok: true, message: `Connected — ${data.models.length} local model${data.models.length !== 1 ? 's' : ''}` }
       }
       case 'finnhub': {
         const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=AAPL&token=${process.env.FINNHUB_KEY ?? ''}`)
@@ -549,6 +557,26 @@ export async function startServer(): Promise<void> {
       }))
       .sort((a, b) => a.name.localeCompare(b.name))
     return reply.send(models)
+  })
+
+  app.get('/api/ollama/models', async (_req, reply) => {
+    const baseUrl = process.env.OLLAMA_URL || 'http://localhost:11434'
+    try {
+      const res = await fetch(`${baseUrl}/api/tags`)
+      if (!res.ok) return reply.status(502).send({ error: `Ollama HTTP ${res.status}` })
+      const data = await res.json() as {
+        models: Array<{ name: string; model: string; size: number; details?: { parameter_size?: string; family?: string } }>
+      }
+      const models = data.models.map(m => ({
+        id: m.name,
+        name: m.name,
+        size: m.details?.parameter_size ?? '',
+        family: m.details?.family ?? '',
+      }))
+      return reply.send(models)
+    } catch {
+      return reply.status(502).send({ error: `Ollama is not reachable at ${baseUrl}` })
+    }
   })
 
   app.get('/api/mt5-accounts', async (_req, reply) => {

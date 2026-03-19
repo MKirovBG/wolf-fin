@@ -17,7 +17,7 @@ export interface AgentConfig {
   promptTemplate?: string
   guardrails?: Partial<GuardrailsConfig>
   mt5AccountId?: number
-  llmProvider?: 'anthropic' | 'openrouter'
+  llmProvider?: 'anthropic' | 'openrouter' | 'ollama'
   llmModel?: string
   dailyTargetUsd?: number
   maxRiskPercent?: number
@@ -47,6 +47,13 @@ export interface OpenRouterModel {
   contextLength: number
   promptCost?: string
   completionCost?: string
+}
+
+export interface OllamaModel {
+  id: string
+  name: string
+  size: string
+  family: string
 }
 
 export interface AgentState {

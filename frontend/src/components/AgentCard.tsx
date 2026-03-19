@@ -137,6 +137,26 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
           <input type="number" min="1" max="3000" placeholder="e.g. 100" {...register('leverage', { setValueAs: v => v === '' || v == null ? undefined : Number(v) })} />
         </div>
 
+        {/* Daily Target */}
+        <div>
+          <label className="text-xs font-medium text-muted uppercase tracking-wider block mb-2">Daily Target (USD)</label>
+          <input
+            type="number" min="1" step="1"
+            placeholder="e.g. 500 — position sized to hit this at TP"
+            {...register('dailyTargetUsd', { setValueAs: v => v === '' || v == null ? undefined : Number(v) })}
+          />
+        </div>
+
+        {/* Max Risk % */}
+        <div>
+          <label className="text-xs font-medium text-muted uppercase tracking-wider block mb-2">Max Risk per Trade (%)</label>
+          <input
+            type="number" min="0.5" max="50" step="0.5"
+            placeholder="e.g. 10 — max % of equity at risk per trade"
+            {...register('maxRiskPercent', { setValueAs: v => v === '' || v == null ? undefined : Number(v) })}
+          />
+        </div>
+
         {/* Max daily loss */}
         <div>
           <label className="text-xs font-medium text-muted uppercase tracking-wider block mb-2">Max Daily Loss (USD)</label>

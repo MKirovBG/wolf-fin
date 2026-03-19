@@ -140,6 +140,8 @@ export function AgentCreate() {
 
   // LLM
   const [leverage, setLeverage] = useState<number | ''>('')
+  const [dailyTargetUsd, setDailyTargetUsd] = useState<number | ''>(500)
+  const [maxRiskPercent, setMaxRiskPercent] = useState<number | ''>(10)
   const [maxDailyLossUsd, setMaxDailyLossUsd] = useState<number | ''>('')
   const [llmProvider, setLlmProvider] = useState<'anthropic' | 'openrouter'>('anthropic')
   const [llmModel, setLlmModel] = useState('')
@@ -195,6 +197,8 @@ export function AgentCreate() {
         fetchMode,
         scheduleIntervalSeconds: intervalSec,
         leverage: leverage !== '' ? Number(leverage) : undefined,
+        dailyTargetUsd: dailyTargetUsd !== '' ? Number(dailyTargetUsd) : undefined,
+        maxRiskPercent: maxRiskPercent !== '' ? Number(maxRiskPercent) : undefined,
         maxDailyLossUsd: maxDailyLossUsd !== '' ? Number(maxDailyLossUsd) : undefined,
         customPrompt: customPrompt || undefined,
         promptTemplate: promptTemplate || undefined,
@@ -355,6 +359,29 @@ export function AgentCreate() {
                   placeholder="e.g. 100"
                   value={leverage}
                   onChange={e => setLeverage(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full"
+                />
+              </Field>
+              <Field label="Daily Target (USD)" hint="Position sized to hit this amount at TP. Default: $500.">
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="e.g. 500"
+                  value={dailyTargetUsd}
+                  onChange={e => setDailyTargetUsd(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full"
+                />
+              </Field>
+              <Field label="Max Risk per Trade (%)" hint="Max % of equity at risk per trade. Default: 10%.">
+                <input
+                  type="number"
+                  min="0.5"
+                  max="50"
+                  step="0.5"
+                  placeholder="e.g. 10"
+                  value={maxRiskPercent}
+                  onChange={e => setMaxRiskPercent(e.target.value === '' ? '' : Number(e.target.value))}
                   className="w-full"
                 />
               </Field>

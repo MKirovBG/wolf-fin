@@ -21,6 +21,8 @@ export interface AgentConfig {
   mt5AccountId?: number          // Which MT5 account this agent trades with
   llmProvider?: 'anthropic' | 'openrouter'  // defaults to 'anthropic'
   llmModel?: string              // OpenRouter model ID e.g. "openai/gpt-4o" or "anthropic/claude-opus-4-5"
+  dailyTargetUsd?: number        // Daily profit target in USD — used for position sizing (default 500)
+  maxRiskPercent?: number        // Max % of equity at risk per trade (default 10)
   maxDailyLossUsd?: number       // Auto-pause agent when today's realized P&L drops below -maxDailyLossUsd
   maxDrawdownPercent?: number    // Auto-pause agent when equity drops X% below session peak (e.g. 5 = 5%)
   scheduledStartUtc?: string     // HH:MM UTC — loop only runs inside this window

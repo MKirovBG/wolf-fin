@@ -199,7 +199,7 @@ function candleTrendLine(candles: Candle[], count: number, dp: number): string {
   return bars.map(c => `${c.close.toFixed(dp)}${c.close >= c.open ? '▲' : '▼'}`).join(' ')
 }
 
-function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string): string {
+function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string, config?: AgentConfig): string {
   const price = snap.price as { bid?: number; ask?: number; last?: number } | undefined
   const indicators = snap.indicators as { rsi14?: number; ema20?: number; ema50?: number; atr14?: number } | undefined
   const forex = snap.forex as { spread?: number; sessionOpen?: boolean; pipValue?: number; point?: number } | undefined
@@ -255,19 +255,54 @@ function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string)
     lines.push(`H1 (last 5 bars): ${candleTrendLine(candles.h1, 5, dp)}`)
   }
 
-  // Dynamic position sizing hint — 1% risk rule with ATR-based stop
+  // ── Dynamic position sizing ────────────────────────────────────────────────
+  // Computes lots from: daily target, R:R, ATR-based stop, leverage, margin
   if (forex?.pipValue != null && forex?.point != null && forex.point > 0
       && accountInfo?.equity != null && indicators?.atr14 != null) {
-    const contractSize = forex.pipValue / forex.point
-    const riskUsd = accountInfo.equity * 0.01
-    const stopCostPerLot = indicators.atr14 * 1.5 * contractSize
-    const suggestedLots = stopCostPerLot > 0
-      ? Math.max(0.01, Math.floor((riskUsd / stopCostPerLot) * 100) / 100)
-      : 0.01
-    // Store for guardrail clamp (allow up to 2× suggested for agent flexibility)
+    const pipVal         = forex.pipValue                     // $ value of 1 pip per 1 lot
+    const atrPips        = indicators.atr14 / (forex.point * (dp >= 4 ? 10 : 1))   // ATR in pips
+    const slPips         = Math.round(atrPips * 1.0 * 10) / 10 // SL = 1× ATR (structural)
+    const equity         = accountInfo.equity
+    const freeMargin     = accountInfo.freeMargin ?? equity
+    const leverage       = config?.leverage ?? accountInfo.leverage ?? 100
+    const dailyTarget    = config?.dailyTargetUsd ?? 500      // daily $ target
+    const maxRiskPct     = config?.maxRiskPercent ?? 10        // max % of equity at risk per trade
+    const rrRatio        = 1.5                                // minimum R:R
+
+    // TP reward per lot = slPips × R:R × pipValue
+    const rewardPerLot   = slPips * rrRatio * pipVal
+    // Risk per lot      = slPips × pipValue
+    const riskPerLot     = slPips * pipVal
+
+    // 1) Target-based sizing: how many lots to hit daily target at TP
+    const lotsByTarget   = rewardPerLot > 0 ? dailyTarget / rewardPerLot : 0.01
+
+    // 2) Risk cap: max lots where loss at SL ≤ maxRiskPct% of equity
+    const maxRiskUsd     = equity * (maxRiskPct / 100)
+    const lotsByRisk     = riskPerLot > 0 ? maxRiskUsd / riskPerLot : 0.01
+
+    // 3) Margin cap: lots that use ≤ 50% of free margin
+    const currentPrice   = price?.last ?? 0
+    const contractSize   = pipVal / (forex.point * (dp >= 4 ? 10 : 1))  // ~100000 for forex, ~100 for gold
+    const marginPerLot   = currentPrice > 0 ? (contractSize * currentPrice) / leverage : 0
+    const lotsByMargin   = marginPerLot > 0 ? (freeMargin * 0.5) / marginPerLot : 0.01
+
+    // Final: minimum of all three, floored at 0.01
+    const suggestedLots  = Math.max(0.01, Math.floor(Math.min(lotsByTarget, lotsByRisk, lotsByMargin) * 100) / 100)
+
+    // Store for guardrail clamp
     if (agentKey) suggestedLotsByAgent.set(agentKey, suggestedLots)
+
+    const riskUsd        = suggestedLots * riskPerLot
+    const rewardUsd      = suggestedLots * rewardPerLot
+    const marginNeeded   = suggestedLots * marginPerLot
+
     lines.push(
-      `Sizing (1% risk $${riskUsd.toFixed(0)}, ATR×1.5 stop ~$${stopCostPerLot.toFixed(0)}/lot): suggested ${suggestedLots.toFixed(2)} lots — USE THIS SIZE. The system will reject orders above 2× this amount.`
+      `POSITION SIZING (use this):`,
+      `  Daily target: $${dailyTarget} | Max risk: ${maxRiskPct}% ($${maxRiskUsd.toFixed(0)}) | Leverage: 1:${leverage}`,
+      `  ATR-based SL: ~${slPips.toFixed(1)} pips ($${riskPerLot.toFixed(0)}/lot) | TP at R:R ${rrRatio}: ~${(slPips * rrRatio).toFixed(1)} pips ($${rewardPerLot.toFixed(0)}/lot)`,
+      `  ► SUGGESTED SIZE: ${suggestedLots.toFixed(2)} lots — risk $${riskUsd.toFixed(0)}, reward $${rewardUsd.toFixed(0)}, margin $${marginNeeded.toFixed(0)}`,
+      `  (System will reject orders above ${Math.max(0.01, Math.round(suggestedLots * 2 * 100) / 100)} lots)`
     )
   }
 
@@ -455,8 +490,12 @@ Rules:
     ? `Account leverage: 1:${config.leverage} — use this to calculate required margin: margin = (volume × contractSize × price) ÷ leverage. For XAUUSD at $4900 with 100oz contract and 1:500 leverage: 0.01 lots = ($4900 × 100 × 0.01) ÷ 500 = $9.80 margin required`
     : ''
 
+  const dailyTarget = config.dailyTargetUsd ?? 500
+  const maxRiskPct  = config.maxRiskPercent ?? 10
+
   const riskRulesContent = `RISK RULES (non-negotiable):
-- Lot size: each tick message shows a "Sizing" line with the 1%-risk suggested lot size. Use it. Default to 0.01 if no sizing line.
+- POSITION SIZING: each tick message contains a "POSITION SIZING" block with a SUGGESTED SIZE computed from your daily target ($${dailyTarget}), account equity, leverage, ATR-based stop distance, and R:R 1.5:1. USE THAT EXACT LOT SIZE. Do not invent your own. The system WILL REJECT orders above 2× the suggested amount.
+- Max risk per trade: ${maxRiskPct}% of equity. The sizing already accounts for this — just use the suggested lots.
 - Stop placement: place SL at a STRUCTURAL level (recent swing high/low, support/resistance, round number) — not an arbitrary pip distance. Then verify the distance is at LEAST ATR14 × 1.0. If no clear structural level exists within reasonable risk, DO NOT enter the trade.
 - Take profit: place TP at the next structural level in your trade direction (resistance for longs, support for shorts). The reward must be at least 1.5× the risk (distance to SL). If R:R < 1.5, skip the trade.
 - Once a position profits by 1× ATR, call modify_position to move SL to breakeven.
@@ -962,7 +1001,7 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
         }
       }
 
-      const summary = formatSnapshotSummary(snap, agentKey)
+      const summary = formatSnapshotSummary(snap, agentKey, config)
 
       // Fetch recent forex news (non-blocking, fails silently)
       let newsItems: ForexNewsItem[] | undefined

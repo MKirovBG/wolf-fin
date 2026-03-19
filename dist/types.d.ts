@@ -17,6 +17,8 @@ export interface AgentConfig {
     mt5AccountId?: number;
     llmProvider?: 'anthropic' | 'openrouter';
     llmModel?: string;
+    dailyTargetUsd?: number;
+    maxRiskPercent?: number;
     maxDailyLossUsd?: number;
     maxDrawdownPercent?: number;
     scheduledStartUtc?: string;

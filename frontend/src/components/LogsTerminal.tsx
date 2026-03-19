@@ -73,7 +73,6 @@ function agentIcon(agentKey: string): string {
   if (s.startsWith('BNB')) return '◈'
   if (s.startsWith('EUR')) return '€'
   if (s.startsWith('GBP')) return '£'
-  if (market === 'forex') return '◈'
   return '◆'
 }
 

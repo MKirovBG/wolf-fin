@@ -1,15 +1,13 @@
-// Wolf-Fin Scheduler — per-agent interval task management
-// Uses setInterval so any granularity is supported (2s → 4h).
-// If a cycle is still running when the next tick fires, the tick is
-// skipped — the cycle-lock in runAgentCycle handles this automatically.
+// Wolf-Fin Scheduler — per-agent continuous loop task management
 //
 // Fetch modes:
-//   manual     — Start marks agent as running; each Trigger fires one tick.
-//   autonomous — Start begins setInterval; ticks fire on cadence continuously.
-//   scheduled  — Start begins setInterval; ticks fire on cadence continuously.
+//   manual     — Start marks agent as running; each Trigger fires one single tick.
+//   autonomous — Start begins a continuous loop: tick → await completion → tick → …
+//   scheduled  — Same as autonomous; scheduled time defines the active window (future).
 //
-// Session awareness is handled by the agent's system prompt, not the scheduler.
-// Trigger always fires one immediate tick regardless of mode.
+// The loop runs tick-to-tick with no fixed interval between ticks.
+// This eliminates overlap, duplicate-trigger skips, and setInterval drift.
+// Trigger always fires one immediate out-of-schedule tick regardless of mode.
 
 import pino from 'pino'
 import { runAgentTick } from '../agent/index.js'
@@ -19,29 +17,22 @@ import type { AgentConfig } from '../types.js'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
 
-// Map of agentKey → active interval handle
-const tasks = new Map<string, ReturnType<typeof setInterval>>()
+interface LoopSignal { cancelled: boolean }
+
+// Map of agentKey → abort signal for the running loop
+const tasks = new Map<string, LoopSignal>()
 
 function agentKey(config: AgentConfig): string {
   return makeAgentKey(config.market, config.symbol, config.mt5AccountId, config.name)
 }
 
-/** Backwards-compat: old DB records stored scheduleIntervalMinutes (number in minutes).
- *  New records store scheduleIntervalSeconds. */
-function resolveIntervalMs(config: AgentConfig): number {
-  const cfg = config as AgentConfig & { scheduleIntervalMinutes?: number }
-  if (cfg.scheduleIntervalSeconds != null) return cfg.scheduleIntervalSeconds * 1000
-  if (cfg.scheduleIntervalMinutes != null) return cfg.scheduleIntervalMinutes * 60 * 1000
-  return 60_000 // fallback: 1 minute
-}
-
 export function startAgentSchedule(config: AgentConfig): void {
   const key = agentKey(config)
 
-  // Stop any existing task first (idempotent)
+  // Cancel any existing loop first (idempotent restart)
   const existing = tasks.get(key)
   if (existing) {
-    clearInterval(existing)
+    existing.cancelled = true
     tasks.delete(key)
   }
 
@@ -53,27 +44,28 @@ export function startAgentSchedule(config: AgentConfig): void {
     return
   }
 
-  const intervalMs = resolveIntervalMs(config)
+  const signal: LoopSignal = { cancelled: false }
+  tasks.set(key, signal)
 
-  const runTick = async () => {
-    try {
-      await runAgentTick(config)
-    } catch (err) {
-      log.error({ key, err }, 'agent cycle error')
+  // Continuous loop: each tick awaits completion before the next begins.
+  // No setInterval — no overlap, no drift, no duplicate-trigger skips.
+  ;(async () => {
+    log.info({ key, mode: config.fetchMode }, 'agent continuous loop started')
+    while (!signal.cancelled) {
+      try {
+        await runAgentTick(config)
+      } catch (err) {
+        log.error({ key, err }, 'agent cycle error')
+      }
     }
-  }
-
-  // Begin interval — first tick fires after the first interval elapses.
-  // Use the Trigger button for an immediate out-of-schedule tick.
-  const handle = setInterval(runTick, intervalMs)
-  tasks.set(key, handle)
-  log.info({ key, intervalMs, mode: config.fetchMode }, 'agent schedule started')
+    log.info({ key }, 'agent loop stopped')
+  })()
 }
 
 export function pauseAgentSchedule(key: string): void {
-  const handle = tasks.get(key)
-  if (handle) {
-    clearInterval(handle)
+  const signal = tasks.get(key)
+  if (signal) {
+    signal.cancelled = true
     tasks.delete(key)
   }
   setAgentStatus(key, 'paused')
@@ -81,9 +73,9 @@ export function pauseAgentSchedule(key: string): void {
 }
 
 export function stopAgentSchedule(key: string): void {
-  const handle = tasks.get(key)
-  if (handle) {
-    clearInterval(handle)
+  const signal = tasks.get(key)
+  if (signal) {
+    signal.cancelled = true
     tasks.delete(key)
   }
   setAgentStatus(key, 'idle')
@@ -95,8 +87,8 @@ export function resumeAgentSchedule(config: AgentConfig): void {
 }
 
 export function stopAllSchedules(): void {
-  for (const [key, handle] of tasks) {
-    clearInterval(handle)
+  for (const [key, signal] of tasks) {
+    signal.cancelled = true
     setAgentStatus(key, 'idle')
   }
   tasks.clear()

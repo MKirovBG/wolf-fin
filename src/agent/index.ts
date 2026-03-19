@@ -551,8 +551,10 @@ End with PLAN: <brief summary of current bias and any changes made>.`}`
     : `Your conversation history above shows what you decided in previous ticks and why.`
 
   const signalPriority = `
-EVALUATION ORDER:
-1. OPEN POSITIONS — if any open: check P&L vs stop; close if sl breached or trade thesis broken;
+EVALUATION ORDER — follow strictly every tick:
+0. VERIFY STATE — call get_open_orders FIRST, every tick, no exceptions.
+   MT5 can fill, reject, or externally close orders between ticks. Never trust memory alone.
+1. OPEN POSITIONS — if any open: check P&L vs stop; close if SL breached or trade thesis broken;
    use modify_position to move SL to breakeven once P&L > ATR14, or to trail stop as price extends
 2. PENDING ORDERS — cancel any limit/stop orders that are no longer valid given current price
 3. TREND — EMA20 vs EMA50 alignment gives directional bias
@@ -912,7 +914,7 @@ export async function runAgentTick(config: AgentConfig, tickType: 'trading' | 'p
           const decMatch    = text.match(/DECISION:\s*(.+)/i)
           const reasonMatch = text.match(/REASON:\s*(.+)/i)
           // Strip markdown bold (**), collapse whitespace, cap at 300 chars so DB field stays clean
-          const cleanField = (s: string) => s.replace(/\*+/g, '').replace(/\s+/g, ' ').trim().slice(0, 300)
+          const cleanField = (s: string) => s.replace(/\*+/g, '').replace(/\s+/g, ' ').trim()
           const decision    = decMatch ? cleanField(decMatch[1]) : 'UNKNOWN'
           const reason      = reasonMatch ? cleanField(reasonMatch[1]) : ''
 
@@ -921,20 +923,28 @@ export async function runAgentTick(config: AgentConfig, tickType: 'trading' | 'p
 
           // Auto-execute safety net
           if (!orderPlacedThisTick) {
-            const buyMatch    = decision.match(/^BUY\s+([\d.]+)\s+@\s+([\d.]+)/i)
-            const sellMatch   = decision.match(/^SELL\s+([\d.]+)\s+@\s+([\d.]+)/i)
+            // Match: BUY [LIMIT|STOP|MARKET]? qty @ price
+            const buyMatch    = decision.match(/^BUY\s+(?:LIMIT\s+|STOP\s+|MARKET\s+)?([\d.]+)\s+@\s+([\d.]+)/i)
+            const sellMatch   = decision.match(/^SELL\s+(?:LIMIT\s+|STOP\s+|MARKET\s+)?([\d.]+)\s+@\s+([\d.]+)/i)
             const cancelMatch = decision.match(/^CANCEL\s+(\d+)/i)
 
             if (buyMatch || sellMatch) {
-              const match = (buyMatch ?? sellMatch)!
-              const side  = buyMatch ? 'BUY' : 'SELL'
-              const qty   = parseFloat(match[1])
-              const price = parseFloat(match[2])
-              logEvent(agentKey, 'warn', 'auto_execute', `Agent stated ${side} without calling place_order — auto-executing`)
+              const match    = (buyMatch ?? sellMatch)!
+              const side     = buyMatch ? 'BUY' : 'SELL'
+              const qty      = parseFloat(match[1])
+              const price    = parseFloat(match[2])
+              const isLimit  = /\b(LIMIT|STOP)\b/i.test(decision)
+              const orderType = /\bSTOP\b/i.test(decision) ? 'STOP' : isLimit ? 'LIMIT' : 'MARKET'
+              // Try to parse explicit SL from decision (e.g. "SL: 159.50") for accurate stopPips
+              const slMatch  = decision.match(/\bSL:\s*([\d.]+)/i)
+              const slPrice  = slMatch ? parseFloat(slMatch[1]) : null
+              const pip      = pipSize(config.symbol, getMt5Context().point)
+              const stopPips = slPrice != null ? Math.round(Math.abs(price - slPrice) / pip) : 20
+              logEvent(agentKey, 'warn', 'auto_execute', `Agent stated ${side} ${orderType} without calling place_order — auto-executing @ ${price} SL ${stopPips}pip`)
               try {
                 const result = await dispatchTool('place_order', {
                   symbol: config.symbol, market: config.market,
-                  side, type: 'LIMIT', quantity: qty, price, stopPips: 20,
+                  side, type: orderType, quantity: qty, price, stopPips,
                 }, config.market, config.mt5AccountId, agentKey)
                 logEvent(agentKey, 'info', 'tool_result', `← auto place_order: ${summariseToolResult('place_order', result)}`)
               } catch (autoErr) {

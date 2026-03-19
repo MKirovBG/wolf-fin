@@ -770,7 +770,7 @@ export async function runAgentTick(config, tickType = 'trading') {
                     const decMatch = text.match(/DECISION:\s*(.+)/i);
                     const reasonMatch = text.match(/REASON:\s*(.+)/i);
                     // Strip markdown bold (**), collapse whitespace, cap at 300 chars so DB field stays clean
-                    const cleanField = (s) => s.replace(/\*+/g, '').replace(/\s+/g, ' ').trim().slice(0, 300);
+                    const cleanField = (s) => s.replace(/\*+/g, '').replace(/\s+/g, ' ').trim();
                     const decision = decMatch ? cleanField(decMatch[1]) : 'UNKNOWN';
                     const reason = reasonMatch ? cleanField(reasonMatch[1]) : '';
                     logEvent(agentKey, 'info', 'decision', `DECISION: ${decision}${reason ? ` — ${reason}` : ''}`);

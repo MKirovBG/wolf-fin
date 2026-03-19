@@ -602,6 +602,12 @@ End with PLAN: <brief summary of current bias and any changes made>.`}`
     : `Your conversation history above shows what you decided in previous ticks and why.`
 
   const signalPriority = `
+OUTPUT RULES — CRITICAL:
+- ALWAYS write your reasoning as text BEFORE calling any tool. Explain what you are checking and why.
+- ALWAYS write your analysis as text AFTER receiving tool results. Explain what you see and what it means.
+- NEVER call a tool without first writing at least one sentence of reasoning.
+- Your text reasoning is logged and reviewed. Silent tool calls with no explanation are unacceptable.
+
 EVALUATION ORDER — follow strictly every tick:
 0. VERIFY STATE — call get_open_orders FIRST, every tick, no exceptions.
    MT5 can fill, reject, or externally close orders between ticks. Never trust memory alone.
@@ -635,9 +641,11 @@ ${historyNote}
 ${signalPriority}
 TASK: Evaluate the market and manage your positions. If you have an open position, your PRIMARY job is managing it well — not looking for the next trade. If flat, only enter when trend + momentum + key level ALL align and R:R ≥ 1.5. Patience is your edge. A missed trade costs nothing; a bad trade costs real money.${config.market !== 'mt5' ? ' Call get_order_book only if sizing a new entry.' : ''}
 
-End with:
-DECISION: [HOLD | BUY <qty> @ <price> | SELL <qty> @ <price> | CLOSE <ticket> | CANCEL <orderId>]
-REASON: <1-2 sentences of evidence>`
+When you are done analysing, write your FULL analysis summary (what you checked, what the data shows, why you are making this decision), then end with EXACTLY these two lines:
+DECISION: [HOLD | BUY <qty> @ <price> SL:<price> TP:<price> | SELL <qty> @ <price> SL:<price> TP:<price> | CLOSE <ticket> | CANCEL <orderId>]
+REASON: <1-2 sentences of evidence>
+
+Your analysis text and reasoning are critical — they are logged and reviewed. Do not skip them.`
 }
 
 // ── Tool result summariser ────────────────────────────────────────────────────

@@ -361,14 +361,18 @@ export function dbGetCycleById(id: number): (CycleResult & { id: number; agentKe
 }
 
 export function dbGetLogsForCycle(agentKey: string, cycleEndTime: string): LogEntry[] {
-  // Return all log entries for this agent in the 15-minute window ending at cycleEndTime + 30s
+  // SQLite datetime() strips milliseconds and returns 'YYYY-MM-DD HH:MM:SS' which breaks
+  // ISO string comparison against 'YYYY-MM-DDTHH:MM:SS.mmmZ'. Compute bounds in JS instead.
+  const endMs = new Date(cycleEndTime).getTime()
+  const startIso = new Date(endMs - 15 * 60 * 1000).toISOString()
+  const endIso   = new Date(endMs + 30 * 1000).toISOString()
   const rows = db.prepare(`
     SELECT * FROM log_entries
     WHERE agent_key = ?
-      AND time >= datetime(?, '-15 minutes')
-      AND time <= datetime(?, '+30 seconds')
+      AND time >= ?
+      AND time <= ?
     ORDER BY id ASC
-  `).all(agentKey, cycleEndTime, cycleEndTime) as Array<{
+  `).all(agentKey, startIso, endIso) as Array<{
     id: number; time: string; agent_key: string; level: string; event: string; message: string; data: string | null
   }>
   return rows.map(r => ({

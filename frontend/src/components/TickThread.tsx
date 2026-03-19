@@ -15,6 +15,31 @@ function rel(iso: string) {
   return `${Math.floor(d / 3600000)}h ago`
 }
 
+// ── Symbol colours — consistent per symbol across the UI ──────────────────────
+
+const SYMBOL_PALETTE = [
+  'text-green',    // #0
+  'text-blue',     // #1
+  'text-yellow',   // #2
+  'text-[#e879f9]', // fuchsia  #3
+  'text-[#38bdf8]', // sky      #4
+  'text-[#fb923c]', // orange   #5
+  'text-[#a78bfa]', // violet   #6
+  'text-[#34d399]', // emerald  #7
+]
+
+const symbolColorCache = new Map<string, string>()
+
+function symbolColor(sym: string): string {
+  if (!symbolColorCache.has(sym)) {
+    // Deterministic hash so same symbol always gets same colour
+    let h = 0
+    for (let i = 0; i < sym.length; i++) h = (h * 31 + sym.charCodeAt(i)) >>> 0
+    symbolColorCache.set(sym, SYMBOL_PALETTE[h % SYMBOL_PALETTE.length]!)
+  }
+  return symbolColorCache.get(sym)!
+}
+
 // ── Decision badge colors ──────────────────────────────────────────────────────
 
 function decisionColor(decision?: string): string {
@@ -237,7 +262,7 @@ export function TickThread({ thread, defaultExpanded = false }: Props) {
       >
         <div className="flex items-center gap-3 px-4 py-2.5">
           {/* Symbol — most important, always visible */}
-          <span className="text-sm font-bold text-green tracking-wide font-mono shrink-0">{symbol}</span>
+          <span className={`text-sm font-bold tracking-wide font-mono shrink-0 ${symbolColor(symbol)}`}>{symbol}</span>
           {agentName && (
             <span className="text-[10px] text-muted2 font-mono shrink-0">({agentName})</span>
           )}
@@ -272,10 +297,10 @@ export function TickThread({ thread, defaultExpanded = false }: Props) {
       >
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className={`text-xs font-bold font-sans ${statusLabelColor(thread.status)}`}>
-              {thread.status === 'running' ? '● LIVE' : '■'} TICK{tickLabel ? ` ${tickLabel}` : ''}
-            </span>
-            <span className="text-xs font-mono text-muted">{thread.agentKey}</span>
+            <span className={`text-sm font-bold tracking-wide font-mono ${symbolColor(symbol)}`}>{symbol}</span>
+            {agentName && <span className="text-[10px] text-muted2 font-mono">({agentName})</span>}
+            <span className="text-[10px] uppercase tracking-wider text-muted2 border border-border/60 rounded px-1 py-0.5">{market}</span>
+            {tickLabel && <span className="text-xs font-mono text-muted2">{tickLabel}</span>}
             <span className="text-xs text-muted2 font-mono">
               {timeStr(thread.startTime)}{thread.endTime ? ` → ${timeStr(thread.endTime)}` : ' → running...'}
             </span>

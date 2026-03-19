@@ -262,7 +262,7 @@ export function Dashboard() {
       )}
 
       {/* Live threaded logs */}
-      <div className="mb-4" style={{ height: 480 }}>
+      <div className="mb-4">
         <ThreadedLogsPanel />
       </div>
 

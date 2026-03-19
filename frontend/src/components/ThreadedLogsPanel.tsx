@@ -69,9 +69,9 @@ export function ThreadedLogsPanel({ agentKey }: Props) {
   const threads = useTickThreads(allLogsRef.current, agentKey)
 
   return (
-    <div className="flex flex-col gap-3 h-full">
+    <div className="flex flex-col gap-3">
       {/* Toolbar */}
-      <div className="flex items-center gap-3 shrink-0">
+      <div className="flex items-center gap-3">
         <span className="text-sm font-semibold text-text">Live Session</span>
         <span className="text-xs text-muted">{threads.length} tick{threads.length !== 1 ? 's' : ''}</span>
         <span className="text-[9px] px-1.5 py-0.5 rounded text-green bg-green-dim">● LIVE</span>
@@ -95,7 +95,7 @@ export function ThreadedLogsPanel({ agentKey }: Props) {
       </div>
 
       {/* Threads list */}
-      <div ref={topRef} className="flex flex-col gap-2 overflow-y-auto flex-1" style={{ minHeight: 0 }}>
+      <div ref={topRef} className="flex flex-col gap-2">
         {threads.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-center">
             <div className="text-4xl mb-4 opacity-30">◎</div>

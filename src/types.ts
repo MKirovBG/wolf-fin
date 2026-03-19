@@ -60,7 +60,7 @@ export type LogEvent =
   | 'guardrail_block' | 'session_skip'
   | 'auto_execute' | 'auto_execute_error'
   | 'memory_write' | 'plan_created'
-  | 'pnl_record'
+  | 'pnl_record' | 'auto_plan'
 
 export interface LogEntry {
   id: number

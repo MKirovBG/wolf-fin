@@ -639,6 +639,12 @@ export async function startServer() {
         dbDeleteMemory(key, category, decodeURIComponent(memKey));
         return reply.send({ ok: true });
     });
+    // ── Agent Performance Stats ───────────────────────────────────────────────────
+    app.get('/api/agents/:key/stats', async (req, reply) => {
+        const { key } = req.params;
+        const { dbGetAgentStats } = await import('../db/index.js');
+        return reply.send(dbGetAgentStats(decodeURIComponent(key)));
+    });
     // ── Agent Plans ───────────────────────────────────────────────────────────────
     app.get('/api/agents/:key/plans', async (req) => {
         const { key } = req.params;
@@ -653,7 +659,13 @@ export async function startServer() {
         const agent = getAgent(key);
         if (!agent)
             return reply.status(404).send({ error: 'Agent not found' });
-        // Run a planning cycle asynchronously
+        if (agent.status === 'running') {
+            // Agent is running — queue the plan request for the next tick
+            const { queuePlanRequest } = await import('./state.js');
+            queuePlanRequest(key);
+            return reply.send({ ok: true, message: 'Planning cycle queued — will run on next tick' });
+        }
+        // Agent is idle — run immediately
         runAgentTick(agent.config, 'planning').catch(err => log.error({ err, key }, 'planning cycle error'));
         return reply.send({ ok: true, message: 'Planning cycle triggered' });
     });

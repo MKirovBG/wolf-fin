@@ -172,6 +172,8 @@ export interface OrderParams {
   timeInForce?: 'GTC' | 'IOC' | 'FOK'
   stopPips?: number        // forex only: stop-loss distance in pips
   stopPrice?: number       // computed absolute stop price (set by agent before calling placeOrder)
+  tpPips?: number          // forex only: take-profit distance in pips
+  tpPrice?: number         // computed absolute take-profit price
 }
 
 export interface OrderResult {

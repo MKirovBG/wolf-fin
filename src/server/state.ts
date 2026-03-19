@@ -30,6 +30,22 @@ export function releaseCycleLock(agentKey: string): void {
   cyclesInFlight.delete(agentKey)
 }
 
+// ── Queued planning requests — allows Plan button to work while agent is running ──
+
+const pendingPlanRequests = new Set<string>()
+
+export function queuePlanRequest(agentKey: string): void {
+  pendingPlanRequests.add(agentKey)
+}
+
+export function consumePlanRequest(agentKey: string): boolean {
+  if (pendingPlanRequests.has(agentKey)) {
+    pendingPlanRequests.delete(agentKey)
+    return true
+  }
+  return false
+}
+
 // ── Log buffer ────────────────────────────────────────────────────────────────
 
 // Initialized lazily on first use so it reads from DB after initDb() has run
@@ -139,9 +155,14 @@ export function setAgentStatus(key: string, status: AgentStatus): void {
 }
 
 export function recordCycle(key: string, result: CycleResult): void {
+  const isExternalClose = result.decision === 'EXTERNAL_CLOSE'
   const agent = state.agents[key]
   if (agent) {
-    agent.lastCycle = result
+    // Don't overwrite lastCycle for EXTERNAL_CLOSE — it's a pre-tick detection event,
+    // not the agent's actual decision. The real decision comes when the tick finishes.
+    if (!isExternalClose) {
+      agent.lastCycle = result
+    }
     agent.cycleCount++
     dbUpsertAgent(agent)
     broadcastAgentUpdate(key)

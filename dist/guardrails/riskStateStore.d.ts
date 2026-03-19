@@ -1,14 +1,7 @@
 import type { RiskState } from '../adapters/types.js';
 declare const MAX_POSITION_USD: number;
 declare const MAX_COMBINED_NOTIONAL_USD: number;
-type Market = 'crypto' | 'forex' | 'mt5';
-export interface ForexContext {
-    spread: number;
-    sessionOpen: boolean;
-    pipValue: number;
-}
-export declare function setForexContext(ctx: ForexContext): void;
-export declare function getForexContext(): ForexContext;
+type Market = 'crypto' | 'mt5';
 export interface Mt5Context {
     spread: number;
     sessionOpen: boolean;

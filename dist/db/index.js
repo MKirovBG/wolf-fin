@@ -212,6 +212,49 @@ export function dbGetAgentPerformance(agentKey, limit = 10) {
         lastDecisions: rows.slice(0, limit).map(r => ({ decision: r.decision, reason: r.reason, time: r.time })),
     };
 }
+export function dbGetAgentStats(agentKey, limit = 1000) {
+    const rows = db.prepare('SELECT time, pnl_usd FROM cycle_results WHERE agent_key = ? AND pnl_usd IS NOT NULL ORDER BY id ASC LIMIT ?').all(agentKey, limit);
+    const totalRows = db.prepare('SELECT COUNT(*) as n FROM cycle_results WHERE agent_key = ?').get(agentKey);
+    const wins = rows.filter(r => r.pnl_usd > 0);
+    const losses = rows.filter(r => r.pnl_usd < 0);
+    const winRate = rows.length > 0 ? wins.length / rows.length : null;
+    const avgWin = wins.length > 0 ? wins.reduce((s, r) => s + r.pnl_usd, 0) / wins.length : null;
+    const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((s, r) => s + r.pnl_usd, 0) / losses.length) : null;
+    const riskReward = avgWin != null && avgLoss != null && avgLoss > 0 ? avgWin / avgLoss : null;
+    // Equity curve — cumulative P&L in chronological order
+    let cumPnl = 0;
+    const equityCurve = rows.map(r => {
+        cumPnl += r.pnl_usd;
+        return { time: r.time, cumPnl: parseFloat(cumPnl.toFixed(2)) };
+    });
+    // Annualised Sharpe on daily P&L buckets
+    const byDay = {};
+    for (const r of rows) {
+        const day = r.time.slice(0, 10);
+        byDay[day] = (byDay[day] ?? 0) + r.pnl_usd;
+    }
+    const dailyReturns = Object.values(byDay);
+    let sharpe = null;
+    if (dailyReturns.length >= 2) {
+        const mean = dailyReturns.reduce((s, v) => s + v, 0) / dailyReturns.length;
+        const variance = dailyReturns.reduce((s, v) => s + (v - mean) ** 2, 0) / (dailyReturns.length - 1);
+        const std = Math.sqrt(variance);
+        sharpe = std > 0 ? parseFloat(((mean / std) * Math.sqrt(252)).toFixed(2)) : null;
+    }
+    return {
+        totalTicks: totalRows.n,
+        totalTrades: rows.length,
+        wins: wins.length,
+        losses: losses.length,
+        winRate,
+        avgWin,
+        avgLoss,
+        riskReward,
+        sharpe,
+        totalPnl: parseFloat(cumPnl.toFixed(2)),
+        equityCurve,
+    };
+}
 function rowToCycle(r) {
     return {
         id: r.id,
@@ -419,5 +462,21 @@ export function dbSaveSession(agentKey, data) {
 }
 export function dbDeleteSession(agentKey, sessionDate) {
     db.prepare('DELETE FROM agent_sessions WHERE agent_key = ? AND session_date = ?').run(agentKey, sessionDate);
+}
+/** Returns the most recent completed session before today — used for cross-session memory. */
+export function dbGetPreviousSession(agentKey) {
+    const today = new Date().toISOString().slice(0, 10);
+    const row = db.prepare('SELECT * FROM agent_sessions WHERE agent_key = ? AND session_date < ? ORDER BY session_date DESC LIMIT 1').get(agentKey, today);
+    if (!row)
+        return null;
+    return {
+        agentKey: row.agent_key,
+        sessionDate: row.session_date,
+        tickCount: row.tick_count,
+        messages: JSON.parse(row.messages),
+        summary: row.summary,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+    };
 }
 //# sourceMappingURL=index.js.map

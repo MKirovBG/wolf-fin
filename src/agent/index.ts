@@ -18,7 +18,7 @@ import { sessionLabel, minutesUntilSessionClose } from '../adapters/session.js'
 import { fetchForexNews } from '../adapters/finnhubNews.js'
 import type { ForexNewsItem } from '../adapters/finnhubNews.js'
 import { getTools } from '../tools/definitions.js'
-import { recordCycle, logEvent, tryAcquireCycleLock, releaseCycleLock, getAgent, setAgentStatus } from '../server/state.js'
+import { recordCycle, logEvent, tryAcquireCycleLock, releaseCycleLock, getAgent, setAgentStatus, consumePlanRequest } from '../server/state.js'
 import {
   dbGetAgentPerformance, makeAgentKey,
   dbSaveMemory, dbGetMemories, dbDeleteMemory,
@@ -386,7 +386,7 @@ export function buildSystemPrompt(config: AgentConfig, agentKey: string, session
   const { symbol } = config
   const perf = dbGetAgentPerformance(agentKey, 10)
   const perfSection = perf.totalCycles > 0
-    ? `\n\nYOUR RECENT PERFORMANCE (last ${perf.totalCycles} ticks on ${symbol}):\n- Decisions: BUY ${perf.buys} | SELL ${perf.sells} | HOLD ${perf.holds}\n- Last decisions: ${perf.lastDecisions.map(d => `[${d.time.slice(11, 16)}] ${d.decision.split(' ')[0]}`).join(' → ')}${perf.holds >= 5 && perf.buys === 0 && perf.sells === 0 ? '\nWARNING: You have held every recent tick. Re-examine if conditions truly warrant inaction or if you are being overly cautious.' : ''}`
+    ? `\n\nYOUR RECENT PERFORMANCE (last ${perf.totalCycles} ticks on ${symbol}):\n- Decisions: BUY ${perf.buys} | SELL ${perf.sells} | HOLD ${perf.holds}\n- Last decisions: ${perf.lastDecisions.map(d => `[${d.time.slice(11, 16)}] ${d.decision.split(' ')[0]}`).join(' → ')}${perf.holds >= 10 && perf.buys === 0 && perf.sells === 0 ? '\nNOTE: You have held for many ticks. This is fine if no high-conviction setup has appeared. Do not force a trade just because you have been waiting — but do check if you are missing a clear signal.' : ''}`
     : ''
 
   const strategy = dbGetStrategy(agentKey)
@@ -428,7 +428,7 @@ ${sessionSummary}
 
   const marketRulesContent = market === 'mt5'
     ? `CURRENT SESSION: ${sessionLabel()}
-MT5 SESSION RULES: Only trade during Tokyo, London, or New York sessions. Reject entries when sessionOpen is false. The live spread is shown in the snapshot summary each tick — weigh it as a cost factor in your entry decision (wider spread = smaller effective profit). Only skip an entry if spread appears clearly abnormal (e.g. 10x typical).
+MT5 SESSION RULES: Only trade during Tokyo, London, or New York sessions. Reject entries when sessionOpen is false. The live spread is shown in the snapshot summary each tick — factor spread into your R:R calculation (it reduces effective profit). Wide spread = worse entry = needs more room to profit. If spread > 20% of your target move, the trade is not worth taking.
 MT5 provides real swap rates in the snapshot — factor overnight costs into hold decisions for multi-day positions.
 
 MT5 POSITION & ORDER MANAGEMENT (critical):
@@ -438,12 +438,12 @@ The snapshot contains TWO important arrays — read both before deciding:
 
 Rules:
 - To CLOSE an open position: call close_position(ticket). NEVER place an opposite-side order — it opens a second position.
-- To TRAIL or adjust SL/TP: call modify_position(ticket, sl, tp). Use this to move SL to breakeven once in profit, or tighten TP as target nears.
+- To TRAIL or adjust SL/TP: call modify_position(ticket, sl, tp). Use this to move SL to breakeven once in profit ≥ 1× ATR, or to trail SL behind structural levels as price extends in your favour.
 - To CANCEL a pending order: call cancel_order(ticket). Do this if the order is no longer valid given current price/indicators.
 - Do not open a new position if one is already open for this symbol (unless pyramiding is justified by strong signal).
 - Do not place a duplicate pending order if one already exists at the same price level.
-- If a position shows negative profit approaching sl: decide whether to close early or hold.
-- If pendingOrders is empty and price is near a key level, consider placing a limit order for better entry.`
+- If a position shows negative profit approaching SL: let the SL do its job UNLESS your original trade thesis is clearly invalidated (e.g. trend reversed on higher TF). Do not close early just because you are losing — that is what the stop is for.
+- If pendingOrders is empty and price is near a key level, consider placing a limit order for better entry rather than chasing with market orders.`
     : ''
 
   const leverageContent = config.leverage
@@ -452,21 +452,24 @@ Rules:
 
   const riskRulesContent = `RISK RULES (non-negotiable):
 - Lot size: each tick message shows a "Sizing" line with the 1%-risk suggested lot size. Use it. Default to 0.01 if no sizing line.
-- Stop distance: ATR14 × 1.5 minimum. Never tighter — broker can stop you out on spread.
+- Stop placement: place SL at a STRUCTURAL level (recent swing high/low, support/resistance, round number) — not an arbitrary pip distance. Then verify the distance is at LEAST ATR14 × 1.0. If no clear structural level exists within reasonable risk, DO NOT enter the trade.
+- Take profit: place TP at the next structural level in your trade direction (resistance for longs, support for shorts). The reward must be at least 1.5× the risk (distance to SL). If R:R < 1.5, skip the trade.
 - Once a position profits by 1× ATR, call modify_position to move SL to breakeven.
+- Trail stop: as price extends in your favour, trail SL behind structural levels. Do NOT trail so tight that normal retracements stop you out.
 - You MAY add to a winning position (same direction) if RSI confirms and total lots stay within 2× the suggested size.
-- Close losers at your stop — do not widen stops to avoid a loss.`
+- Close losers at your stop — do not widen stops to avoid a loss.
+- Do NOT close a winning trade early out of fear. Let your TP or trailing stop do the work.`
 
   const outputFormatContent = `EXECUTION RULES (mandatory — the DECISION line does NOT trigger a trade by itself):
 - If BUY or SELL: call place_order FIRST, then write the DECISION line.
 - If CLOSE: call close_position(ticket) FIRST, then write the DECISION line.
 - If CANCEL: call cancel_order FIRST, then write the DECISION line.
 - If HOLD: do NOT call any order tool. Just write the DECISION line.
-- Always include stopPips on place_order (use ATR14 × 1.5 as minimum distance).
+- Always include stopPips AND tpPips on place_order. SL at structural level (min ATR14 × 1.0). TP at next structural target. Both are mandatory for every new order.
 
 DECISION FORMAT (write AFTER executing the tool call):
-DECISION: [HOLD | BUY <qty> @ <price> | SELL <qty> @ <price> | CLOSE <ticket> | CANCEL <orderId>]
-REASON: <1-2 sentences of evidence>`
+DECISION: [HOLD | BUY <qty> @ <price> SL: <price> TP: <price> | SELL <qty> @ <price> SL: <price> TP: <price> | CLOSE <ticket> | CANCEL <orderId>]
+REASON: <1-2 sentences explaining the structural levels used for entry, SL, and TP>`
 
   // ── Template rendering ────────────────────────────────────────────────────────
 
@@ -497,16 +500,29 @@ REASON: <1-2 sentences of evidence>`
 
   const base = `You are Wolf-Fin, an autonomous trading agent. ${mode}
 
-ROLE: Disciplined, risk-first algorithmic trader. You run as a continuous session — each tick you receive a market update and decide what to do next. You remember your full conversation history from earlier ticks today.
+ROLE: Patient, disciplined, risk-first trader. You run as a continuous session — each tick you receive a market update and decide what to do next. You remember your full conversation history from earlier ticks today.
+
+CORE PHILOSOPHY:
+- The best traders spend 80% of their time WAITING. No position is a valid position.
+- Quality over quantity: one well-reasoned trade is worth more than five impulsive ones.
+- NEVER repeat a failed setup. If you were stopped out at a level, that level is not your edge — move on.
+- Once in a trade, LET IT PLAY OUT. Your SL and TP exist for a reason. Do not micro-manage or panic-close.
+- Every entry must have a clear thesis: what price level are you targeting, where is your stop, and WHY does the market structure support this trade right now.
+
+SELF-IMPROVEMENT:
+- After every closed trade (win or loss), use save_memory to record what worked and what didn't.
+- Before entering a new trade, check read_memories for lessons from recent trades on this symbol.
+- If you have 2+ consecutive losses, STOP and reassess. Write a brief post-mortem using save_memory before considering another entry. Ask yourself: "Am I reading the market correctly, or am I forcing a bias?"
+- Track your session P&L mentally. If down significantly, reduce size or switch to observation mode.
 
 PROCESS:
 1. Review your conversation history — you remember every decision made in this session today.
 2. Each tick message includes an auto-fetched market snapshot (price, indicators, positions). Use it directly.
-3. Call get_snapshot only if you need candle data or more granular detail not in the summary.
-4. Reason through evidence: trend (EMA cross), momentum (RSI), volatility (ATR, BB width), context signals.
+3. Call get_snapshot if you need candle data or more granular detail not in the summary.
+4. Reason through evidence: trend (EMA cross), momentum (RSI), volatility (ATR, BB width), key levels.
 5. Decide: HOLD / BUY qty @ price / SELL qty @ price / CLOSE ticket / CANCEL orderId.
-6. Execute via place_order, close_position, or cancel_order. Always prefer LIMIT orders for entries.
-${market === 'mt5' ? '7. MT5: always include stopPips on every new order (ATR-based distance).\n' : ''}${leverageContent ? `\nACCOUNT CONFIG:\n- ${leverageContent}\n` : ''}
+6. Execute via place_order, close_position, or cancel_order. Prefer LIMIT orders for better entries.
+${market === 'mt5' ? '7. MT5: always include stopPips AND tpPips on every new order. SL at structural level, TP at next structural target.\n' : ''}${leverageContent ? `\nACCOUNT CONFIG:\n- ${leverageContent}\n` : ''}
 ${riskRulesContent}
 ${marketRulesContent ? `\n${marketRulesContent}` : ''}`
 
@@ -541,7 +557,7 @@ function buildTickMessage(
     ? `CURRENT MARKET SNAPSHOT (auto-fetched):\n${snapshotSummary}`
     : `Snapshot unavailable — call get_snapshot to get current market state.`
   const extNote = externalCloseNote
-    ? `\n\n⚠ EXTERNALLY CLOSED POSITIONS (since last tick):\n${externalCloseNote}\nDo NOT attempt to close these tickets — they no longer exist.`
+    ? `\n\n⚠ EXTERNALLY CLOSED POSITIONS (since last tick):\n${externalCloseNote}\nDo NOT attempt to close these tickets — they no longer exist.\nIMPORTANT: Call save_memory to record what happened with this trade — what worked, what failed, and what you would do differently.`
     : ''
   const newsBlock = newsItems && newsItems.length > 0
     ? `\nRECENT NEWS (${newsItems.length} headlines):\n` + newsItems.map(n =>
@@ -589,14 +605,26 @@ End with PLAN: <brief summary of current bias and any changes made>.`}`
 EVALUATION ORDER — follow strictly every tick:
 0. VERIFY STATE — call get_open_orders FIRST, every tick, no exceptions.
    MT5 can fill, reject, or externally close orders between ticks. Never trust memory alone.
-1. OPEN POSITIONS — if any open: check P&L vs stop; close if SL breached or trade thesis broken;
-   use modify_position to move SL to breakeven once P&L > ATR14, or to trail stop as price extends
-2. PENDING ORDERS — cancel any limit/stop orders that are no longer valid given current price
-3. TREND — EMA20 vs EMA50 alignment gives directional bias
-4. MOMENTUM — RSI14: reading below 35 = bullish lean, above 65 = bearish lean
-5. VOLATILITY — ATR14 for stop sizing; spread should be < 20% of ATR before entering
-6. ENTRY DECISION — if trend + momentum agree, ENTER. You do NOT need a saved plan to enter.
-   A plan is a guide, not a gatekeeper. When the signal is clear, act on it.
+1. MANAGE OPEN POSITIONS (if any):
+   a. Check P&L vs your thesis — is the reason you entered still valid?
+   b. If in profit > 1× ATR → move SL to breakeven (modify_position).
+   c. If in profit > 2× ATR → trail SL behind the last structural level.
+   d. ONLY close early if the trade thesis is CLEARLY broken (e.g. trend reversal on higher timeframe, key level lost).
+   e. Do NOT close just because profit is shrinking — let your SL handle that.
+2. MANAGE PENDING ORDERS — cancel limit/stop orders only if the level is no longer relevant.
+3. IF NO POSITION — analyse for a new entry:
+   a. TREND — EMA20 vs EMA50 alignment gives directional bias
+   b. MOMENTUM — RSI14: below 35 = bullish lean, above 65 = bearish lean
+   c. KEY LEVELS — identify nearest support/resistance from candle data. Entry must be near a level.
+   d. VOLATILITY — ATR14 for stop sizing; spread should be < 20% of ATR before entering
+   e. RISK:REWARD — SL at structural level, TP at next structural level. R:R must be ≥ 1.5.
+   f. CONVICTION CHECK — trend + momentum + level must ALL agree. If only 1-2 align, HOLD.
+   g. HISTORY CHECK — have you been stopped out at this same level/setup before today? If yes, DO NOT re-enter the same trade. The market is telling you something — listen.
+4. LIMIT ORDERS — if conditions are close but not quite right, consider a LIMIT order at a better price rather than chasing with a MARKET order.
+5. LEARN — after ANY position closes (SL hit, TP hit, or manual close):
+   a. Call save_memory with category "risk" to record what worked/failed and why.
+   b. Note the price level, setup type, and outcome (e.g. "Short at 4686 support failed 3x — level is a buyer trap").
+   c. This is MANDATORY after every closed trade. Do not skip it.
 `
 
   return `${header}
@@ -605,7 +633,7 @@ ${snapshotBlock}${extNote}${newsBlock}
 
 ${historyNote}
 ${signalPriority}
-TASK: Evaluate and act. If trend and momentum align — place the trade. HOLD only when the signal is genuinely unclear or spread is too wide. Indecision is a mistake; missing a clear setup is worse than a stopped-out loss.${config.market !== 'mt5' ? ' Call get_order_book only if sizing a new entry.' : ''}
+TASK: Evaluate the market and manage your positions. If you have an open position, your PRIMARY job is managing it well — not looking for the next trade. If flat, only enter when trend + momentum + key level ALL align and R:R ≥ 1.5. Patience is your edge. A missed trade costs nothing; a bad trade costs real money.${config.market !== 'mt5' ? ' Call get_order_book only if sizing a new entry.' : ''}
 
 End with:
 DECISION: [HOLD | BUY <qty> @ <price> | SELL <qty> @ <price> | CLOSE <ticket> | CANCEL <orderId>]
@@ -697,6 +725,7 @@ async function dispatchTool(
         price: input.price as number | undefined,
         timeInForce: input.timeInForce as 'GTC' | 'IOC' | 'FOK' | undefined,
         stopPips: input.stopPips as number | undefined,
+        tpPips: input.tpPips as number | undefined,
       }
       const agentGuardrails = getAgent(agentKey)?.config.guardrails
       const validation =
@@ -707,12 +736,19 @@ async function dispatchTool(
         log.warn({ reason: validation.reason }, 'order blocked by guardrails')
         return { blocked: true, reason: validation.reason }
       }
-      if (market === 'mt5' && params.stopPips != null && params.price != null) {
+      if (market === 'mt5' && params.price != null) {
         const ctxPoint = getMt5Context().point
         const pipSz = pipSize(params.symbol, ctxPoint)
-        params.stopPrice = params.side === 'BUY'
-          ? params.price - params.stopPips * pipSz
-          : params.price + params.stopPips * pipSz
+        if (params.stopPips != null) {
+          params.stopPrice = params.side === 'BUY'
+            ? params.price - params.stopPips * pipSz
+            : params.price + params.stopPips * pipSz
+        }
+        if (params.tpPips != null) {
+          params.tpPrice = params.side === 'BUY'
+            ? params.price + params.tpPips * pipSz
+            : params.price - params.tpPips * pipSz
+        }
       }
       return adapter.placeOrder(params)
     }
@@ -789,7 +825,7 @@ async function dispatchTool(
 
 // ── Agent Tick (main entry point) ─────────────────────────────────────────────
 
-export async function runAgentTick(config: AgentConfig, tickType: 'trading' | 'planning' = 'trading'): Promise<void> {
+export async function runAgentTick(config: AgentConfig, requestedTickType: 'trading' | 'planning' = 'trading'): Promise<void> {
   const agentKey = makeAgentKey(config.market, config.symbol, config.mt5AccountId, config.name)
 
   if (!tryAcquireCycleLock(agentKey)) {
@@ -799,7 +835,7 @@ export async function runAgentTick(config: AgentConfig, tickType: 'trading' | 'p
   }
 
   try {
-
+    let tickType = requestedTickType
 
     // Load or create today's session
     const { session, isNew } = loadOrCreateSession(agentKey)
@@ -812,7 +848,22 @@ export async function runAgentTick(config: AgentConfig, tickType: 'trading' | 'p
       // Restored from DB (server restart) but no ticks yet today
     }
 
-    logEvent(agentKey, 'info', 'tick_start', `Tick #${tickNumber} starting for ${config.symbol} (${config.market})`)
+    // Auto-plan: first tick of each session runs as a planning tick if no plan exists
+    if (isFirstTick && tickType === 'trading') {
+      const existingPlan = dbGetActivePlan(agentKey)
+      if (!existingPlan) {
+        logEvent(agentKey, 'info', 'auto_plan', `No plan for today — running planning tick first`)
+        tickType = 'planning'
+      }
+    }
+
+    // Check for queued plan request (from UI Plan button while agent is running)
+    if (tickType === 'trading' && consumePlanRequest(agentKey)) {
+      logEvent(agentKey, 'info', 'auto_plan', `Queued planning request consumed — running planning tick`)
+      tickType = 'planning'
+    }
+
+    logEvent(agentKey, 'info', 'tick_start', `Tick #${tickNumber} starting for ${config.symbol} (${config.market})${tickType === 'planning' ? ' [PLANNING]' : ''}`)
     log.info({ symbol: config.symbol, market: config.market, tickNumber }, 'agent tick start')
 
     // Pre-fetch snapshot on EVERY tick — inject summary so LLM has current data immediately
@@ -988,16 +1039,19 @@ export async function runAgentTick(config: AgentConfig, tickType: 'trading' | 'p
               const price    = parseFloat(match[2])
               const isLimit  = /\b(LIMIT|STOP)\b/i.test(decision)
               const orderType = /\bSTOP\b/i.test(decision) ? 'STOP' : isLimit ? 'LIMIT' : 'MARKET'
-              // Try to parse explicit SL from decision (e.g. "SL: 159.50") for accurate stopPips
+              // Try to parse explicit SL and TP from decision (e.g. "SL: 159.50 TP: 162.00")
               const slMatch  = decision.match(/\bSL:\s*([\d.]+)/i)
+              const tpMatch  = decision.match(/\bTP:\s*([\d.]+)/i)
               const slPrice  = slMatch ? parseFloat(slMatch[1]) : null
+              const tpPrice  = tpMatch ? parseFloat(tpMatch[1]) : null
               const pip      = pipSize(config.symbol, getMt5Context().point)
               const stopPips = slPrice != null ? Math.round(Math.abs(price - slPrice) / pip) : 20
-              logEvent(agentKey, 'warn', 'auto_execute', `Agent stated ${side} ${orderType} without calling place_order — auto-executing @ ${price} SL ${stopPips}pip`)
+              const tpPips   = tpPrice != null ? Math.round(Math.abs(tpPrice - price) / pip) : undefined
+              logEvent(agentKey, 'warn', 'auto_execute', `Agent stated ${side} ${orderType} without calling place_order — auto-executing @ ${price} SL ${stopPips}pip${tpPips ? ` TP ${tpPips}pip` : ''}`)
               try {
                 const result = await dispatchTool('place_order', {
                   symbol: config.symbol, market: config.market,
-                  side, type: orderType, quantity: qty, price, stopPips,
+                  side, type: orderType, quantity: qty, price, stopPips, ...(tpPips != null ? { tpPips } : {}),
                 }, config.market, config.mt5AccountId, agentKey)
                 logEvent(agentKey, 'info', 'tool_result', `← auto place_order: ${summariseToolResult('place_order', result)}`)
               } catch (autoErr) {

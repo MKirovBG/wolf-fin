@@ -35,7 +35,7 @@ export function validateForexOrder(params, spread, sessionOpen, pipValue, guardr
     // 4. Pip-based risk: units × pipValue × stopPips <= remainingBudget
     if (params.stopPips != null) {
         const pipRiskUsd = params.quantity * pipValue * params.stopPips;
-        const risk = getRiskStateFor('forex');
+        const risk = getRiskStateFor('mt5');
         if (pipRiskUsd > risk.remainingBudgetUsd && risk.remainingBudgetUsd > 0) {
             return {
                 ok: false,

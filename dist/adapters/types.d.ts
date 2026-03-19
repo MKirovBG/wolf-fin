@@ -170,6 +170,8 @@ export interface OrderParams {
     timeInForce?: 'GTC' | 'IOC' | 'FOK';
     stopPips?: number;
     stopPrice?: number;
+    tpPips?: number;
+    tpPrice?: number;
 }
 export interface OrderResult {
     orderId: number;

@@ -19,6 +19,23 @@ export interface AgentPerformanceSummary {
     }>;
 }
 export declare function dbGetAgentPerformance(agentKey: string, limit?: number): AgentPerformanceSummary;
+export interface AgentStats {
+    totalTicks: number;
+    totalTrades: number;
+    wins: number;
+    losses: number;
+    winRate: number | null;
+    avgWin: number | null;
+    avgLoss: number | null;
+    riskReward: number | null;
+    sharpe: number | null;
+    totalPnl: number;
+    equityCurve: Array<{
+        time: string;
+        cumPnl: number;
+    }>;
+}
+export declare function dbGetAgentStats(agentKey: string, limit?: number): AgentStats;
 export declare function dbGetCycleResults(market?: string, limit?: number): Array<CycleResult & {
     id: number;
     agentKey: string;
@@ -110,4 +127,6 @@ export declare function dbSaveSession(agentKey: string, data: {
     summary?: string | null;
 }): void;
 export declare function dbDeleteSession(agentKey: string, sessionDate: string): void;
+/** Returns the most recent completed session before today — used for cross-session memory. */
+export declare function dbGetPreviousSession(agentKey: string): AgentSessionData | null;
 //# sourceMappingURL=index.d.ts.map

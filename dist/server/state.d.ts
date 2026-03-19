@@ -3,6 +3,8 @@ export type { CycleResult } from '../types.js';
 import type { LogEntry, LogLevel, LogEvent } from '../types.js';
 export declare function tryAcquireCycleLock(agentKey: string): boolean;
 export declare function releaseCycleLock(agentKey: string): void;
+export declare function queuePlanRequest(agentKey: string): void;
+export declare function consumePlanRequest(agentKey: string): boolean;
 type LogSubscriber = (entry: LogEntry) => void;
 export declare function subscribeToLogs(cb: LogSubscriber): () => void;
 export interface AgentStatusEvent {

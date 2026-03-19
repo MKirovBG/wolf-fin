@@ -2,13 +2,6 @@
 const MAX_DAILY_LOSS_USD = parseFloat(process.env.MAX_DAILY_LOSS_USD ?? '200');
 const MAX_POSITION_USD = parseFloat(process.env.MAX_POSITION_USD ?? '1000');
 const MAX_COMBINED_NOTIONAL_USD = parseFloat(process.env.MAX_COMBINED_NOTIONAL_USD ?? '2000');
-let lastForexContext = { spread: 0, sessionOpen: false, pipValue: 0.0001 };
-export function setForexContext(ctx) {
-    lastForexContext = ctx;
-}
-export function getForexContext() {
-    return lastForexContext;
-}
 let lastMt5Context = { spread: 0, sessionOpen: false, pipValue: 0.0001, point: 0.0001, digits: 5 };
 export function setMt5Context(ctx) {
     lastMt5Context = ctx;
@@ -25,7 +18,6 @@ function freshState() {
 }
 const states = {
     crypto: freshState(),
-    forex: freshState(),
     mt5: freshState(),
 };
 function get(market) {
@@ -60,7 +52,7 @@ export function getRiskStateFor(market) {
 }
 /** Sum of open position notional across all markets. */
 export function getCombinedNotionalUsd() {
-    return get('crypto').positionNotionalUsd + get('forex').positionNotionalUsd + get('mt5').positionNotionalUsd;
+    return get('crypto').positionNotionalUsd + get('mt5').positionNotionalUsd;
 }
 export { MAX_POSITION_USD, MAX_COMBINED_NOTIONAL_USD };
 //# sourceMappingURL=riskStateStore.js.map

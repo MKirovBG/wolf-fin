@@ -59,7 +59,7 @@ const ALL_TOOLS = [
     },
     {
         name: 'place_order',
-        description: 'Place a new order. Guardrails will validate the order against position limits and the daily loss budget before execution. Prefer LIMIT orders to control slippage. For MT5, always specify stopPips.',
+        description: 'Place a new order. Guardrails will validate the order against position limits and the daily loss budget before execution. Prefer LIMIT orders to control slippage. For MT5, always specify both stopPips and tpPips to enforce risk:reward discipline at entry time.',
         input_schema: {
             type: 'object',
             properties: {
@@ -71,6 +71,7 @@ const ALL_TOOLS = [
                 price: { type: 'number', description: 'Limit price (required for LIMIT orders)' },
                 timeInForce: { type: 'string', enum: ['GTC', 'IOC', 'FOK'], description: 'Time in force for LIMIT orders (default GTC)' },
                 stopPips: { type: 'number', description: 'MT5 only: stop-loss distance in pips. Required for MT5 orders.' },
+                tpPips: { type: 'number', description: 'MT5 only: take-profit distance in pips. Strongly recommended — set TP at entry to enforce R:R discipline.' },
             },
             required: ['symbol', 'market', 'side', 'type', 'quantity'],
         },

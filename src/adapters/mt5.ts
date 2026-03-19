@@ -485,6 +485,19 @@ export class MT5Adapter implements IMarketAdapter {
       }
     }
 
+    // Compute absolute take-profit price from tpPips.
+    if (params.tpPrice != null) {
+      body.tp = params.tpPrice
+    } else if (params.tpPips != null) {
+      const refPrice = params.price
+      if (refPrice != null) {
+        const pipSz = pipSizeHeuristic(params.symbol)
+        body.tp = params.side === 'BUY'
+          ? refPrice + params.tpPips * pipSz
+          : refPrice - params.tpPips * pipSz
+      }
+    }
+
     let result: BridgeOrderResult
     try {
       result = await mt5Post<BridgeOrderResult>('/order', body)

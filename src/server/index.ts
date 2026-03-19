@@ -719,7 +719,15 @@ export async function startServer(): Promise<void> {
     const { key } = req.params as { key: string }
     const agent = getAgent(key)
     if (!agent) return reply.status(404).send({ error: 'Agent not found' })
-    // Run a planning cycle asynchronously
+
+    if (agent.status === 'running') {
+      // Agent is running — queue the plan request for the next tick
+      const { queuePlanRequest } = await import('./state.js')
+      queuePlanRequest(key)
+      return reply.send({ ok: true, message: 'Planning cycle queued — will run on next tick' })
+    }
+
+    // Agent is idle — run immediately
     runAgentTick(agent.config, 'planning').catch(err => log.error({ err, key }, 'planning cycle error'))
     return reply.send({ ok: true, message: 'Planning cycle triggered' })
   })

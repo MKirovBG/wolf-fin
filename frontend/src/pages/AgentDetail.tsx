@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, type ReactNode } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { getAgents, startAgent, pauseAgent, stopAgent, triggerAgent, resetAgentData, getAgentCycles, getAgentStats } from '../api/client.ts'
@@ -34,6 +34,29 @@ interface CycleDetailModalProps {
   onClose: () => void
 }
 
+function CollapsibleSection({ title, count, color = 'text-muted', defaultOpen = false, children }: {
+  title: string; count: number; color?: string; defaultOpen?: boolean; children: ReactNode
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  if (count === 0) return null
+  return (
+    <div className="border border-border rounded-lg overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-4 py-2.5 bg-surface2 hover:bg-surface3 transition-colors text-left"
+      >
+        <span className={`text-xs font-semibold uppercase tracking-wider ${color}`}>{title}</span>
+        <span className="text-muted text-xs flex items-center gap-2">
+          <span className="text-muted2">{count} item{count !== 1 ? 's' : ''}</span>
+          {open ? '▲' : '▼'}
+        </span>
+      </button>
+      {open && <div className="divide-y divide-border/40">{children}</div>}
+    </div>
+  )
+}
+
 function CycleDetailModal({ cycleId, onClose }: CycleDetailModalProps) {
   const [data, setData] = useState<{ cycle: CycleResult & { id: number }; logs: LogEntry[] } | null>(null)
   const [loading, setLoading] = useState(true)
@@ -49,24 +72,42 @@ function CycleDetailModal({ cycleId, onClose }: CycleDetailModalProps) {
   const thinking  = data?.logs.filter(l => l.event === 'claude_thinking') ?? []
   const toolCalls = data?.logs.filter(l => l.event === 'tool_call' || l.event === 'tool_result') ?? []
   const decisions = data?.logs.filter(l => l.event === 'decision' || l.event === 'auto_execute') ?? []
+  const warnings  = data?.logs.filter(l => l.level === 'warn' || l.event === 'guardrail_block') ?? []
 
-  function timeStr(iso: string) {
-    return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  const timeStr = (iso: string) =>
+    new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+
+  // Pair tool calls with their results for cleaner display
+  const toolPairs: { call: LogEntry; result?: LogEntry }[] = []
+  const logs = data?.logs ?? []
+  for (let i = 0; i < logs.length; i++) {
+    const l = logs[i]
+    if (l.event === 'tool_call') {
+      const next = logs[i + 1]
+      if (next?.event === 'tool_result') {
+        toolPairs.push({ call: l, result: next })
+        i++ // skip result — already consumed
+      } else {
+        toolPairs.push({ call: l })
+      }
+    }
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
       <div
-        className="relative bg-bg border border-border rounded-xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col"
+        className="relative bg-bg border border-border rounded-xl shadow-2xl w-full max-w-2xl max-h-[88vh] flex flex-col"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
-          <div className="flex items-center gap-3">
-            <span className="text-sm font-semibold text-text">Cycle Detail</span>
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-border shrink-0">
+          <div className="flex items-center gap-2.5">
             {data?.cycle && (
               <Badge label={data.cycle.decision.split(' ')[0]} variant={decisionVariant(data.cycle.decision)} />
+            )}
+            {data?.cycle && (
+              <span className="text-xs text-muted">{timeStr(data.cycle.time)}</span>
             )}
             {data?.cycle?.pnlUsd != null && (
               <span className={`text-sm font-mono font-semibold ${data.cycle.pnlUsd >= 0 ? 'text-green' : 'text-red'}`}>
@@ -74,67 +115,68 @@ function CycleDetailModal({ cycleId, onClose }: CycleDetailModalProps) {
               </span>
             )}
           </div>
-          <button onClick={onClose} className="text-muted hover:text-text transition-colors text-lg">✕</button>
+          <button onClick={onClose} className="text-muted hover:text-text transition-colors px-1">✕</button>
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-4">
-          {loading && <div className="text-muted text-sm text-center py-8">Loading cycle logs…</div>}
+        <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
+          {loading && <div className="text-muted text-sm text-center py-10">Loading…</div>}
 
           {!loading && data && (
             <>
-              {/* Decision & Reason */}
-              {decisions.length > 0 && (
-                <div>
-                  <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-2">Decision & Reason</div>
-                  <div className="bg-surface border border-border rounded-lg divide-y divide-border/50">
-                    {decisions.map(l => (
-                      <div key={l.id} className="px-4 py-3">
-                        <div className="text-xs text-muted2 mb-1">{timeStr(l.time)} · {l.event}</div>
-                        <p className="text-sm text-text leading-relaxed">{l.message}</p>
-                      </div>
-                    ))}
+              {/* Decision — always open, most important */}
+              <CollapsibleSection title="Decision" count={decisions.length} color="text-green" defaultOpen>
+                {decisions.map(l => (
+                  <div key={l.id} className="px-4 py-3">
+                    <div className="text-[10px] text-muted2 mb-1 uppercase tracking-wider">{l.event} · {timeStr(l.time)}</div>
+                    <p className="text-sm text-text leading-relaxed">{l.message}</p>
                   </div>
-                </div>
-              )}
+                ))}
+              </CollapsibleSection>
 
-              {/* Thinking */}
-              {thinking.length > 0 && (
-                <div>
-                  <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-2">Thinking ({thinking.length})</div>
-                  <div className="bg-surface border border-border rounded-lg divide-y divide-border/50">
-                    {thinking.map(l => (
-                      <div key={l.id} className="px-4 py-3">
-                        <div className="text-xs text-muted2 mb-1">{timeStr(l.time)}</div>
-                        <pre className="text-xs text-muted font-mono whitespace-pre-wrap break-words leading-relaxed max-h-60 overflow-y-auto">{l.message}</pre>
-                      </div>
-                    ))}
+              {/* Reasoning / Thinking — collapsed by default but accessible */}
+              <CollapsibleSection title="Reasoning" count={thinking.length} color="text-yellow">
+                {thinking.map((l, idx) => (
+                  <div key={l.id} className="px-4 py-3">
+                    {thinking.length > 1 && (
+                      <div className="text-[10px] text-muted2 mb-1.5 uppercase tracking-wider">Iteration {idx + 1} · {timeStr(l.time)}</div>
+                    )}
+                    <pre className="text-xs text-muted font-mono whitespace-pre-wrap break-words leading-relaxed">{l.message}</pre>
                   </div>
-                </div>
-              )}
+                ))}
+              </CollapsibleSection>
 
-              {/* Tool Calls */}
-              {toolCalls.length > 0 && (
-                <div>
-                  <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-2">Tool Calls ({toolCalls.length})</div>
-                  <div className="bg-surface border border-border rounded-lg divide-y divide-border/50">
-                    {toolCalls.map(l => (
-                      <div key={l.id} className="px-4 py-3 flex items-start gap-2">
-                        <span className={`text-xs font-mono shrink-0 ${l.event === 'tool_call' ? 'text-blue' : 'text-green'}`}>
-                          {l.event === 'tool_call' ? '→' : '←'}
-                        </span>
-                        <div className="min-w-0">
-                          <div className="text-xs text-muted2 mb-0.5">{timeStr(l.time)}</div>
-                          <p className="text-xs font-mono text-text break-all">{l.message}</p>
-                        </div>
+              {/* Tool calls — paired call + result */}
+              <CollapsibleSection title="Tool Calls" count={toolPairs.length} color="text-blue">
+                {toolPairs.map(({ call, result }, idx) => (
+                  <div key={call.id} className="px-4 py-3 space-y-1.5">
+                    <div className="text-[10px] text-muted2 uppercase tracking-wider">Call {idx + 1} · {timeStr(call.time)}</div>
+                    <div className="flex items-start gap-1.5">
+                      <span className="text-blue text-xs font-mono shrink-0 mt-0.5">→</span>
+                      <code className="text-xs font-mono text-text break-all">{call.message}</code>
+                    </div>
+                    {result && (
+                      <div className="flex items-start gap-1.5 pl-1">
+                        <span className="text-green text-xs font-mono shrink-0 mt-0.5">←</span>
+                        <code className="text-xs font-mono text-muted break-all">{result.message}</code>
                       </div>
-                    ))}
+                    )}
                   </div>
-                </div>
-              )}
+                ))}
+              </CollapsibleSection>
 
-              {thinking.length === 0 && toolCalls.length === 0 && decisions.length === 0 && (
-                <div className="text-muted text-sm text-center py-8">No detailed logs found for this cycle.</div>
+              {/* Warnings */}
+              <CollapsibleSection title="Warnings" count={warnings.length} color="text-red">
+                {warnings.map(l => (
+                  <div key={l.id} className="px-4 py-3">
+                    <div className="text-[10px] text-muted2 mb-1">{timeStr(l.time)}</div>
+                    <p className="text-xs text-yellow">{l.message}</p>
+                  </div>
+                ))}
+              </CollapsibleSection>
+
+              {decisions.length === 0 && thinking.length === 0 && toolPairs.length === 0 && (
+                <div className="text-muted text-sm text-center py-10">No detailed logs found for this cycle.</div>
               )}
             </>
           )}

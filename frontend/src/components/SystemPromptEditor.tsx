@@ -60,7 +60,7 @@ export function SystemPromptEditor({ agentKey, promptTemplate, customPrompt, onS
     if (!confirm('Reset to the default Wolf-Fin system prompt?\n\nYour custom prompt override will be deleted.')) return
     setSaving(true)
     try {
-      await updateAgentConfig(agentKey, { promptTemplate: undefined })
+      await updateAgentConfig(agentKey, { promptTemplate: '' })
       onSaved()
       setState('loading') // will reload
     } catch {

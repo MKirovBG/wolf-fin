@@ -56,6 +56,7 @@ export interface AgentState {
   lastCycle: CycleResult | null
   startedAt: string | null
   cycleCount: number
+  pauseReason?: string    // set when agent auto-paused (quota error, drawdown, etc.)
 }
 
 export interface CycleResult {

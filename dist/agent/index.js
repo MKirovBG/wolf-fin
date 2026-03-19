@@ -15,7 +15,7 @@ import { buildMarketContext } from './context.js';
 import { sessionLabel, minutesUntilSessionClose } from '../adapters/session.js';
 import { fetchForexNews } from '../adapters/finnhubNews.js';
 import { getTools } from '../tools/definitions.js';
-import { recordCycle, logEvent, tryAcquireCycleLock, releaseCycleLock, getAgent, setAgentStatus, consumePlanRequest } from '../server/state.js';
+import { recordCycle, logEvent, tryAcquireCycleLock, releaseCycleLock, getAgent, setAgentStatus, setAgentPaused, consumePlanRequest } from '../server/state.js';
 import { dbGetAgentPerformance, makeAgentKey, dbSaveMemory, dbGetMemories, dbDeleteMemory, dbSavePlan, dbGetActivePlan, dbGetStrategy, dbGetTodaySession, dbSaveSession, dbGetPreviousSession, } from '../db/index.js';
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 const activeSessions = new Map();
@@ -1192,6 +1192,30 @@ export async function runAgentTick(config, requestedTickType = 'trading') {
                     logEvent(agentKey, 'error', 'tick_error', `Could not fetch open orders for emergency close: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`);
                 }
                 recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper: false, decision: 'EMERGENCY_STOP', reason: `Rate limit: ${msg}`, time: new Date().toISOString(), error: msg });
+                return;
+            }
+            // Quota / billing / no credits: pause agent, don't close positions (no emergency)
+            const isQuotaError = ((err instanceof Error && (err.message.includes('402') ||
+                err.message.toLowerCase().includes('insufficient') ||
+                err.message.toLowerCase().includes('quota') ||
+                err.message.toLowerCase().includes('billing') ||
+                err.message.toLowerCase().includes('no credits') ||
+                err.message.toLowerCase().includes('credit') ||
+                err.message.toLowerCase().includes('payment') ||
+                err.message.toLowerCase().includes('out of tokens') ||
+                err.message.toLowerCase().includes('token limit') ||
+                err.message.toLowerCase().includes('usage limit'))) ||
+                (typeof err.status === 'number' && err.status === 402));
+            if (isQuotaError) {
+                const reason = `⚠ API quota/billing issue — agent paused. Top up credits or check your API key. (${msg})`;
+                logEvent(agentKey, 'error', 'quota_error', reason);
+                setAgentPaused(agentKey, reason);
+                try {
+                    const { stopAgentSchedule } = await import('../scheduler/index.js');
+                    stopAgentSchedule(agentKey);
+                }
+                catch { /* ignore */ }
+                recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper: false, decision: 'ERROR', reason, time: new Date().toISOString(), error: msg });
                 return;
             }
             logEvent(agentKey, 'error', 'tick_error', `Tick failed: ${msg}`);

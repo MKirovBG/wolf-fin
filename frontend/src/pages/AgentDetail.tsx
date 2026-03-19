@@ -383,6 +383,24 @@ export function AgentDetail() {
         </div>
       </div>
 
+      {/* ── Pause / quota warning banner ────────────────────────────────────── */}
+      {agent.pauseReason && (
+        <div className="mx-6 mt-3 flex items-start gap-3 bg-red-dim border border-red/40 rounded-lg px-4 py-3">
+          <span className="text-red text-base shrink-0 mt-0.5">⚠</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-red font-medium leading-snug">Agent paused automatically</p>
+            <p className="text-xs text-red/80 mt-0.5 leading-relaxed">{agent.pauseReason}</p>
+          </div>
+          <button
+            onClick={() => act(() => startAgent(agentKey), 'start')}
+            disabled={loading !== null}
+            className="shrink-0 px-3 py-1.5 text-xs border border-green/40 text-green rounded-md hover:bg-green/10 disabled:opacity-40 transition-colors"
+          >
+            Restart
+          </button>
+        </div>
+      )}
+
       {/* ── Tab content ─────────────────────────────────────────────────────── */}
       <div
         className={`flex-1 px-6 py-5 ${tab === 'logs' ? 'overflow-hidden flex flex-col' : 'overflow-auto'}`}

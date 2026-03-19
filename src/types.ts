@@ -35,6 +35,7 @@ export interface AgentState {
   lastCycle: CycleResult | null
   startedAt: string | null
   cycleCount: number
+  pauseReason?: string   // set when agent is auto-paused (e.g. quota error, drawdown)
 }
 
 export interface CycleResult {
@@ -63,6 +64,7 @@ export type LogEvent =
   | 'auto_execute' | 'auto_execute_error'
   | 'memory_write' | 'plan_created'
   | 'pnl_record' | 'auto_plan'
+  | 'quota_error'
 
 export interface LogEntry {
   id: number

@@ -25,5 +25,7 @@ export declare function getAgent(key: string): AgentState | undefined;
 export declare function upsertAgent(agent: AgentState): void;
 export declare function removeAgent(key: string): void;
 export declare function setAgentStatus(key: string, status: AgentStatus): void;
+/** Pause the agent and record a human-readable reason shown in the UI banner */
+export declare function setAgentPaused(key: string, reason: string): void;
 export declare function recordCycle(key: string, result: CycleResult): void;
 //# sourceMappingURL=state.d.ts.map

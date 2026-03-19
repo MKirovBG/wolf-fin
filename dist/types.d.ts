@@ -30,6 +30,7 @@ export interface AgentState {
     lastCycle: CycleResult | null;
     startedAt: string | null;
     cycleCount: number;
+    pauseReason?: string;
 }
 export interface CycleResult {
     symbol: string;
@@ -43,7 +44,7 @@ export interface CycleResult {
     mt5AccountId?: number;
 }
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
-export type LogEvent = 'tick_start' | 'tick_end' | 'tick_error' | 'tick_skip' | 'session_start' | 'session_reset' | 'cycle_start' | 'cycle_end' | 'cycle_error' | 'cycle_skip' | 'tool_call' | 'tool_result' | 'tool_error' | 'claude_thinking' | 'llm_request' | 'decision' | 'guardrail_block' | 'session_skip' | 'auto_execute' | 'auto_execute_error' | 'memory_write' | 'plan_created' | 'pnl_record' | 'auto_plan';
+export type LogEvent = 'tick_start' | 'tick_end' | 'tick_error' | 'tick_skip' | 'session_start' | 'session_reset' | 'cycle_start' | 'cycle_end' | 'cycle_error' | 'cycle_skip' | 'tool_call' | 'tool_result' | 'tool_error' | 'claude_thinking' | 'llm_request' | 'decision' | 'guardrail_block' | 'session_skip' | 'auto_execute' | 'auto_execute_error' | 'memory_write' | 'plan_created' | 'pnl_record' | 'auto_plan' | 'quota_error';
 export interface LogEntry {
     id: number;
     time: string;

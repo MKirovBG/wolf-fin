@@ -94,13 +94,26 @@ export function setAgentStatus(key, status) {
     const agent = state.agents[key];
     if (agent) {
         agent.status = status;
-        if (status === 'running' && !agent.startedAt) {
-            agent.startedAt = new Date().toISOString();
+        if (status === 'running') {
+            agent.pauseReason = undefined; // clear any previous pause reason on restart
+            if (!agent.startedAt)
+                agent.startedAt = new Date().toISOString();
         }
         if (status === 'idle') {
             agent.startedAt = null;
+            agent.pauseReason = undefined;
         }
         dbUpdateAgentStatus(key, agent.status, agent.startedAt);
+        broadcastAgentUpdate(key);
+    }
+}
+/** Pause the agent and record a human-readable reason shown in the UI banner */
+export function setAgentPaused(key, reason) {
+    const agent = state.agents[key];
+    if (agent) {
+        agent.status = 'paused';
+        agent.pauseReason = reason;
+        dbUpdateAgentStatus(key, 'paused', agent.startedAt);
         broadcastAgentUpdate(key);
     }
 }

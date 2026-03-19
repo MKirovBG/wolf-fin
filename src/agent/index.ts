@@ -975,7 +975,7 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
         }
 
         const providerLabel = config.llmProvider === 'openrouter' ? `OpenRouter/${llmModel}` : `Anthropic/${llmModel}`
-        logEvent(agentKey, 'debug', 'claude_thinking', `Sending to ${providerLabel} (tick #${tickNumber}, iteration ${iterations})`)
+        logEvent(agentKey, 'debug', 'llm_request', `Sending to ${providerLabel} (tick #${tickNumber}, iteration ${iterations})`)
 
         // ── LLM Payload Console Log ──────────────────────────────────────────
         console.log('\n' + '═'.repeat(80))
@@ -1018,9 +1018,40 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
           const decMatch    = text.match(/DECISION:\s*(.+)/i)
           const reasonMatch = text.match(/REASON:\s*(.+)/i)
           // Strip markdown bold (**), collapse whitespace, cap at 300 chars so DB field stays clean
-          const cleanField = (s: string) => s.replace(/\*+/g, '').replace(/\s+/g, ' ').trim()
-          const decision    = decMatch ? cleanField(decMatch[1]) : 'UNKNOWN'
-          const reason      = reasonMatch ? cleanField(reasonMatch[1]) : ''
+          const cleanField = (s: string) => s.replace(/\*+/g, '').replace(/\s+/g, ' ').trim().slice(0, 300)
+
+          let decision: string
+          if (decMatch) {
+            decision = cleanField(decMatch[1])
+          } else if (orderPlacedThisTick) {
+            // Agent used place_order tool but didn't write formal DECISION line
+            decision = 'EXECUTED (via tool)'
+          } else {
+            // Try to infer from freeform text
+            const lower = text.toLowerCase()
+            if (/\b(hold|wait|no trade|stand aside|skip|no action)\b/.test(lower)) {
+              decision = 'HOLD'
+            } else if (/\b(buy|long|bought)\b/.test(lower) && /\b(sell|short|sold)\b/.test(lower)) {
+              decision = 'HOLD' // contradictory — treat as hold
+            } else if (/\b(bought|opened.*long|placed.*buy)\b/.test(lower)) {
+              decision = 'BUY (inferred)'
+            } else if (/\b(sold|opened.*short|placed.*sell)\b/.test(lower)) {
+              decision = 'SELL (inferred)'
+            } else if (/\b(closed|exited|took profit|stopped out)\b/.test(lower)) {
+              decision = 'CLOSE (inferred)'
+            } else {
+              decision = 'HOLD'
+            }
+          }
+
+          // Extract reason — fall back to first meaningful sentence if no REASON: line
+          let reason: string
+          if (reasonMatch) {
+            reason = cleanField(reasonMatch[1])
+          } else {
+            const firstSentence = text.split(/[.\n]/).find(s => s.trim().length > 15)
+            reason = firstSentence ? cleanField(firstSentence) : ''
+          }
 
           logEvent(agentKey, 'info', 'decision', `DECISION: ${decision}${reason ? ` — ${reason}` : ''}`)
           log.info({ decision, tickNumber }, 'tick complete')
@@ -1086,6 +1117,16 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
         }
 
         if (response.stop_reason === 'tool_use') {
+          // Log any reasoning text the model included alongside tool calls
+          const reasoningText = response.content
+            .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+            .map(b => b.text.trim())
+            .filter(t => t.length > 0)
+            .join('\n')
+          if (reasoningText) {
+            logEvent(agentKey, 'info', 'claude_thinking', reasoningText)
+          }
+
           const toolResults: Anthropic.ToolResultBlockParam[] = []
 
           for (const block of response.content) {

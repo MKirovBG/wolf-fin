@@ -56,7 +56,7 @@ export type LogEvent =
   | 'cycle_start' | 'cycle_end' | 'cycle_error' | 'cycle_skip'
   // Tool events
   | 'tool_call' | 'tool_result' | 'tool_error'
-  | 'claude_thinking' | 'decision'
+  | 'claude_thinking' | 'llm_request' | 'decision'
   | 'guardrail_block' | 'session_skip'
   | 'auto_execute' | 'auto_execute_error'
   | 'memory_write' | 'plan_created'

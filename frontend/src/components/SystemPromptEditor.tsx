@@ -7,7 +7,7 @@ interface Props {
   onChange: (v: string) => void
 }
 
-type State = 'new-agent' | 'loading' | 'loaded-locked' | 'warning' | 'editing'
+type State = 'new-agent' | 'loading' | 'loaded-locked' | 'editing'
 
 export function SystemPromptEditor({ agentKey, customPrompt, onChange }: Props) {
   const [state, setState] = useState<State>(!agentKey ? 'new-agent' : 'loading')
@@ -17,16 +17,17 @@ export function SystemPromptEditor({ agentKey, customPrompt, onChange }: Props) 
 
   useEffect(() => {
     if (!agentKey) { setState('new-agent'); return }
-    setState('loading')
+    // Don't reset to loading if already editing — preserve editing state across re-renders
+    setState(s => s === 'editing' ? s : 'loading')
     setError(null)
     getSystemPrompt(agentKey)
       .then(res => {
         setFullPrompt(res.prompt)
-        setState('loaded-locked')
+        setState(s => s === 'editing' ? s : 'loaded-locked')
       })
       .catch(() => {
         setError('Could not load system prompt — agent may not be saved yet.')
-        setState('loaded-locked')
+        setState(s => s === 'editing' ? s : 'loaded-locked')
       })
   }, [agentKey])
 
@@ -48,7 +49,7 @@ export function SystemPromptEditor({ agentKey, customPrompt, onChange }: Props) 
         {state === 'loaded-locked' && (
           <button
             type="button"
-            onClick={() => setState('warning')}
+            onClick={() => setState('editing')}
             className="px-3 py-1.5 text-xs border border-border text-muted rounded-lg hover:border-yellow hover:text-yellow transition-colors"
           >
             Edit Custom Instructions
@@ -58,9 +59,9 @@ export function SystemPromptEditor({ agentKey, customPrompt, onChange }: Props) 
           <button
             type="button"
             onClick={() => setState('loaded-locked')}
-            className="px-3 py-1.5 text-xs border border-border text-muted rounded-lg hover:border-muted2 transition-colors"
+            className="px-3 py-1.5 text-xs border border-green/40 text-green rounded-lg hover:border-green transition-colors"
           >
-            Lock
+            ✓ Done
           </button>
         )}
       </div>
@@ -99,7 +100,7 @@ export function SystemPromptEditor({ agentKey, customPrompt, onChange }: Props) 
       )}
 
       {/* Loaded — locked or editing */}
-      {(state === 'loaded-locked' || state === 'warning' || state === 'editing') && (
+      {(state === 'loaded-locked' || state === 'editing') && (
         <div className="space-y-3">
 
           {/* Base prompt section */}
@@ -121,30 +122,12 @@ export function SystemPromptEditor({ agentKey, customPrompt, onChange }: Props) 
             </div>
           )}
 
-          {/* Warning banner */}
-          {state === 'warning' && (
-            <div className="bg-yellow-dim border border-yellow/40 rounded-lg p-4 space-y-3">
-              <p className="text-sm text-yellow font-medium">Editing the system prompt can significantly affect agent behavior.</p>
-              <p className="text-xs text-yellow/80 leading-relaxed">
-                The base prompt controls all trading logic, risk rules, and tool usage.
-                Only modify if you fully understand the impact. Incorrect instructions may cause unexpected trades.
+          {/* Editing notice */}
+          {state === 'editing' && (
+            <div className="bg-yellow-dim border border-yellow/30 rounded-lg px-3 py-2">
+              <p className="text-xs text-yellow/80">
+                ⚠ Editing mode — changes are auto-saved as you type. Click Done when finished.
               </p>
-              <div className="flex gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => setState('loaded-locked')}
-                  className="px-4 py-2 text-xs border border-border text-muted rounded-lg hover:border-muted2 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setState('editing')}
-                  className="px-4 py-2 text-xs border border-yellow/50 text-yellow bg-yellow-dim rounded-lg hover:bg-yellow/10 transition-colors"
-                >
-                  I understand — unlock editing
-                </button>
-              </div>
             </div>
           )}
 
@@ -161,9 +144,10 @@ export function SystemPromptEditor({ agentKey, customPrompt, onChange }: Props) 
                 value={customPrompt}
                 onChange={e => onChange(e.target.value)}
                 placeholder="Additional instructions appended to the base prompt..."
-                rows={5}
-                className="font-mono text-xs rounded-none border-0 border-b-0"
+                rows={6}
+                className="font-mono text-xs rounded-none border-0"
                 style={{ borderRadius: 0 }}
+                autoFocus
               />
             ) : (
               <pre className="bg-bg text-xs font-mono leading-relaxed p-4 whitespace-pre-wrap break-words text-muted min-h-[80px]">

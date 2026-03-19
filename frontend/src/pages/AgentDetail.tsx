@@ -2,8 +2,8 @@ import { useEffect, useState, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { getAgents, startAgent, pauseAgent, stopAgent, triggerAgent, resetAgentData, updateAgentConfig, getAgentCycles, getAgentStats } from '../api/client.ts'
-import type { CycleResult, AgentStats } from '../types/index.ts'
-import type { AgentState, GuardrailsConfig } from '../types/index.ts'
+import type { CycleResult, AgentStats, LogEntry } from '../types/index.ts'
+import type { AgentState } from '../types/index.ts'
 import { Badge, decisionVariant } from '../components/Badge.tsx'
 import { AgentStatusBadge } from '../components/AgentStatusBadge.tsx'
 import { SettingsPanel } from '../components/AgentCard.tsx'
@@ -11,8 +11,6 @@ import { ThreadedLogsPanel } from '../components/ThreadedLogsPanel.tsx'
 import { SystemPromptEditor } from '../components/SystemPromptEditor.tsx'
 import { MarketDataModal } from '../components/MarketDataModal.tsx'
 import { IntelligencePanel } from '../components/IntelligencePanel.tsx'
-import { PromptEditor } from '../components/PromptEditor.tsx'
-import { GuardrailsEditor } from '../components/GuardrailsEditor.tsx'
 import { useToast } from '../components/Toast.tsx'
 
 function rel(iso: string) {
@@ -28,8 +26,125 @@ function iLabel(s: number) {
   return `${s / 3600}h`
 }
 
-type Tab = 'overview' | 'logs' | 'history' | 'performance' | 'intelligence' | 'config'
+type Tab = 'overview' | 'logs' | 'history' | 'performance' | 'intelligence'
 
+// ── Cycle Detail Modal ────────────────────────────────────────────────────────
+interface CycleDetailModalProps {
+  cycleId: number
+  onClose: () => void
+}
+
+function CycleDetailModal({ cycleId, onClose }: CycleDetailModalProps) {
+  const [data, setData] = useState<{ cycle: CycleResult & { id: number }; logs: LogEntry[] } | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    setLoading(true)
+    fetch(`/api/cycles/${cycleId}`)
+      .then(r => r.json())
+      .then(d => { setData(d); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [cycleId])
+
+  const thinking  = data?.logs.filter(l => l.event === 'claude_thinking') ?? []
+  const toolCalls = data?.logs.filter(l => l.event === 'tool_call' || l.event === 'tool_result') ?? []
+  const decisions = data?.logs.filter(l => l.event === 'decision' || l.event === 'auto_execute') ?? []
+
+  function timeStr(iso: string) {
+    return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div
+        className="relative bg-bg border border-border rounded-xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-semibold text-text">Cycle Detail</span>
+            {data?.cycle && (
+              <Badge label={data.cycle.decision.split(' ')[0]} variant={decisionVariant(data.cycle.decision)} />
+            )}
+            {data?.cycle?.pnlUsd != null && (
+              <span className={`text-sm font-mono font-semibold ${data.cycle.pnlUsd >= 0 ? 'text-green' : 'text-red'}`}>
+                {data.cycle.pnlUsd >= 0 ? '+' : ''}${data.cycle.pnlUsd.toFixed(2)}
+              </span>
+            )}
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-text transition-colors text-lg">✕</button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {loading && <div className="text-muted text-sm text-center py-8">Loading cycle logs…</div>}
+
+          {!loading && data && (
+            <>
+              {/* Decision & Reason */}
+              {decisions.length > 0 && (
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-2">Decision & Reason</div>
+                  <div className="bg-surface border border-border rounded-lg divide-y divide-border/50">
+                    {decisions.map(l => (
+                      <div key={l.id} className="px-4 py-3">
+                        <div className="text-xs text-muted2 mb-1">{timeStr(l.time)} · {l.event}</div>
+                        <p className="text-sm text-text leading-relaxed">{l.message}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Thinking */}
+              {thinking.length > 0 && (
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-2">Thinking ({thinking.length})</div>
+                  <div className="bg-surface border border-border rounded-lg divide-y divide-border/50">
+                    {thinking.map(l => (
+                      <div key={l.id} className="px-4 py-3">
+                        <div className="text-xs text-muted2 mb-1">{timeStr(l.time)}</div>
+                        <pre className="text-xs text-muted font-mono whitespace-pre-wrap break-words leading-relaxed max-h-60 overflow-y-auto">{l.message}</pre>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Tool Calls */}
+              {toolCalls.length > 0 && (
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-2">Tool Calls ({toolCalls.length})</div>
+                  <div className="bg-surface border border-border rounded-lg divide-y divide-border/50">
+                    {toolCalls.map(l => (
+                      <div key={l.id} className="px-4 py-3 flex items-start gap-2">
+                        <span className={`text-xs font-mono shrink-0 ${l.event === 'tool_call' ? 'text-blue' : 'text-green'}`}>
+                          {l.event === 'tool_call' ? '→' : '←'}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="text-xs text-muted2 mb-0.5">{timeStr(l.time)}</div>
+                          <p className="text-xs font-mono text-text break-all">{l.message}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {thinking.length === 0 && toolCalls.length === 0 && decisions.length === 0 && (
+                <div className="text-muted text-sm text-center py-8">No detailed logs found for this cycle.</div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Main Component ─────────────────────────────────────────────────────────────
 export function AgentDetail() {
   const { market, symbol, accountId, agentKey: encodedKey } = useParams<{
     market?: string; symbol?: string; accountId?: string; agentKey?: string
@@ -45,11 +160,8 @@ export function AgentDetail() {
   const [tab, setTab] = useState<Tab>('overview')
   const [stats, setStats] = useState<AgentStats | null>(null)
   const [customPrompt, setCustomPrompt] = useState('')
-
-  // Config tab state
-  const [promptTemplate, setPromptTemplate] = useState('')
-  const [guardrails, setGuardrails] = useState<Partial<GuardrailsConfig>>({})
-  const [configSaving, setConfigSaving] = useState(false)
+  const [selectedCycleId, setSelectedCycleId] = useState<number | null>(null)
+  const [intelligenceKey, setIntelligenceKey] = useState(0) // bump to force reload
   const toast = useToast()
 
   const load = useCallback(async () => {
@@ -65,8 +177,6 @@ export function AgentDetail() {
       setCycles(agentCycles)
       if (found) {
         setCustomPrompt(found.config.customPrompt ?? '')
-        setPromptTemplate(found.config.promptTemplate ?? '')
-        setGuardrails(found.config.guardrails ?? {})
       }
     } catch { /* ignore */ }
   }, [agentKey])
@@ -74,7 +184,7 @@ export function AgentDetail() {
   // Initial load
   useEffect(() => { load() }, [load])
 
-  // SSE: real-time agent status and cycle updates — no polling needed
+  // SSE: real-time agent status updates
   useEffect(() => {
     const es = new EventSource(`/api/events?agent=${encodeURIComponent(agentKey)}`)
     es.addEventListener('agent', (e: MessageEvent) => {
@@ -97,23 +207,6 @@ export function AgentDetail() {
     try {
       await updateAgentConfig(agentKey, { customPrompt: v || undefined })
     } catch { /* ignore */ }
-  }
-
-  const saveConfig = async () => {
-    if (!agent) return
-    setConfigSaving(true)
-    try {
-      await updateAgentConfig(agentKey, {
-        promptTemplate: promptTemplate || undefined,
-        guardrails: Object.keys(guardrails).length > 0 ? guardrails : undefined,
-      })
-      toast.success('Configuration saved')
-      load()
-    } catch {
-      toast.error('Failed to save configuration')
-    } finally {
-      setConfigSaving(false)
-    }
   }
 
   if (!agent) {
@@ -211,20 +304,21 @@ export function AgentDetail() {
                 await act(async () => {
                   const res = await resetAgentData(agentKey)
                   const d = (res as { deleted?: Record<string, number> }).deleted
-                  if (d) alert(`Reset complete.\n\nDeleted:\n${Object.entries(d).map(([k,v]) => `  ${k}: ${v}`).join('\n')}`)
+                  if (d) toast.success(`Reset complete — cleared: ${Object.entries(d).filter(([,v]) => v > 0).map(([k,v]) => `${k}(${v})`).join(', ')}`)
                 }, 'reset')
+                setIntelligenceKey(k => k + 1) // force Intelligence panel to reload
                 load()
               }}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-red/30 text-red rounded-md hover:bg-red/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
             >
-              Reset Data
+              {loading === 'reset' ? 'Resetting…' : 'Reset Data'}
             </button>
           </div>
         </div>
 
         {/* Tab bar */}
         <div className="flex gap-0">
-          {(['overview', 'logs', 'history', 'performance', 'intelligence', 'config'] as Tab[]).map(t => (
+          {(['overview', 'logs', 'history', 'performance', 'intelligence'] as Tab[]).map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -238,8 +332,7 @@ export function AgentDetail() {
                 : t === 'logs' ? 'Logs'
                 : t === 'history' ? 'History'
                 : t === 'performance' ? 'Performance'
-                : t === 'intelligence' ? 'Intelligence'
-                : 'Config'}
+                : 'Intelligence'}
             </button>
           ))}
         </div>
@@ -358,7 +451,7 @@ export function AgentDetail() {
             <div className="bg-surface border border-border rounded-lg overflow-hidden">
               <div className="px-4 py-3 border-b border-border flex items-center justify-between">
                 <span className="text-xs font-semibold uppercase tracking-wider text-muted">Cycle History</span>
-                <span className="text-xs text-muted">{cycles.length} records</span>
+                <span className="text-xs text-muted">{cycles.length} records · click any row for details</span>
               </div>
               {cycles.length === 0 ? (
                 <div className="text-muted text-sm text-center py-10">No cycles recorded yet</div>
@@ -374,7 +467,11 @@ export function AgentDetail() {
                     </thead>
                     <tbody>
                       {cycles.map((c, i) => (
-                        <tr key={c.id ?? i} className={`border-b border-border/50 hover:bg-surface2 transition-colors ${c.error ? 'bg-red-dim/20' : ''}`}>
+                        <tr
+                          key={c.id ?? i}
+                          onClick={() => c.id && setSelectedCycleId(c.id)}
+                          className={`border-b border-border/50 hover:bg-surface2 transition-colors cursor-pointer ${c.error ? 'bg-red-dim/20' : ''}`}
+                        >
                           <td className="py-2 px-4 text-muted whitespace-nowrap text-xs">{rel(c.time)}</td>
                           <td className="py-2 px-4">
                             <Badge label={c.decision.split(' ')[0]} variant={decisionVariant(c.decision)} />
@@ -467,62 +564,23 @@ export function AgentDetail() {
 
         {/* INTELLIGENCE TAB */}
         {tab === 'intelligence' && (
-          <IntelligencePanel agentKey={agentKey} />
-        )}
-
-        {/* CONFIG TAB */}
-        {tab === 'config' && (
-          <div className="flex flex-col gap-5 max-w-4xl mx-auto w-full">
-
-            {/* Prompt Template */}
-            <div className="bg-surface border border-border rounded-lg p-5">
-              <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-1">Prompt Template</div>
-              <p className="text-xs text-muted2 mb-4 leading-relaxed">
-                Write a custom system prompt using {`{{pill}}`} tokens to inject dynamic content. Leave empty to use the default Wolf-Fin prompt.
-              </p>
-              <PromptEditor
-                value={promptTemplate}
-                onChange={setPromptTemplate}
-                market={agent.config.market}
-              />
-            </div>
-
-            {/* Guardrails */}
-            <div className="bg-surface border border-border rounded-lg p-5">
-              <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-1">Guardrails</div>
-              <p className="text-xs text-muted2 mb-4 leading-relaxed">
-                Toggle order validation rules. All guardrails are enabled by default.
-              </p>
-              <GuardrailsEditor
-                value={guardrails}
-                onChange={setGuardrails}
-                market={agent.config.market}
-              />
-            </div>
-
-            {/* Save */}
-            <div className="flex justify-end">
-              <button
-                type="button"
-                disabled={configSaving || agent.status === 'running'}
-                onClick={saveConfig}
-                className="px-6 py-2.5 text-sm border border-green text-green rounded-lg hover:bg-green-dim disabled:opacity-40 transition-colors font-medium"
-              >
-                {configSaving ? 'Saving…' : 'Save Configuration'}
-              </button>
-            </div>
-            {agent.status === 'running' && (
-              <p className="text-xs text-yellow text-right -mt-2">Stop or pause the agent before editing its configuration.</p>
-            )}
-          </div>
+          <IntelligencePanel key={intelligenceKey} agentKey={agentKey} />
         )}
       </div>
 
+      {/* Modals */}
       {showMarket && (
         <MarketDataModal
           market={agent.config.market}
           symbol={agent.config.symbol}
           onClose={() => setShowMarket(false)}
+        />
+      )}
+
+      {selectedCycleId !== null && (
+        <CycleDetailModal
+          cycleId={selectedCycleId}
+          onClose={() => setSelectedCycleId(null)}
         />
       )}
     </div>

@@ -168,7 +168,15 @@ function formatSnapshotSummary(snap, agentKey, config) {
         lines.push(`Price: ${price.last?.toFixed(dp)} | Bid: ${price.bid?.toFixed(dp)} | Ask: ${price.ask?.toFixed(dp)}`);
     }
     if (forex) {
-        lines.push(`Spread: ${forex.spread?.toFixed(1)} pips | Session: ${forex.sessionOpen ? 'OPEN' : 'CLOSED'}`);
+        // Show spread in both points and price-equivalent to avoid model confusion
+        // For 5-digit forex (dp>=4): spread is in points, 1 pip = 10 points
+        // For 2-digit instruments (gold): spread is in points, show as $ value
+        const spreadPoints = forex.spread ?? 0;
+        const spreadPrice = forex.point != null ? spreadPoints * forex.point : 0;
+        const spreadLabel = dp >= 4
+            ? `${(spreadPoints / 10).toFixed(1)} pips (${spreadPoints} points)`
+            : `${spreadPoints} points ($${spreadPrice.toFixed(2)})`;
+        lines.push(`Spread: ${spreadLabel} | Session: ${forex.sessionOpen ? 'OPEN' : 'CLOSED'}`);
     }
     if (indicators) {
         const parts = [];
@@ -370,7 +378,8 @@ ${sessionSummary}
 (Your full conversation for recent ticks is in the message history below.)` : '';
     const marketRulesContent = market === 'mt5'
         ? `CURRENT SESSION: ${sessionLabel()}
-MT5 SESSION RULES: Only trade during Tokyo, London, or New York sessions. Reject entries when sessionOpen is false. The live spread is shown in the snapshot summary each tick — factor spread into your R:R calculation (it reduces effective profit). Wide spread = worse entry = needs more room to profit. If spread > 20% of your target move, the trade is not worth taking.
+MT5 SESSION RULES: Only trade during Tokyo, London, or New York sessions. Reject entries when sessionOpen is false.
+SPREAD: The spread is shown in the tick data. For forex pairs it is shown in pips; for metals (XAUUSD etc.) it is shown in points with the dollar value. IMPORTANT: a 67-point spread on XAUUSD is only $0.67 — that is NORMAL. Compare spread to ATR in DOLLAR terms, not in raw numbers. Only skip a trade if spread cost > 20% of your expected profit in dollars.
 MT5 provides real swap rates in the snapshot — factor overnight costs into hold decisions for multi-day positions.
 
 MT5 POSITION & ORDER MANAGEMENT (critical):

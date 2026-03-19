@@ -1,4 +1,4 @@
-import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, CycleDetail, LogEntry, PositionEntry, FillEntry, AccountEntry, Mt5AccountInfo, OpenRouterModel, StrategyDoc, AgentMemory, AgentPlan } from '../types/index.ts'
+import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, CycleDetail, LogEntry, PositionEntry, FillEntry, AccountEntry, Mt5AccountInfo, OpenRouterModel, StrategyDoc, AgentMemory, AgentPlan, AgentStats } from '../types/index.ts'
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, options)
@@ -115,6 +115,9 @@ export const deleteAgentMemory = (key: string, category: string, memKey: string)
   api<{ ok: boolean }>(`/api/agents/${key}/memories/${category}/${encodeURIComponent(memKey)}`, { method: 'DELETE' })
 export const clearAgentMemories = (key: string) =>
   api<{ ok: boolean }>(`/api/agents/${key}/memories`, { method: 'DELETE' })
+
+// ── Agent Stats ───────────────────────────────────────────────────────────────
+export const getAgentStats = (key: string) => api<AgentStats>(`/api/agents/${encodeURIComponent(key)}/stats`)
 
 // ── Agent Plans ───────────────────────────────────────────────────────────────
 export const getAgentPlan = (key: string) => api<AgentPlan>(`/api/agents/${key}/plan/active`)

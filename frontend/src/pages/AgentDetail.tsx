@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { getAgents, startAgent, pauseAgent, stopAgent, triggerAgent, updateAgentConfig, getAgentCycles } from '../api/client.ts'
-import type { CycleResult } from '../types/index.ts'
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
+import { getAgents, startAgent, pauseAgent, stopAgent, triggerAgent, updateAgentConfig, getAgentCycles, getAgentStats } from '../api/client.ts'
+import type { CycleResult, AgentStats } from '../types/index.ts'
 import type { AgentState, GuardrailsConfig } from '../types/index.ts'
 import { Badge, decisionVariant } from '../components/Badge.tsx'
 import { AgentStatusBadge } from '../components/AgentStatusBadge.tsx'
@@ -27,7 +28,7 @@ function iLabel(s: number) {
   return `${s / 3600}h`
 }
 
-type Tab = 'overview' | 'logs' | 'history' | 'intelligence' | 'config'
+type Tab = 'overview' | 'logs' | 'history' | 'performance' | 'intelligence' | 'config'
 
 export function AgentDetail() {
   const { market, symbol, accountId, agentKey: encodedKey } = useParams<{
@@ -42,6 +43,7 @@ export function AgentDetail() {
   const [loading, setLoading] = useState<string | null>(null)
   const [showMarket, setShowMarket] = useState(false)
   const [tab, setTab] = useState<Tab>('overview')
+  const [stats, setStats] = useState<AgentStats | null>(null)
   const [customPrompt, setCustomPrompt] = useState('')
 
   // Config tab state
@@ -52,10 +54,12 @@ export function AgentDetail() {
 
   const load = useCallback(async () => {
     try {
-      const [all, agentCycles] = await Promise.all([
+      const [all, agentCycles, agentStats] = await Promise.all([
         getAgents(),
         getAgentCycles(agentKey, 100).catch(() => []),
+        getAgentStats(agentKey).catch(() => null),
       ])
+      setStats(agentStats)
       const found = all.find(a => a.agentKey === agentKey) ?? null
       setAgent(found)
       setCycles(agentCycles)
@@ -201,7 +205,7 @@ export function AgentDetail() {
 
         {/* Tab bar */}
         <div className="flex gap-0">
-          {(['overview', 'logs', 'history', 'intelligence', 'config'] as Tab[]).map(t => (
+          {(['overview', 'logs', 'history', 'performance', 'intelligence', 'config'] as Tab[]).map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -214,6 +218,7 @@ export function AgentDetail() {
               {t === 'overview' ? 'Overview'
                 : t === 'logs' ? 'Logs'
                 : t === 'history' ? 'History'
+                : t === 'performance' ? 'Performance'
                 : t === 'intelligence' ? 'Intelligence'
                 : 'Config'}
             </button>
@@ -370,6 +375,74 @@ export function AgentDetail() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* PERFORMANCE TAB */}
+        {tab === 'performance' && (
+          <div className="flex flex-col gap-5 max-w-4xl mx-auto w-full">
+            {!stats || stats.totalTrades === 0 ? (
+              <div className="text-muted text-sm text-center py-16">No closed trades yet — performance data will appear here once trades are closed.</div>
+            ) : (
+              <>
+                {/* Stat cards */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {[
+                    { label: 'Win Rate', value: stats.winRate != null ? `${Math.round(stats.winRate * 100)}%` : '—', color: (stats.winRate ?? 0) >= 0.5 ? 'text-green' : 'text-yellow' },
+                    { label: 'Risk / Reward', value: stats.riskReward != null ? stats.riskReward.toFixed(2) : '—', color: (stats.riskReward ?? 0) >= 1 ? 'text-green' : 'text-yellow' },
+                    { label: 'Sharpe (ann.)', value: stats.sharpe != null ? stats.sharpe.toFixed(2) : '—', color: (stats.sharpe ?? 0) >= 1 ? 'text-green' : (stats.sharpe ?? 0) >= 0 ? 'text-yellow' : 'text-red' },
+                    { label: 'Total P&L', value: `${stats.totalPnl >= 0 ? '+' : ''}$${stats.totalPnl.toFixed(2)}`, color: stats.totalPnl >= 0 ? 'text-green' : 'text-red' },
+                  ].map(s => (
+                    <div key={s.label} className="bg-surface border border-border rounded-lg p-4">
+                      <div className="text-xs text-muted uppercase tracking-wider mb-2">{s.label}</div>
+                      <div className={`text-2xl font-bold font-mono ${s.color}`}>{s.value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Secondary stats */}
+                <div className="bg-surface border border-border rounded-lg p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-3">Trade Breakdown</div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                    <div><span className="text-muted">Total Trades</span><span className="text-text font-semibold ml-2">{stats.totalTrades}</span></div>
+                    <div><span className="text-green">Wins</span><span className="text-text font-semibold ml-2">{stats.wins}</span></div>
+                    <div><span className="text-red">Losses</span><span className="text-text font-semibold ml-2">{stats.losses}</span></div>
+                    <div><span className="text-muted">Total Ticks</span><span className="text-text font-semibold ml-2">{stats.totalTicks}</span></div>
+                    {stats.avgWin != null && <div><span className="text-muted">Avg Win</span><span className="text-green font-semibold ml-2">+${stats.avgWin.toFixed(2)}</span></div>}
+                    {stats.avgLoss != null && <div><span className="text-muted">Avg Loss</span><span className="text-red font-semibold ml-2">-${stats.avgLoss.toFixed(2)}</span></div>}
+                  </div>
+                </div>
+
+                {/* Equity curve */}
+                {stats.equityCurve.length > 1 && (
+                  <div className="bg-surface border border-border rounded-lg p-4">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-4">Equity Curve</div>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <AreaChart data={stats.equityCurve}>
+                        <defs>
+                          <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%"  stopColor={stats.totalPnl >= 0 ? '#22c55e' : '#ef4444'} stopOpacity={0.2} />
+                            <stop offset="95%" stopColor={stats.totalPnl >= 0 ? '#22c55e' : '#ef4444'} stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <XAxis dataKey="time" tick={{ fill: '#4b5563', fontSize: 9 }} tickFormatter={t => t.slice(11, 16)} />
+                        <YAxis tick={{ fill: '#4b5563', fontSize: 10 }} tickFormatter={v => `$${v.toFixed(0)}`} />
+                        <Tooltip
+                          contentStyle={{ background: '#1a1a1f', border: '1px solid #2a2a32', borderRadius: 8, fontSize: 12 }}
+                          formatter={(v: number) => [`$${v.toFixed(2)}`, 'Cum P&L']}
+                          labelFormatter={t => new Date(t).toLocaleString()}
+                        />
+                        <Area
+                          type="monotone" dataKey="cumPnl"
+                          stroke={stats.totalPnl >= 0 ? '#22c55e' : '#ef4444'}
+                          fill="url(#eqGrad)" strokeWidth={2} dot={false}
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
 

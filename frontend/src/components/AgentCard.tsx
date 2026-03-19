@@ -73,6 +73,9 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
         ...data,
         scheduleIntervalSeconds: Number(data.scheduleIntervalSeconds),
         leverage: data.leverage ? Number(data.leverage) : undefined,
+        maxDrawdownPercent: data.maxDrawdownPercent ? Number(data.maxDrawdownPercent) : undefined,
+        scheduledStartUtc: data.scheduledStartUtc || undefined,
+        scheduledEndUtc: data.scheduledEndUtc || undefined,
       }
       await updateAgentConfig(agentKey, saved)
       toast.success('Configuration saved')
@@ -137,13 +140,34 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
         <div>
           <label className="text-xs font-medium text-muted uppercase tracking-wider block mb-2">Max Daily Loss (USD)</label>
           <input
-            type="number"
-            min="1"
-            step="1"
+            type="number" min="1" step="1"
             placeholder="e.g. 50 — auto-pauses when daily P&L ≤ -this"
             {...register('maxDailyLossUsd', { setValueAs: v => v === '' || v == null ? undefined : Number(v) })}
           />
         </div>
+
+        {/* Drawdown auto-pause */}
+        <div>
+          <label className="text-xs font-medium text-muted uppercase tracking-wider block mb-2">Max Drawdown (%)</label>
+          <input
+            type="number" min="1" max="100" step="0.5"
+            placeholder="e.g. 5 — auto-pauses when equity drops 5% below session peak"
+            {...register('maxDrawdownPercent', { setValueAs: v => v === '' || v == null ? undefined : Number(v) })}
+          />
+        </div>
+
+        {/* Scheduled window */}
+        {fetchMode !== 'manual' && (
+          <div>
+            <label className="text-xs font-medium text-muted uppercase tracking-wider block mb-2">Scheduled Window (UTC)</label>
+            <div className="flex items-center gap-2">
+              <input type="time" className="flex-1" placeholder="08:00" {...register('scheduledStartUtc')} />
+              <span className="text-muted text-xs">to</span>
+              <input type="time" className="flex-1" placeholder="17:00" {...register('scheduledEndUtc')} />
+            </div>
+            <p className="text-xs text-muted2 mt-1">Leave empty to run 24/7. Supports midnight-spanning windows (e.g. 22:00 → 06:00).</p>
+          </div>
+        )}
 
         {/* Custom prompt */}
         <div>

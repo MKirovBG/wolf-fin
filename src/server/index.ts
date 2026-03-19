@@ -697,6 +697,13 @@ export async function startServer(): Promise<void> {
     return reply.send({ ok: true })
   })
 
+  // ── Agent Performance Stats ───────────────────────────────────────────────────
+  app.get('/api/agents/:key/stats', async (req, reply) => {
+    const { key } = req.params as { key: string }
+    const { dbGetAgentStats } = await import('../db/index.js')
+    return reply.send(dbGetAgentStats(decodeURIComponent(key)))
+  })
+
   // ── Agent Plans ───────────────────────────────────────────────────────────────
   app.get('/api/agents/:key/plans', async (req) => {
     const { key } = req.params as { key: string }

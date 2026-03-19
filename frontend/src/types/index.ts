@@ -20,6 +20,23 @@ export interface AgentConfig {
   llmProvider?: 'anthropic' | 'openrouter'
   llmModel?: string
   maxDailyLossUsd?: number
+  maxDrawdownPercent?: number
+  scheduledStartUtc?: string
+  scheduledEndUtc?: string
+}
+
+export interface AgentStats {
+  totalTicks: number
+  totalTrades: number
+  wins: number
+  losses: number
+  winRate: number | null
+  avgWin: number | null
+  avgLoss: number | null
+  riskReward: number | null
+  sharpe: number | null
+  totalPnl: number
+  equityCurve: Array<{ time: string; cumPnl: number }>
 }
 
 export interface OpenRouterModel {

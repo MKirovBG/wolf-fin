@@ -80,6 +80,14 @@ export function Dashboard() {
 
   const activityData = buildActivityData(events)
 
+  // Equity curve from recent closed trades
+  const closedChron = [...closedTrades].reverse()
+  let cumPnl = 0
+  const equityCurveData = closedChron.map(e => {
+    cumPnl += e.pnlUsd ?? 0
+    return { time: e.time, cumPnl: parseFloat(cumPnl.toFixed(2)) }
+  })
+
   const decisionDist = [
     { name: 'BUY',  count: events.filter(e => e.decision.toUpperCase().startsWith('BUY')).length,  color: '#22c55e' },
     { name: 'SELL', count: events.filter(e => e.decision.toUpperCase().startsWith('SELL')).length, color: '#ef4444' },
@@ -188,6 +196,30 @@ export function Dashboard() {
           }
         </Card>
       </div>
+
+      {/* Equity curve */}
+      {equityCurveData.length > 1 && (
+        <Card title="Equity Curve (all agents)" className="mb-4">
+          <ResponsiveContainer width="100%" height={160}>
+            <AreaChart data={equityCurveData}>
+              <defs>
+                <linearGradient id="eqDashGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%"  stopColor={cumPnl >= 0 ? '#22c55e' : '#ef4444'} stopOpacity={0.2} />
+                  <stop offset="95%" stopColor={cumPnl >= 0 ? '#22c55e' : '#ef4444'} stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <XAxis dataKey="time" tick={{ fill: '#4b5563', fontSize: 9 }} tickFormatter={t => t.slice(11, 16)} />
+              <YAxis tick={{ fill: '#4b5563', fontSize: 10 }} tickFormatter={v => `$${(v as number).toFixed(0)}`} />
+              <Tooltip
+                contentStyle={{ background: '#1a1a1f', border: '1px solid #2a2a32', borderRadius: 8, fontSize: 12 }}
+                formatter={(v: number) => [`$${v.toFixed(2)}`, 'Cum P&L']}
+                labelFormatter={t => new Date(t as string).toLocaleString()}
+              />
+              <Area type="monotone" dataKey="cumPnl" stroke={cumPnl >= 0 ? '#22c55e' : '#ef4444'} fill="url(#eqDashGrad)" strokeWidth={2} dot={false} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </Card>
+      )}
 
       {/* Agent status strip */}
       {agents.length > 0 && (

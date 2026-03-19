@@ -22,6 +22,9 @@ export interface AgentConfig {
   llmProvider?: 'anthropic' | 'openrouter'  // defaults to 'anthropic'
   llmModel?: string              // OpenRouter model ID e.g. "openai/gpt-4o" or "anthropic/claude-opus-4-5"
   maxDailyLossUsd?: number       // Auto-pause agent when today's realized P&L drops below -maxDailyLossUsd
+  maxDrawdownPercent?: number    // Auto-pause agent when equity drops X% below session peak (e.g. 5 = 5%)
+  scheduledStartUtc?: string     // HH:MM UTC — loop only runs inside this window
+  scheduledEndUtc?: string       // HH:MM UTC — loop only runs inside this window
 }
 
 export interface AgentState {

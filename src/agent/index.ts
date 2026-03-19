@@ -106,6 +106,9 @@ function autoSummarisePreviousSession(agentKey: string): void {
   }
 }
 
+// ── Per-agent peak equity tracker — used for drawdown auto-pause ──────────────
+const peakEquityByAgent = new Map<string, number>()
+
 // ── Per-agent position tracker (in-memory, updated each tick) ─────────────────
 
 interface TrackedPosition { side: string; priceOpen: number; volume: number }
@@ -859,6 +862,24 @@ export async function runAgentTick(config: AgentConfig, tickType: 'trading' | 'p
               `Daily loss limit hit: today P&L $${todayPnl.toFixed(2)} ≤ -$${config.maxDailyLossUsd}. Agent paused.`)
             setAgentStatus(agentKey, 'paused')
             return   // exits the tick; releaseCycleLock runs in finally
+          }
+
+          // ── Drawdown guard — auto-pause if equity drops X% below peak ─────
+          if (config.maxDrawdownPercent != null) {
+            const accountInfo = snap.accountInfo as { equity?: number } | undefined
+            const equity = accountInfo?.equity
+            if (equity != null) {
+              const prevPeak = peakEquityByAgent.get(agentKey) ?? equity
+              const peak = Math.max(prevPeak, equity)
+              peakEquityByAgent.set(agentKey, peak)
+              const drawdownPct = peak > 0 ? (peak - equity) / peak * 100 : 0
+              if (drawdownPct >= config.maxDrawdownPercent) {
+                logEvent(agentKey, 'warn', 'guardrail_block',
+                  `Drawdown limit hit: ${drawdownPct.toFixed(1)}% drawdown — equity $${equity.toFixed(2)} vs peak $${peak.toFixed(2)}. Agent paused.`)
+                setAgentStatus(agentKey, 'paused')
+                return
+              }
+            }
           }
         }
       }

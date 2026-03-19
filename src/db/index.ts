@@ -255,6 +255,74 @@ export function dbGetAgentPerformance(agentKey: string, limit = 10): AgentPerfor
   }
 }
 
+export interface AgentStats {
+  totalTicks: number
+  totalTrades: number
+  wins: number
+  losses: number
+  winRate: number | null        // 0–1
+  avgWin: number | null         // USD
+  avgLoss: number | null        // USD (positive)
+  riskReward: number | null     // avgWin / avgLoss
+  sharpe: number | null         // annualised Sharpe on daily P&L
+  totalPnl: number
+  equityCurve: Array<{ time: string; cumPnl: number }>
+}
+
+export function dbGetAgentStats(agentKey: string, limit = 1000): AgentStats {
+  const rows = db.prepare(
+    'SELECT time, pnl_usd FROM cycle_results WHERE agent_key = ? AND pnl_usd IS NOT NULL ORDER BY id ASC LIMIT ?'
+  ).all(agentKey, limit) as Array<{ time: string; pnl_usd: number }>
+
+  const totalRows = db.prepare(
+    'SELECT COUNT(*) as n FROM cycle_results WHERE agent_key = ?'
+  ).get(agentKey) as { n: number }
+
+  const wins   = rows.filter(r => r.pnl_usd > 0)
+  const losses = rows.filter(r => r.pnl_usd < 0)
+
+  const winRate    = rows.length > 0 ? wins.length / rows.length : null
+  const avgWin     = wins.length > 0   ? wins.reduce((s, r) => s + r.pnl_usd, 0) / wins.length : null
+  const avgLoss    = losses.length > 0 ? Math.abs(losses.reduce((s, r) => s + r.pnl_usd, 0) / losses.length) : null
+  const riskReward = avgWin != null && avgLoss != null && avgLoss > 0 ? avgWin / avgLoss : null
+
+  // Equity curve — cumulative P&L in chronological order
+  let cumPnl = 0
+  const equityCurve = rows.map(r => {
+    cumPnl += r.pnl_usd
+    return { time: r.time, cumPnl: parseFloat(cumPnl.toFixed(2)) }
+  })
+
+  // Annualised Sharpe on daily P&L buckets
+  const byDay: Record<string, number> = {}
+  for (const r of rows) {
+    const day = r.time.slice(0, 10)
+    byDay[day] = (byDay[day] ?? 0) + r.pnl_usd
+  }
+  const dailyReturns = Object.values(byDay)
+  let sharpe: number | null = null
+  if (dailyReturns.length >= 2) {
+    const mean = dailyReturns.reduce((s, v) => s + v, 0) / dailyReturns.length
+    const variance = dailyReturns.reduce((s, v) => s + (v - mean) ** 2, 0) / (dailyReturns.length - 1)
+    const std = Math.sqrt(variance)
+    sharpe = std > 0 ? parseFloat(((mean / std) * Math.sqrt(252)).toFixed(2)) : null
+  }
+
+  return {
+    totalTicks: totalRows.n,
+    totalTrades: rows.length,
+    wins: wins.length,
+    losses: losses.length,
+    winRate,
+    avgWin,
+    avgLoss,
+    riskReward,
+    sharpe,
+    totalPnl: parseFloat(cumPnl.toFixed(2)),
+    equityCurve,
+  }
+}
+
 type CycleRow = {
   id: number; agent_key: string; symbol: string; market: string; paper: number
   decision: string; reason: string; time: string; error: string | null; pnl_usd: number | null

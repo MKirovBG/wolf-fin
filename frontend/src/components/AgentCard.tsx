@@ -54,7 +54,9 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
   const [orModels, setOrModels] = useState<OpenRouterModel[]>([])
   const [orLoading, setOrLoading] = useState(false)
   const [orError, setOrError] = useState<string | null>(null)
-  const [showFreeOnly, setShowFreeOnly] = useState(false)
+  const [showFreeOnly, setShowFreeOnly] = useState(
+    () => (agent.config.openRouterModel ?? '').endsWith(':free')
+  )
 
   useEffect(() => {
     if (llmProvider === 'openrouter') {

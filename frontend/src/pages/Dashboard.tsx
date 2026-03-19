@@ -263,43 +263,9 @@ export function Dashboard() {
 
       {/* Live threaded logs */}
       <div className="mb-4">
-        <ThreadedLogsPanel />
+        <ThreadedLogsPanel maxThreads={10} />
       </div>
 
-      {/* Recent events */}
-      <Card title="Recent Cycles">
-        {events.length === 0
-          ? <p className="text-muted text-sm py-4 text-center">No events yet — start an agent or use the Trigger button</p>
-          : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr>
-                    {['Time', 'Symbol', 'Decision', 'P&L', 'Reason'].map(h => (
-                      <th key={h} className="text-left text-xs font-semibold uppercase tracking-wider text-muted pb-3 pr-4 border-b border-border">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {events.map((e, i) => (
-                    <tr key={i} className="hover:bg-surface2 border-b border-border/50 transition-colors">
-                      <td className="py-2.5 pr-4 text-muted whitespace-nowrap text-xs">{rel(e.time)}</td>
-                      <td className="py-2.5 pr-4 font-semibold text-sm">{e.symbol}<span className="text-muted text-xs ml-1">({e.market})</span></td>
-                      <td className="py-2.5 pr-4"><Badge label={e.decision.split(' ')[0]} variant={decisionVariant(e.decision)} /></td>
-                      <td className="py-2.5 pr-4 font-mono text-sm">
-                        {e.pnlUsd != null
-                          ? <span className={e.pnlUsd >= 0 ? 'text-green' : 'text-red'}>{e.pnlUsd >= 0 ? '+' : ''}${e.pnlUsd.toFixed(2)}</span>
-                          : <span className="text-muted">—</span>}
-                      </td>
-                      <td className="py-2.5 pr-4 text-muted max-w-[300px] truncate text-xs">{e.reason || '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )
-        }
-      </Card>
     </div>
   )
 }

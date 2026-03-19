@@ -6,9 +6,10 @@ import { TickThread } from './TickThread.tsx'
 
 interface Props {
   agentKey?: string
+  maxThreads?: number
 }
 
-export function ThreadedLogsPanel({ agentKey }: Props) {
+export function ThreadedLogsPanel({ agentKey, maxThreads }: Props) {
   const allLogsRef = useRef<LogEntry[]>([])
   const lastIdRef  = useRef<number>(0)
   const [paused, setPaused] = useState(false)
@@ -66,7 +67,8 @@ export function ThreadedLogsPanel({ agentKey }: Props) {
     setTick(t => t + 1)
   }
 
-  const threads = useTickThreads(allLogsRef.current, agentKey)
+  const allThreads = useTickThreads(allLogsRef.current, agentKey)
+  const threads = maxThreads != null ? allThreads.slice(0, maxThreads) : allThreads
 
   return (
     <div className="flex flex-col gap-3">

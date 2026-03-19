@@ -554,3 +554,24 @@ export function dbSaveSession(agentKey: string, data: {
 export function dbDeleteSession(agentKey: string, sessionDate: string): void {
   db.prepare('DELETE FROM agent_sessions WHERE agent_key = ? AND session_date = ?').run(agentKey, sessionDate)
 }
+
+/** Returns the most recent completed session before today — used for cross-session memory. */
+export function dbGetPreviousSession(agentKey: string): AgentSessionData | null {
+  const today = new Date().toISOString().slice(0, 10)
+  const row = db.prepare(
+    'SELECT * FROM agent_sessions WHERE agent_key = ? AND session_date < ? ORDER BY session_date DESC LIMIT 1'
+  ).get(agentKey, today) as {
+    agent_key: string; session_date: string; tick_count: number
+    messages: string; summary: string | null; created_at: string; updated_at: string
+  } | undefined
+  if (!row) return null
+  return {
+    agentKey: row.agent_key,
+    sessionDate: row.session_date,
+    tickCount: row.tick_count,
+    messages: JSON.parse(row.messages),
+    summary: row.summary,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}

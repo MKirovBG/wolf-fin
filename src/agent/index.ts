@@ -23,7 +23,7 @@ import {
   dbGetAgentPerformance, makeAgentKey,
   dbSaveMemory, dbGetMemories, dbDeleteMemory,
   dbSavePlan, dbGetActivePlan, dbGetStrategy,
-  dbGetTodaySession, dbSaveSession,
+  dbGetTodaySession, dbSaveSession, dbGetPreviousSession,
 } from '../db/index.js'
 import type { AgentConfig } from '../types.js'
 import type { OrderParams, RiskState } from '../adapters/types.js'
@@ -68,10 +68,42 @@ function loadOrCreateSession(agentKey: string): { session: ActiveSession; isNew:
     return { session, isNew: false }
   }
 
-  // Brand new session
+  // Brand new session — auto-summarise the previous session into persistent memory
+  autoSummarisePreviousSession(agentKey)
   const session: ActiveSession = { sessionDate: today, messages: [], tickCount: 0, summary: null }
   activeSessions.set(agentKey, session)
   return { session, isNew: true }
+}
+
+/**
+ * When a new session starts, compress the previous day's session into a persistent
+ * agent_memory entry (category='session') so context survives across session resets.
+ * The memory is automatically injected into the system prompt via dbGetMemories().
+ */
+function autoSummarisePreviousSession(agentKey: string): void {
+  try {
+    const prev = dbGetPreviousSession(agentKey)
+    if (!prev || prev.tickCount === 0) return
+
+    // Idempotent — skip if already saved
+    const memKey = `session_${prev.sessionDate}`
+    const existing = dbGetMemories(agentKey, 'session', 100).find(m => m.key === memKey)
+    if (existing) return
+
+    // Compress the recent messages not yet in summary
+    const recentCompressed = compressToSummary(prev.messages as Anthropic.MessageParam[])
+
+    const parts: string[] = [`[${prev.sessionDate}] — ${prev.tickCount} ticks`]
+    if (prev.summary) parts.push(prev.summary)
+    if (recentCompressed && recentCompressed !== '(no decisions recorded)') parts.push(recentCompressed)
+
+    const value = parts.join('\n')
+    // Keep 14 days of session history
+    dbSaveMemory(agentKey, 'session', memKey, value, 0.9, 14 * 24)
+    log.info({ agentKey, sessionDate: prev.sessionDate }, 'cross-session memory saved')
+  } catch (err) {
+    log.warn({ agentKey, err }, 'autoSummarisePreviousSession failed — skipping')
+  }
 }
 
 // ── Per-agent position tracker (in-memory, updated each tick) ─────────────────

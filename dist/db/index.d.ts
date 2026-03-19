@@ -67,6 +67,11 @@ export declare function dbGetMemories(agentKey: string, category?: string, limit
 }>;
 export declare function dbDeleteMemory(agentKey: string, category: string, key: string): void;
 export declare function dbClearMemories(agentKey: string): void;
+/** Wipe ALL data for an agent (memories, strategy, plans, analyses, sessions, cycles, logs).
+ *  Config and the agent entry itself are NOT touched. */
+export declare function dbResetAgentData(agentKey: string): {
+    deleted: Record<string, number>;
+};
 export interface StrategyDoc {
     agentKey: string;
     name: string;

@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import { getAgents, startAgent, pauseAgent, stopAgent, triggerAgent, updateAgentConfig, getAgentCycles, getAgentStats } from '../api/client.ts'
+import { getAgents, startAgent, pauseAgent, stopAgent, triggerAgent, resetAgentData, updateAgentConfig, getAgentCycles, getAgentStats } from '../api/client.ts'
 import type { CycleResult, AgentStats } from '../types/index.ts'
 import type { AgentState, GuardrailsConfig } from '../types/index.ts'
 import { Badge, decisionVariant } from '../components/Badge.tsx'
@@ -199,6 +199,25 @@ export function AgentDetail() {
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border text-muted rounded-md hover:border-muted2 hover:text-text transition-all"
             >
               Market
+            </button>
+
+            {/* Divider */}
+            <div className="w-px h-4 bg-border mx-1" />
+
+            <button
+              disabled={loading !== null}
+              onClick={async () => {
+                if (!confirm('Reset ALL data for this agent?\n\nThis deletes: memories, strategy, plans, sessions, trade history, and logs.\n\nConfig and prompt are kept. This cannot be undone.')) return
+                await act(async () => {
+                  const res = await resetAgentData(agentKey)
+                  const d = (res as { deleted?: Record<string, number> }).deleted
+                  if (d) alert(`Reset complete.\n\nDeleted:\n${Object.entries(d).map(([k,v]) => `  ${k}: ${v}`).join('\n')}`)
+                }, 'reset')
+                load()
+              }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-red/30 text-red rounded-md hover:bg-red/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+            >
+              Reset Data
             </button>
           </div>
         </div>

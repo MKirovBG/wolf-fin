@@ -497,6 +497,23 @@ export function dbClearMemories(agentKey: string): void {
   db.prepare(`DELETE FROM agent_memories WHERE agent_key = ?`).run(agentKey)
 }
 
+/** Wipe ALL data for an agent (memories, strategy, plans, analyses, sessions, cycles, logs).
+ *  Config and the agent entry itself are NOT touched. */
+export function dbResetAgentData(agentKey: string): { deleted: Record<string, number> } {
+  const del = (table: string, col = 'agent_key') =>
+    (db.prepare(`DELETE FROM ${table} WHERE ${col} = ?`).run(agentKey)).changes
+  const deleted = {
+    memories:  del('agent_memories'),
+    strategy:  del('agent_strategies'),
+    plans:     del('agent_plans'),
+    analyses:  del('agent_analyses'),
+    sessions:  del('agent_sessions'),
+    cycles:    del('cycle_results'),
+    logs:      del('log_entries'),
+  }
+  return { deleted }
+}
+
 // ── Strategy ─────────────────────────────────────────────────────────────────
 
 export interface StrategyDoc {

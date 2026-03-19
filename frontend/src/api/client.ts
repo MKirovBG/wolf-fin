@@ -37,6 +37,9 @@ export const stopAgent = (key: string) =>
 export const triggerAgent = (key: string) =>
   api<{ ok: boolean }>(`/api/agents/${encodeURIComponent(key)}/trigger`, { method: 'POST' })
 
+export const resetAgentData = (key: string) =>
+  api<{ ok: boolean; deleted: Record<string, number> }>(`/api/agents/${encodeURIComponent(key)}/reset`, { method: 'POST' })
+
 // ── Market Data (read-only) ───────────────────────────────────────────────────
 export const getMarketData = (market: string, symbol: string) =>
   api<MarketSnapshot>(`/api/market/${market}/${encodeURIComponent(symbol)}`)

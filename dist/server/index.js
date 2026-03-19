@@ -5,8 +5,8 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, appendFileSync, readFileSync, writeFileSync } from 'fs';
 import pino from 'pino';
-import { getState, getAgent, upsertAgent, removeAgent, getLogs, subscribeToLogs, subscribeToAgentStatus } from './state.js';
-import { dbGetCycleResults, dbGetCycleResultsForAgent, dbGetCycleById, dbGetLogsForCycle, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor, makeAgentKey, dbGetStrategy, dbSaveStrategy, dbDeleteStrategy, dbGetMemories, dbClearMemories, dbDeleteMemory, dbGetActivePlan, dbGetAllPlans } from '../db/index.js';
+import { getState, getAgent, upsertAgent, removeAgent, setAgentStatus, getLogs, subscribeToLogs, subscribeToAgentStatus } from './state.js';
+import { dbGetCycleResults, dbGetCycleResultsForAgent, dbGetCycleById, dbGetLogsForCycle, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor, makeAgentKey, dbGetStrategy, dbSaveStrategy, dbDeleteStrategy, dbGetMemories, dbClearMemories, dbDeleteMemory, dbGetActivePlan, dbGetAllPlans, dbResetAgentData } from '../db/index.js';
 import { getRiskState } from '../guardrails/riskState.js';
 import { getRiskStateFor } from '../guardrails/riskStateStore.js';
 import { startAgentSchedule, pauseAgentSchedule, stopAgentSchedule } from '../scheduler/index.js';
@@ -638,6 +638,17 @@ export async function startServer() {
         const { key, category, memKey } = req.params;
         dbDeleteMemory(key, category, decodeURIComponent(memKey));
         return reply.send({ ok: true });
+    });
+    // ── Reset all agent data (keeps config) ────────────────────────────────────
+    app.post('/api/agents/:key/reset', async (req, reply) => {
+        const { key } = req.params;
+        const decoded = decodeURIComponent(key);
+        // Stop the agent first if running
+        const { stopAgentSchedule } = await import('../scheduler/index.js');
+        stopAgentSchedule(decoded);
+        setAgentStatus(decoded, 'idle');
+        const result = dbResetAgentData(decoded);
+        return reply.send({ ok: true, ...result });
     });
     // ── Agent Performance Stats ───────────────────────────────────────────────────
     app.get('/api/agents/:key/stats', async (req, reply) => {

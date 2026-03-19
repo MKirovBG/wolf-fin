@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import { getAgents, startAgent, pauseAgent, stopAgent, triggerAgent, resetAgentData, updateAgentConfig, getAgentCycles, getAgentStats } from '../api/client.ts'
+import { getAgents, startAgent, pauseAgent, stopAgent, triggerAgent, resetAgentData, getAgentCycles, getAgentStats } from '../api/client.ts'
 import type { CycleResult, AgentStats, LogEntry } from '../types/index.ts'
 import type { AgentState } from '../types/index.ts'
 import { Badge, decisionVariant } from '../components/Badge.tsx'
@@ -160,6 +160,7 @@ export function AgentDetail() {
   const [tab, setTab] = useState<Tab>('overview')
   const [stats, setStats] = useState<AgentStats | null>(null)
   const [customPrompt, setCustomPrompt] = useState('')
+  const [promptTemplate, setPromptTemplate] = useState<string | undefined>(undefined)
   const [selectedCycleId, setSelectedCycleId] = useState<number | null>(null)
   const [intelligenceKey, setIntelligenceKey] = useState(0) // bump to force reload
   const toast = useToast()
@@ -177,6 +178,7 @@ export function AgentDetail() {
       setCycles(agentCycles)
       if (found) {
         setCustomPrompt(found.config.customPrompt ?? '')
+        setPromptTemplate(found.config.promptTemplate ?? undefined)
       }
     } catch { /* ignore */ }
   }, [agentKey])
@@ -208,6 +210,7 @@ export function AgentDetail() {
       await updateAgentConfig(agentKey, { customPrompt: v || undefined })
     } catch { /* ignore */ }
   }
+
 
   if (!agent) {
     return (
@@ -431,8 +434,9 @@ export function AgentDetail() {
             <div className="bg-surface border border-border rounded-lg p-4">
               <SystemPromptEditor
                 agentKey={agentKey}
+                promptTemplate={promptTemplate}
                 customPrompt={customPrompt}
-                onChange={saveCustomPrompt}
+                onSaved={load}
               />
             </div>
           </div>

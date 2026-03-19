@@ -1,160 +1,195 @@
-import { useEffect, useState } from 'react'
-import { getSystemPrompt } from '../api/client.ts'
+import { useEffect, useState, useRef } from 'react'
+import { getSystemPrompt, updateAgentConfig } from '../api/client.ts'
 
 interface Props {
   agentKey: string
-  customPrompt: string
-  onChange: (v: string) => void
+  promptTemplate?: string   // full override if set
+  customPrompt: string      // additional instructions only
+  onSaved: () => void       // called after a save so parent can reload config
 }
 
-type State = 'new-agent' | 'loading' | 'loaded-locked' | 'editing'
+type State = 'loading' | 'locked' | 'editing'
 
-export function SystemPromptEditor({ agentKey, customPrompt, onChange }: Props) {
-  const [state, setState] = useState<State>(!agentKey ? 'new-agent' : 'loading')
-  const [fullPrompt, setFullPrompt] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [expandedBase, setExpandedBase] = useState(false)
+export function SystemPromptEditor({ agentKey, promptTemplate, customPrompt, onSaved }: Props) {
+  const [state, setState]           = useState<State>('loading')
+  const [compiledPrompt, setCompiled] = useState('')   // full compiled prompt from server
+  const [editText, setEditText]     = useState('')     // what's in the textarea
+  const [saving, setSaving]         = useState(false)
+  const [error, setError]           = useState<string | null>(null)
+  const [isOverride, setIsOverride] = useState(false)  // true when promptTemplate is in use
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
+  // Load the compiled full prompt from the server
   useEffect(() => {
-    if (!agentKey) { setState('new-agent'); return }
-    // Don't reset to loading if already editing — preserve editing state across re-renders
+    if (!agentKey) return
     setState(s => s === 'editing' ? s : 'loading')
-    setError(null)
     getSystemPrompt(agentKey)
       .then(res => {
-        setFullPrompt(res.prompt)
-        setState(s => s === 'editing' ? s : 'loaded-locked')
+        setCompiled(res.prompt)
+        setIsOverride(!!(promptTemplate && promptTemplate.trim().length > 0))
+        setState(s => s === 'editing' ? s : 'locked')
       })
       .catch(() => {
-        setError('Could not load system prompt — agent may not be saved yet.')
-        setState(s => s === 'editing' ? s : 'loaded-locked')
+        setError('Could not load system prompt.')
+        setState(s => s === 'editing' ? s : 'locked')
       })
-  }, [agentKey])
+  }, [agentKey, promptTemplate])
 
-  // Split full prompt into base part and custom part
-  const basePrompt = fullPrompt
-    ? (fullPrompt.includes('ADDITIONAL INSTRUCTIONS')
-        ? fullPrompt.split('ADDITIONAL INSTRUCTIONS')[0].trim()
-        : fullPrompt)
-    : null
+  const startEditing = () => {
+    // Populate textarea with the current compiled prompt for full editing
+    setEditText(compiledPrompt)
+    setState('editing')
+    setTimeout(() => textareaRef.current?.focus(), 50)
+  }
+
+  const save = async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      await updateAgentConfig(agentKey, { promptTemplate: editText.trim() || undefined })
+      onSaved()
+      setState('locked')
+    } catch {
+      setError('Failed to save — please try again.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const resetToDefault = async () => {
+    if (!confirm('Reset to the default Wolf-Fin system prompt?\n\nYour custom prompt override will be deleted.')) return
+    setSaving(true)
+    try {
+      await updateAgentConfig(agentKey, { promptTemplate: undefined })
+      onSaved()
+      setState('loading') // will reload
+    } catch {
+      setError('Failed to reset.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const cancel = () => {
+    setState('locked')
+  }
 
   return (
-    <div className="space-y-4">
-      {/* Section header */}
+    <div className="space-y-3">
+      {/* Header row */}
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-sm font-semibold text-text">System Prompt</h3>
-          <p className="text-xs text-muted mt-0.5">The full prompt sent to the LLM each cycle</p>
+          <p className="text-xs text-muted mt-0.5">
+            {isOverride
+              ? <span className="text-yellow">Custom override active — default prompt is replaced</span>
+              : 'Default Wolf-Fin prompt · click Edit to customise'}
+          </p>
         </div>
-        {state === 'loaded-locked' && (
-          <button
-            type="button"
-            onClick={() => setState('editing')}
-            className="px-3 py-1.5 text-xs border border-border text-muted rounded-lg hover:border-yellow hover:text-yellow transition-colors"
-          >
-            Edit Custom Instructions
-          </button>
-        )}
-        {state === 'editing' && (
-          <button
-            type="button"
-            onClick={() => setState('loaded-locked')}
-            className="px-3 py-1.5 text-xs border border-green/40 text-green rounded-lg hover:border-green transition-colors"
-          >
-            ✓ Done
-          </button>
-        )}
+
+        <div className="flex items-center gap-2">
+          {state === 'locked' && (
+            <>
+              {isOverride && (
+                <button
+                  type="button"
+                  onClick={resetToDefault}
+                  disabled={saving}
+                  className="px-3 py-1.5 text-xs border border-red/30 text-red rounded-lg hover:bg-red/10 disabled:opacity-40 transition-colors"
+                >
+                  Reset to default
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={startEditing}
+                className="px-3 py-1.5 text-xs border border-border text-muted rounded-lg hover:border-yellow hover:text-yellow transition-colors"
+              >
+                Edit Prompt
+              </button>
+            </>
+          )}
+
+          {state === 'editing' && (
+            <>
+              <button
+                type="button"
+                onClick={cancel}
+                disabled={saving}
+                className="px-3 py-1.5 text-xs border border-border text-muted rounded-lg hover:border-muted2 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={save}
+                disabled={saving}
+                className="px-3 py-1.5 text-xs border border-green/50 text-green bg-green-dim rounded-lg hover:bg-green/10 disabled:opacity-40 transition-colors font-medium"
+              >
+                {saving ? 'Saving…' : 'Save Prompt'}
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
-      {/* New agent message */}
-      {state === 'new-agent' && (
-        <div className="bg-surface2 border border-border rounded-lg p-4">
-          <p className="text-sm text-muted">Save the agent first to preview the full system prompt.</p>
-          <div className="mt-3">
-            <label className="text-xs font-medium text-muted uppercase tracking-wider block mb-2">
-              Custom Instructions (optional)
-            </label>
-            <textarea
-              value={customPrompt}
-              onChange={e => onChange(e.target.value)}
-              placeholder="Additional instructions appended to the system prompt..."
-              rows={4}
-              className="font-mono text-xs"
-            />
-          </div>
-        </div>
+      {/* Error */}
+      {error && (
+        <div className="text-xs text-red bg-red-dim border border-red/30 rounded-lg px-3 py-2">{error}</div>
       )}
 
       {/* Loading */}
       {state === 'loading' && (
         <div className="bg-surface2 border border-border rounded-lg p-4 text-sm text-muted">
-          Loading system prompt...
+          Loading system prompt…
         </div>
       )}
 
-      {/* Error */}
-      {error && (
-        <div className="text-xs text-yellow bg-yellow-dim border border-yellow/30 rounded-lg px-3 py-2">
-          {error}
-        </div>
-      )}
-
-      {/* Loaded — locked or editing */}
-      {(state === 'loaded-locked' || state === 'editing') && (
-        <div className="space-y-3">
-
-          {/* Base prompt section */}
-          {basePrompt && (
-            <div className="border border-border rounded-lg overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setExpandedBase(v => !v)}
-                className="w-full flex items-center justify-between px-3 py-2.5 bg-surface2 hover:bg-surface3 transition-colors text-left"
-              >
-                <span className="text-xs font-semibold text-muted uppercase tracking-wider">Base Prompt</span>
-                <span className="text-muted text-xs">{expandedBase ? '▲ collapse' : '▼ expand'}</span>
-              </button>
-              {expandedBase && (
-                <pre className="bg-bg text-muted text-xs font-mono leading-relaxed p-4 overflow-auto max-h-80 whitespace-pre-wrap break-words">
-                  {basePrompt}
-                </pre>
-              )}
-            </div>
-          )}
-
-          {/* Editing notice */}
-          {state === 'editing' && (
-            <div className="bg-yellow-dim border border-yellow/30 rounded-lg px-3 py-2">
-              <p className="text-xs text-yellow/80">
-                ⚠ Editing mode — changes are auto-saved as you type. Click Done when finished.
-              </p>
-            </div>
-          )}
-
-          {/* Custom instructions section */}
-          <div className="border border-border rounded-lg overflow-hidden">
-            <div className="flex items-center justify-between px-3 py-2.5 bg-surface2 border-b border-border">
-              <span className="text-xs font-semibold text-yellow uppercase tracking-wider">Additional Instructions</span>
-              {state === 'loaded-locked' && (
-                <span className="text-xs text-muted2">Read-only — click Edit to modify</span>
-              )}
-            </div>
-            {state === 'editing' ? (
-              <textarea
-                value={customPrompt}
-                onChange={e => onChange(e.target.value)}
-                placeholder="Additional instructions appended to the base prompt..."
-                rows={6}
-                className="font-mono text-xs rounded-none border-0"
-                style={{ borderRadius: 0 }}
-                autoFocus
-              />
-            ) : (
-              <pre className="bg-bg text-xs font-mono leading-relaxed p-4 whitespace-pre-wrap break-words text-muted min-h-[80px]">
-                {customPrompt || <span className="italic text-muted2">No custom instructions</span>}
-              </pre>
-            )}
+      {/* Locked — read-only view */}
+      {state === 'locked' && compiledPrompt && (
+        <div className="border border-border rounded-lg overflow-hidden">
+          <div className="flex items-center justify-between px-3 py-2 bg-surface2 border-b border-border">
+            <span className="text-xs font-semibold text-muted uppercase tracking-wider">
+              {isOverride ? 'Custom Prompt (override)' : 'Compiled Prompt (read-only)'}
+            </span>
+            <span className="text-xs text-muted2">{compiledPrompt.length.toLocaleString()} chars</span>
           </div>
+          <pre className="bg-bg text-muted text-xs font-mono leading-relaxed p-4 overflow-auto max-h-72 whitespace-pre-wrap break-words">
+            {compiledPrompt}
+          </pre>
+        </div>
+      )}
+
+      {/* Editing — full textarea */}
+      {state === 'editing' && (
+        <div className="border border-yellow/40 rounded-lg overflow-hidden">
+          <div className="flex items-center justify-between px-3 py-2 bg-yellow-dim border-b border-yellow/30">
+            <span className="text-xs font-semibold text-yellow uppercase tracking-wider">Editing Full Prompt</span>
+            <span className="text-xs text-yellow/70">
+              This will override the default prompt entirely · use {'{{'} symbol {'}}'},  {'{{'} strategy {'}}'}  etc. for dynamic values
+            </span>
+          </div>
+          <textarea
+            ref={textareaRef}
+            value={editText}
+            onChange={e => setEditText(e.target.value)}
+            rows={28}
+            className="font-mono text-xs rounded-none border-0 w-full"
+            style={{ borderRadius: 0 }}
+            spellCheck={false}
+          />
+        </div>
+      )}
+
+      {/* Additional instructions note */}
+      {state === 'locked' && !isOverride && customPrompt && (
+        <div className="border border-border rounded-lg overflow-hidden">
+          <div className="px-3 py-2 bg-surface2 border-b border-border">
+            <span className="text-xs font-semibold text-yellow uppercase tracking-wider">Additional Instructions</span>
+          </div>
+          <pre className="bg-bg text-xs font-mono leading-relaxed p-4 whitespace-pre-wrap break-words text-muted min-h-[60px]">
+            {customPrompt}
+          </pre>
         </div>
       )}
     </div>

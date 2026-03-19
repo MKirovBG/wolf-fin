@@ -136,7 +136,7 @@ export async function startServer(): Promise<void> {
   app.get('/api/status', async () => {
     const { agents, recentEvents } = getState()
     return {
-      agents: Object.values(agents),
+      agents: Object.entries(agents).map(([key, agent]) => ({ ...agent, agentKey: key })),
       recentEvents,
       risk: getRiskState(),
     }
@@ -169,8 +169,12 @@ export async function startServer(): Promise<void> {
 
   app.delete('/api/agents/:key', async (req) => {
     const { key } = req.params as { key: string }
-    stopAgentSchedule(key)
-    removeAgent(key)
+    const decoded = decodeURIComponent(key)
+    stopAgentSchedule(decoded)
+    removeAgent(decoded)
+    // Cascade delete all agent data from DB
+    const { dbResetAgentData } = await import('../db/index.js')
+    dbResetAgentData(decoded)
     return { ok: true }
   })
 

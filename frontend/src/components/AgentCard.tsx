@@ -192,17 +192,19 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
 
         {llmProvider === 'openrouter' && (
           <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-medium text-muted uppercase tracking-wider">OpenRouter Model</label>
-              <label className="flex items-center gap-1.5 text-xs text-muted cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={showFreeOnly}
-                  onChange={e => setShowFreeOnly(e.target.checked)}
-                  className="rounded border-border"
-                />
-                Free only
-              </label>
+            <label className="text-xs font-medium text-muted uppercase tracking-wider">OpenRouter Model</label>
+            <div className="flex items-center gap-2 my-2">
+              <span className={`text-xs font-medium ${!showFreeOnly ? 'text-accent' : 'text-muted'}`}>Paid</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={showFreeOnly}
+                onClick={() => setShowFreeOnly(!showFreeOnly)}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${showFreeOnly ? 'bg-green' : 'bg-border'}`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${showFreeOnly ? 'translate-x-[18px]' : 'translate-x-[3px]'}`} />
+              </button>
+              <span className={`text-xs font-medium ${showFreeOnly ? 'text-green' : 'text-muted'}`}>Free</span>
             </div>
             {orLoading ? (
               <p className="text-sm text-muted py-2">Loading models...</p>

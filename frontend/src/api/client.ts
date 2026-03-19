@@ -69,18 +69,6 @@ export const getLogs = (sinceId?: number, agent?: string) => {
   return api<LogEntry[]>(`/api/logs${qs ? `?${qs}` : ''}`)
 }
 
-// ── Positions ─────────────────────────────────────────────────────────────────
-export const getPositions = () => api<PositionEntry[]>('/api/positions')
-export const getTrades    = () => api<FillEntry[]>('/api/trades')
-
-export const closePosition = (ticket: number, agentKey: string, volume?: number) =>
-  api<{ closed: boolean; ticket: number }>(`/api/positions/${ticket}/close`, { method: 'POST', ...json({ agentKey, volume }) })
-
-export const modifyPosition = (ticket: number, agentKey: string, sl?: number, tp?: number) =>
-  api<{ ok: boolean; ticket: number }>(`/api/positions/${ticket}/modify`, { method: 'POST', ...json({ agentKey, sl, tp }) })
-
-export const cancelOrder = (ticket: number, agentKey: string) =>
-  api<{ ok: boolean; ticket: number }>(`/api/orders/${ticket}/cancel`, { method: 'POST', ...json({ agentKey }) })
 
 // ── Reports ───────────────────────────────────────────────────────────────────
 export const getReportSummary = () => api<ReportSummary>('/api/reports/summary')

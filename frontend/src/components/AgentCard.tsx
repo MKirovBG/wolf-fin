@@ -54,6 +54,7 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
   const [orModels, setOrModels] = useState<OpenRouterModel[]>([])
   const [orLoading, setOrLoading] = useState(false)
   const [orError, setOrError] = useState<string | null>(null)
+  const [showFreeOnly, setShowFreeOnly] = useState(false)
 
   useEffect(() => {
     if (llmProvider === 'openrouter') {
@@ -191,24 +192,55 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
 
         {llmProvider === 'openrouter' && (
           <div>
-            <label className="text-xs font-medium text-muted uppercase tracking-wider block mb-2">OpenRouter Model</label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-medium text-muted uppercase tracking-wider">OpenRouter Model</label>
+              <label className="flex items-center gap-1.5 text-xs text-muted cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={showFreeOnly}
+                  onChange={e => setShowFreeOnly(e.target.checked)}
+                  className="rounded border-border"
+                />
+                Free only
+              </label>
+            </div>
             {orLoading ? (
               <p className="text-sm text-muted py-2">Loading models...</p>
             ) : orError ? (
               <p className="text-sm text-red py-2">{orError}</p>
             ) : (
-              <select {...register('llmModel')}>
-                <option value="">— Select model —</option>
-                {orModels.map(m => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}{m.contextLength ? ` · ${(m.contextLength / 1000).toFixed(0)}k ctx` : ''}
-                    {m.promptCost ? ` · $${(parseFloat(m.promptCost) * 1e6).toFixed(2)}/M` : ''}
-                  </option>
-                ))}
-              </select>
+              <>
+                <select {...register('llmModel')}>
+                  <option value="">— Select model —</option>
+                  {orModels
+                    .filter(m => {
+                      const cost = parseFloat(m.promptCost ?? '1')
+                      return showFreeOnly ? cost === 0 : cost > 0
+                    })
+                    .map(m => {
+                      const inputCost = parseFloat(m.promptCost ?? '0')
+                      const outputCost = parseFloat(m.completionCost ?? '0')
+                      const isFree = inputCost === 0 && outputCost === 0
+                      const costLabel = isFree
+                        ? 'FREE'
+                        : `$${(inputCost * 1e6).toFixed(2)}/$${(outputCost * 1e6).toFixed(2)} per M`
+                      return (
+                        <option key={m.id} value={m.id}>
+                          {m.name} · {(m.contextLength / 1000).toFixed(0)}k · {costLabel}
+                        </option>
+                      )
+                    })}
+                </select>
+                <p className="text-[10px] text-muted mt-1">
+                  {showFreeOnly
+                    ? `${orModels.filter(m => parseFloat(m.promptCost ?? '1') === 0).length} free models`
+                    : `${orModels.filter(m => parseFloat(m.promptCost ?? '1') > 0).length} paid models`
+                  } · cost shown as input/output per 1M tokens
+                </p>
+              </>
             )}
             {agent.config.llmModel && (
-              <p className="text-xs text-muted mt-1.5">Current: {agent.config.llmModel}</p>
+              <p className="text-xs text-muted mt-1.5">Current: <span className="font-mono text-text">{agent.config.llmModel}</span></p>
             )}
           </div>
         )}

@@ -169,14 +169,16 @@ function formatSnapshotSummary(snap, agentKey, config) {
     }
     if (forex) {
         // Show spread in both points and price-equivalent to avoid model confusion
-        // For 5-digit forex (dp>=4): spread is in points, 1 pip = 10 points
-        // For 2-digit instruments (gold): spread is in points, show as $ value
         const spreadPoints = forex.spread ?? 0;
         const spreadPrice = forex.point != null ? spreadPoints * forex.point : 0;
+        // Compare spread cost to ATR to give a clear verdict
+        const atrPrice = indicators?.atr14 ?? 0;
+        const spreadPctOfAtr = atrPrice > 0 ? (spreadPrice / atrPrice * 100) : 0;
+        const spreadVerdict = spreadPctOfAtr <= 5 ? '✅ TIGHT' : spreadPctOfAtr <= 20 ? '⚠️ OK' : '❌ WIDE';
         const spreadLabel = dp >= 4
-            ? `${(spreadPoints / 10).toFixed(1)} pips (${spreadPoints} points)`
+            ? `${(spreadPoints / 10).toFixed(1)} pips ($${spreadPrice.toFixed(4)})`
             : `${spreadPoints} points ($${spreadPrice.toFixed(2)})`;
-        lines.push(`Spread: ${spreadLabel} | Session: ${forex.sessionOpen ? 'OPEN' : 'CLOSED'}`);
+        lines.push(`Spread: ${spreadLabel} = ${spreadPctOfAtr.toFixed(1)}% of ATR → ${spreadVerdict} | Session: ${forex.sessionOpen ? 'OPEN' : 'CLOSED'}`);
     }
     if (indicators) {
         const parts = [];

@@ -192,6 +192,10 @@ interface Props {
 export function TickThread({ thread, defaultExpanded = false }: Props) {
   const [expanded, setExpanded] = useState(defaultExpanded)
 
+  const parts      = thread.agentKey.split(':')       // ['mt5', 'XAUUSD', '1512...', 'gold']
+  const market     = parts[0] ?? ''                   // 'mt5'
+  const symbol     = parts[1] ?? thread.agentKey      // 'XAUUSD'
+  const agentName  = parts[3] ?? ''                   // 'gold' (optional)
   const agentLabel = thread.agentKey.split(':').slice(0, 2).join(':')
   const tickLabel  = thread.tickNumber > 0 ? `#${thread.tickNumber}` : ''
 
@@ -231,14 +235,16 @@ export function TickThread({ thread, defaultExpanded = false }: Props) {
         className={`bg-surface border border-border rounded-lg cursor-pointer hover:border-muted2 transition-all ${statusBorderClass(thread.status)}`}
         onClick={() => setExpanded(true)}
       >
-        <div className="flex items-center gap-3 px-4 py-3">
-          <span className={`text-xs font-bold font-sans shrink-0 ${statusLabelColor(thread.status)}`}>
-            {statusLabel(thread.status)}
-          </span>
+        <div className="flex items-center gap-3 px-4 py-2.5">
+          {/* Symbol — most important, always visible */}
+          <span className="text-sm font-bold text-text shrink-0">{symbol}</span>
+          {agentName && (
+            <span className="text-[10px] text-muted2 font-mono shrink-0">({agentName})</span>
+          )}
+          <span className="text-[10px] uppercase tracking-wider text-muted2 border border-border/60 rounded px-1 py-0.5 shrink-0">{market}</span>
           {tickLabel && (
             <span className="text-xs font-mono text-muted2 shrink-0">{tickLabel}</span>
           )}
-          <span className="text-xs font-mono text-muted shrink-0">{agentLabel}</span>
           {thread.decision && (
             <span className={`inline-block px-2 py-0.5 rounded border text-xs font-bold font-sans shrink-0 ${decisionColor(thread.decision)}`}>
               {thread.decision}
@@ -246,7 +252,7 @@ export function TickThread({ thread, defaultExpanded = false }: Props) {
           )}
           {thread.reason && (
             <span className="text-xs text-muted truncate flex-1 hidden sm:block">
-              "{thread.reason.slice(0, 80)}{thread.reason.length > 80 ? '...' : ''}"
+              {thread.reason.slice(0, 90)}{thread.reason.length > 90 ? '…' : ''}
             </span>
           )}
           <span className="text-xs text-muted2 shrink-0 ml-auto">{rel(thread.startTime)}</span>

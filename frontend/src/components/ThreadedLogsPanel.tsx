@@ -109,7 +109,7 @@ export function ThreadedLogsPanel({ agentKey, maxThreads }: Props) {
             <TickThread
               key={thread.id}
               thread={thread}
-              defaultExpanded={idx === 0}
+              defaultExpanded={false}
             />
           ))
         )}

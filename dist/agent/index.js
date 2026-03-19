@@ -874,8 +874,13 @@ export async function runAgentTick(config, requestedTickType = 'trading') {
                         .filter((b) => b.type === 'text')
                         .map(b => b.text)
                         .join('\n');
-                    if (text.trim()) {
-                        logEvent(agentKey, 'info', 'claude_thinking', text.trim());
+                    // Log the model's reasoning (strip DECISION/REASON lines for the thinking log)
+                    const thinkingText = text.replace(/^DECISION:.*$/gim, '').replace(/^REASON:.*$/gim, '').trim();
+                    if (thinkingText) {
+                        logEvent(agentKey, 'info', 'claude_thinking', thinkingText);
+                    }
+                    else if (!text.trim()) {
+                        logEvent(agentKey, 'warn', 'claude_thinking', '(model returned no reasoning text — consider switching to a stronger model)');
                     }
                     const decMatch = text.match(/DECISION:\s*(.+)/i);
                     const reasonMatch = text.match(/REASON:\s*(.+)/i);

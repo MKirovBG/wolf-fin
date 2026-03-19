@@ -237,7 +237,7 @@ export function TickThread({ thread, defaultExpanded = false }: Props) {
       >
         <div className="flex items-center gap-3 px-4 py-2.5">
           {/* Symbol — most important, always visible */}
-          <span className="text-sm font-bold text-text shrink-0">{symbol}</span>
+          <span className="text-sm font-bold text-green tracking-wide font-mono shrink-0">{symbol}</span>
           {agentName && (
             <span className="text-[10px] text-muted2 font-mono shrink-0">({agentName})</span>
           )}

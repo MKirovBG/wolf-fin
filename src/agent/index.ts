@@ -114,6 +114,9 @@ const peakEquityByAgent = new Map<string, number>()
 interface TrackedPosition { side: string; priceOpen: number; volume: number }
 const lastKnownPositions = new Map<string, Map<number, TrackedPosition>>()
 
+// ── Per-agent suggested lot size (computed each tick, used as guardrail clamp) ──
+const suggestedLotsByAgent = new Map<string, number>()
+
 async function detectExternalCloses(
   agentKey: string,
   config: AgentConfig,
@@ -196,7 +199,7 @@ function candleTrendLine(candles: Candle[], count: number, dp: number): string {
   return bars.map(c => `${c.close.toFixed(dp)}${c.close >= c.open ? '▲' : '▼'}`).join(' ')
 }
 
-function formatSnapshotSummary(snap: Record<string, unknown>): string {
+function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string): string {
   const price = snap.price as { bid?: number; ask?: number; last?: number } | undefined
   const indicators = snap.indicators as { rsi14?: number; ema20?: number; ema50?: number; atr14?: number } | undefined
   const forex = snap.forex as { spread?: number; sessionOpen?: boolean; pipValue?: number; point?: number } | undefined
@@ -261,8 +264,10 @@ function formatSnapshotSummary(snap: Record<string, unknown>): string {
     const suggestedLots = stopCostPerLot > 0
       ? Math.max(0.01, Math.floor((riskUsd / stopCostPerLot) * 100) / 100)
       : 0.01
+    // Store for guardrail clamp (allow up to 2× suggested for agent flexibility)
+    if (agentKey) suggestedLotsByAgent.set(agentKey, suggestedLots)
     lines.push(
-      `Sizing (1% risk $${riskUsd.toFixed(0)}, ATR×1.5 stop ~$${stopCostPerLot.toFixed(0)}/lot): suggested ${suggestedLots.toFixed(2)} lots`
+      `Sizing (1% risk $${riskUsd.toFixed(0)}, ATR×1.5 stop ~$${stopCostPerLot.toFixed(0)}/lot): suggested ${suggestedLots.toFixed(2)} lots — USE THIS SIZE. The system will reject orders above 2× this amount.`
     )
   }
 
@@ -540,6 +545,7 @@ ${marketRulesContent ? `\n${marketRulesContent}` : ''}`
 
 function buildTickMessage(
   config: AgentConfig,
+  agentKey: string,
   tickNumber: number,
   isFirstTick: boolean,
   tickType: 'trading' | 'planning',
@@ -725,11 +731,24 @@ async function dispatchTool(
     case 'get_open_orders':
       return adapter.getOpenOrders(input.symbol as string | undefined)
     case 'place_order': {
+      let requestedQty = input.quantity as number
+      // ── Lot-size guardrail: clamp to 2× suggested size ──
+      const suggested = suggestedLotsByAgent.get(agentKey)
+      if (suggested != null && suggested > 0) {
+        const maxAllowed = Math.max(0.01, Math.round(suggested * 2 * 100) / 100)
+        if (requestedQty > maxAllowed) {
+          logEvent(agentKey, 'warn', 'guardrail_block',
+            `Lot size clamped: agent requested ${requestedQty} lots but max allowed is ${maxAllowed} (2× suggested ${suggested.toFixed(2)}). Using ${maxAllowed}.`)
+          requestedQty = maxAllowed
+        } else if (requestedQty < 0.01) {
+          requestedQty = 0.01
+        }
+      }
       const params: OrderParams = {
         symbol: input.symbol as string,
         side: input.side as 'BUY' | 'SELL',
         type: input.type as 'LIMIT' | 'MARKET',
-        quantity: input.quantity as number,
+        quantity: requestedQty,
         price: input.price as number | undefined,
         timeInForce: input.timeInForce as 'GTC' | 'IOC' | 'FOK' | undefined,
         stopPips: input.stopPips as number | undefined,
@@ -943,7 +962,7 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
         }
       }
 
-      const summary = formatSnapshotSummary(snap)
+      const summary = formatSnapshotSummary(snap, agentKey)
 
       // Fetch recent forex news (non-blocking, fails silently)
       let newsItems: ForexNewsItem[] | undefined
@@ -951,11 +970,11 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
         newsItems = await fetchForexNews(config.symbol).catch(() => undefined)
       }
 
-      tickUserMessage = buildTickMessage(config, tickNumber, isFirstTick, tickType, summary, externalCloseNote, newsItems)
+      tickUserMessage = buildTickMessage(config, agentKey, tickNumber, isFirstTick, tickType, summary, externalCloseNote, newsItems)
     } catch (prefetchErr) {
       const msg = prefetchErr instanceof Error ? prefetchErr.message : String(prefetchErr)
       log.warn({ err: msg }, 'snapshot pre-fetch failed — LLM will call get_snapshot manually')
-      tickUserMessage = buildTickMessage(config, tickNumber, isFirstTick, tickType)
+      tickUserMessage = buildTickMessage(config, agentKey, tickNumber, isFirstTick, tickType)
     }
 
     // Append the tick message to the session conversation

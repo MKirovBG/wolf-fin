@@ -80,6 +80,8 @@ function autoSummarisePreviousSession(agentKey) {
 // ── Per-agent peak equity tracker — used for drawdown auto-pause ──────────────
 const peakEquityByAgent = new Map();
 const lastKnownPositions = new Map();
+// ── Per-agent suggested lot size (computed each tick, used as guardrail clamp) ──
+const suggestedLotsByAgent = new Map();
 async function detectExternalCloses(agentKey, config, currentPositions, agentClosedThisTick = new Set()) {
     const prev = lastKnownPositions.get(agentKey) ?? new Map();
     const current = new Map(currentPositions.map(p => [p.ticket, p]));
@@ -146,7 +148,7 @@ function candleTrendLine(candles, count, dp) {
     const bars = candles.slice(-count);
     return bars.map(c => `${c.close.toFixed(dp)}${c.close >= c.open ? '▲' : '▼'}`).join(' ');
 }
-function formatSnapshotSummary(snap) {
+function formatSnapshotSummary(snap, agentKey) {
     const price = snap.price;
     const indicators = snap.indicators;
     const forex = snap.forex;
@@ -197,7 +199,10 @@ function formatSnapshotSummary(snap) {
         const suggestedLots = stopCostPerLot > 0
             ? Math.max(0.01, Math.floor((riskUsd / stopCostPerLot) * 100) / 100)
             : 0.01;
-        lines.push(`Sizing (1% risk $${riskUsd.toFixed(0)}, ATR×1.5 stop ~$${stopCostPerLot.toFixed(0)}/lot): suggested ${suggestedLots.toFixed(2)} lots`);
+        // Store for guardrail clamp (allow up to 2× suggested for agent flexibility)
+        if (agentKey)
+            suggestedLotsByAgent.set(agentKey, suggestedLots);
+        lines.push(`Sizing (1% risk $${riskUsd.toFixed(0)}, ATR×1.5 stop ~$${stopCostPerLot.toFixed(0)}/lot): suggested ${suggestedLots.toFixed(2)} lots — USE THIS SIZE. The system will reject orders above 2× this amount.`);
     }
     if (positions && positions.length > 0) {
         lines.push(`OPEN POSITIONS (${positions.length}):`);
@@ -439,7 +444,7 @@ ${marketRulesContent ? `\n${marketRulesContent}` : ''}`;
     return customPrompt ? `${full}\n\nADDITIONAL INSTRUCTIONS:\n${customPrompt}` : full;
 }
 // ── Tick user message ─────────────────────────────────────────────────────────
-function buildTickMessage(config, tickNumber, isFirstTick, tickType, snapshotSummary, externalCloseNote, newsItems) {
+function buildTickMessage(config, agentKey, tickNumber, isFirstTick, tickType, snapshotSummary, externalCloseNote, newsItems) {
     const time = new Date().toLocaleTimeString();
     const sessionMinsLeft = config.market === 'mt5' ? minutesUntilSessionClose() : null;
     const sessionInfo = sessionMinsLeft !== null
@@ -608,11 +613,24 @@ async function dispatchTool(name, input, defaultMarket, mt5AccountId, agentKey =
         case 'get_open_orders':
             return adapter.getOpenOrders(input.symbol);
         case 'place_order': {
+            let requestedQty = input.quantity;
+            // ── Lot-size guardrail: clamp to 2× suggested size ──
+            const suggested = suggestedLotsByAgent.get(agentKey);
+            if (suggested != null && suggested > 0) {
+                const maxAllowed = Math.max(0.01, Math.round(suggested * 2 * 100) / 100);
+                if (requestedQty > maxAllowed) {
+                    logEvent(agentKey, 'warn', 'guardrail_block', `Lot size clamped: agent requested ${requestedQty} lots but max allowed is ${maxAllowed} (2× suggested ${suggested.toFixed(2)}). Using ${maxAllowed}.`);
+                    requestedQty = maxAllowed;
+                }
+                else if (requestedQty < 0.01) {
+                    requestedQty = 0.01;
+                }
+            }
             const params = {
                 symbol: input.symbol,
                 side: input.side,
                 type: input.type,
-                quantity: input.quantity,
+                quantity: requestedQty,
                 price: input.price,
                 timeInForce: input.timeInForce,
                 stopPips: input.stopPips,
@@ -810,18 +828,18 @@ export async function runAgentTick(config, requestedTickType = 'trading') {
                     }
                 }
             }
-            const summary = formatSnapshotSummary(snap);
+            const summary = formatSnapshotSummary(snap, agentKey);
             // Fetch recent forex news (non-blocking, fails silently)
             let newsItems;
             if (config.market === 'mt5') {
                 newsItems = await fetchForexNews(config.symbol).catch(() => undefined);
             }
-            tickUserMessage = buildTickMessage(config, tickNumber, isFirstTick, tickType, summary, externalCloseNote, newsItems);
+            tickUserMessage = buildTickMessage(config, agentKey, tickNumber, isFirstTick, tickType, summary, externalCloseNote, newsItems);
         }
         catch (prefetchErr) {
             const msg = prefetchErr instanceof Error ? prefetchErr.message : String(prefetchErr);
             log.warn({ err: msg }, 'snapshot pre-fetch failed — LLM will call get_snapshot manually');
-            tickUserMessage = buildTickMessage(config, tickNumber, isFirstTick, tickType);
+            tickUserMessage = buildTickMessage(config, agentKey, tickNumber, isFirstTick, tickType);
         }
         // Append the tick message to the session conversation
         session.messages.push({ role: 'user', content: tickUserMessage });

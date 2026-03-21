@@ -16,6 +16,7 @@ export interface TickThread {
   toolLogs: LogEntry[]
   decisionLogs: LogEntry[]
   errorLogs: LogEntry[]
+  mcLogs: LogEntry[]   // Monte Carlo result entries
 }
 
 function parseDecisionLog(message: string): { decision?: string; reason?: string } {
@@ -43,7 +44,7 @@ const SKIP_EVENTS       = new Set<LogEvent>(['tick_skip', 'cycle_skip', 'session
 // Events that become standalone "session" info pills
 const SESSION_EVENTS    = new Set<LogEvent>(['session_start', 'session_reset'])
 
-export function useTickThreads(logs: LogEntry[], agentKey?: string): TickThread[] {
+export function useTickThreads(logs: LogEntry[], agentKey?: string, agentKeys?: Set<string>): TickThread[] {
   return useMemo(() => {
     // Work oldest-first for grouping (server returns newest-first)
     const sorted = [...logs].sort((a, b) => a.id - b.id)
@@ -54,6 +55,7 @@ export function useTickThreads(logs: LogEntry[], agentKey?: string): TickThread[
 
     for (const entry of sorted) {
       if (agentKey && entry.agentKey !== agentKey) continue
+      if (agentKeys && !agentKeys.has(entry.agentKey)) continue
 
       if (TICK_START_EVENTS.has(entry.event)) {
         current  = [entry]
@@ -69,7 +71,7 @@ export function useTickThreads(logs: LogEntry[], agentKey?: string): TickThread[
           tickNumber: 0,
           iterationCount: 0,
           logs: [entry],
-          thinkingLogs: [], toolLogs: [], decisionLogs: [], errorLogs: [],
+          thinkingLogs: [], toolLogs: [], decisionLogs: [], errorLogs: [], mcLogs: [],
         })
 
       } else if (SESSION_EVENTS.has(entry.event)) {
@@ -82,7 +84,7 @@ export function useTickThreads(logs: LogEntry[], agentKey?: string): TickThread[
           tickNumber: 0,
           iterationCount: 0,
           logs: [entry],
-          thinkingLogs: [], toolLogs: [], decisionLogs: [], errorLogs: [],
+          thinkingLogs: [], toolLogs: [], decisionLogs: [], errorLogs: [], mcLogs: [],
         })
 
       } else if (current !== null) {
@@ -98,6 +100,7 @@ export function useTickThreads(logs: LogEntry[], agentKey?: string): TickThread[
           const errorLogs      = threadLogs.filter(l =>
             l.level === 'error' || l.event === 'tool_error' || TICK_END_EVENTS.has(l.event as LogEvent) && l.event.includes('error') || l.event === 'guardrail_block'
           )
+          const mcLogs         = threadLogs.filter(l => l.event === 'mc_result')
           const decisionEntry  = threadLogs.find(l => l.event === 'decision')
           const parsed         = decisionEntry ? parseDecisionLog(decisionEntry.message) : {}
           const isError        = entry.event === 'tick_error' || entry.event === 'cycle_error'
@@ -113,7 +116,7 @@ export function useTickThreads(logs: LogEntry[], agentKey?: string): TickThread[
             decision: parsed.decision,
             reason: parsed.reason,
             logs: threadLogs,
-            thinkingLogs, toolLogs, decisionLogs, errorLogs,
+            thinkingLogs, toolLogs, decisionLogs, errorLogs, mcLogs,
           })
           current  = null
           startLog = null
@@ -129,6 +132,7 @@ export function useTickThreads(logs: LogEntry[], agentKey?: string): TickThread[
         l.event === 'decision' || l.event === 'auto_execute' || l.event === 'auto_execute_error'
       )
       const errorLogs    = current.filter(l => l.level === 'error' || l.event === 'tool_error' || l.event === 'guardrail_block')
+      const mcLogs       = current.filter(l => l.event === 'mc_result')
       const decisionEntry = current.find(l => l.event === 'decision')
       const parsed        = decisionEntry ? parseDecisionLog(decisionEntry.message) : {}
 
@@ -142,10 +146,10 @@ export function useTickThreads(logs: LogEntry[], agentKey?: string): TickThread[
         decision: parsed.decision,
         reason: parsed.reason,
         logs: current,
-        thinkingLogs, toolLogs, decisionLogs, errorLogs,
+        thinkingLogs, toolLogs, decisionLogs, errorLogs, mcLogs,
       })
     }
 
     return threads.reverse()
-  }, [logs, agentKey])
+  }, [logs, agentKey, agentKeys])
 }

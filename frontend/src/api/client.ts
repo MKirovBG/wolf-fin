@@ -1,4 +1,4 @@
-import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, CycleDetail, LogEntry, PositionEntry, FillEntry, AccountEntry, Mt5AccountInfo, OpenRouterModel, OllamaModel, StrategyDoc, AgentMemory, AgentPlan, AgentStats } from '../types/index.ts'
+import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, CycleDetail, LogEntry, PositionEntry, FillEntry, AccountEntry, Mt5AccountInfo, OpenRouterModel, OllamaModel, StrategyDoc, AgentMemory, AgentPlan, AgentStats, SelectedAccount } from '../types/index.ts'
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, options)
@@ -14,7 +14,13 @@ function json(body: unknown): RequestInit {
 export const getStatus = () => api<StatusResponse>('/api/status')
 
 // ── Agents ────────────────────────────────────────────────────────────────────
-export const getAgents = () => api<AgentState[]>('/api/agents')
+export const getAgents = (filter?: { market?: string; accountId?: string }) => {
+  const p = new URLSearchParams()
+  if (filter?.market)    p.set('market', filter.market)
+  if (filter?.accountId) p.set('accountId', filter.accountId)
+  const qs = p.toString()
+  return api<AgentState[]>(`/api/agents${qs ? `?${qs}` : ''}`)
+}
 
 export const addAgent = (config: AgentConfig) =>
   api<{ ok: boolean; key: string; conflicts?: string[] }>('/api/agents', { method: 'POST', ...json(config) })
@@ -81,6 +87,11 @@ export const getCycleDetail = (id: number) =>
 
 export const getAgentCycles = (key: string, limit = 100) =>
   api<(CycleResult & { id: number; agentKey: string })[]>(`/api/agents/${encodeURIComponent(key)}/cycles?limit=${limit}`)
+
+// ── Selected account ─────────────────────────────────────────────────────────
+export const getSelectedAccount = () => api<SelectedAccount | null>('/api/selected-account')
+export const setSelectedAccount = (account: SelectedAccount | null) =>
+  api<{ ok: boolean }>('/api/selected-account', { method: 'POST', ...json(account) })
 
 // ── Accounts ─────────────────────────────────────────────────────────────────
 export const getAccounts = () => api<AccountEntry[]>('/api/accounts')

@@ -1,24 +1,35 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { getAgents } from '../api/client.ts'
 import type { AgentState } from '../types/index.ts'
 import { AgentCard } from '../components/AgentCard.tsx'
+import { useAccount } from '../contexts/AccountContext.tsx'
 
 export function Agents() {
   const [agents, setAgents] = useState<AgentState[]>([])
   const navigate = useNavigate()
+  const { selectedAccount } = useAccount()
 
-  // Initial load
+  // Reload agents whenever selected account changes
   useEffect(() => {
-    getAgents().then(setAgents).catch(() => {})
-  }, [])
+    const filter = selectedAccount
+      ? { market: selectedAccount.market, accountId: selectedAccount.accountId }
+      : undefined
+    getAgents(filter).then(setAgents).catch(() => {})
+  }, [selectedAccount])
 
-  // SSE — update individual agent cards in real-time
+  // SSE — update individual agent cards in real-time (filtered to selected account)
   useEffect(() => {
     const es = new EventSource('/api/events')
     es.addEventListener('agent', (e: MessageEvent) => {
       try {
         const updated = JSON.parse(e.data) as AgentState & { agentKey: string }
+        // Only accept updates for agents belonging to selected account
+        if (selectedAccount) {
+          const cfg = updated.config
+          if (cfg.market !== selectedAccount.market) return
+          if (cfg.market === 'mt5' && String(cfg.mt5AccountId ?? '') !== selectedAccount.accountId) return
+        }
         setAgents(prev =>
           prev.some(a => a.agentKey === updated.agentKey)
             ? prev.map(a => a.agentKey === updated.agentKey ? updated : a)
@@ -27,7 +38,7 @@ export function Agents() {
       } catch { /* ignore */ }
     })
     return () => es.close()
-  }, [])
+  }, [selectedAccount])
 
   const running = agents.filter(a => a.status === 'running').length
 
@@ -50,23 +61,43 @@ export function Agents() {
         </button>
       </div>
 
+      {/* No account selected */}
+      {!selectedAccount && (
+        <div className="bg-surface border border-yellow/30 rounded-lg p-12 text-center">
+          <div className="text-4xl mb-4 opacity-40">◎</div>
+          <h2 className="text-text text-base font-bold mb-2">No account selected</h2>
+          <p className="text-muted text-sm mb-4">Select an account from the sidebar to view its agents.</p>
+          <Link to="/account" className="text-sm text-yellow underline underline-offset-2">
+            Manage accounts →
+          </Link>
+        </div>
+      )}
+
       {/* Agent cards grid */}
-      {agents.length === 0 ? (
+      {selectedAccount && agents.length === 0 && (
         <div className="bg-surface border border-border rounded-lg p-12 text-center">
           <div className="text-5xl mb-4 opacity-40">◎</div>
-          <h2 className="text-text text-base font-bold mb-2">No agents configured</h2>
-          <p className="text-muted text-sm mb-5">Add an agent to start monitoring markets and trading.</p>
+          <h2 className="text-text text-base font-bold mb-2">No agents for this account</h2>
+          <p className="text-muted text-sm mb-5">
+            No agents configured for <span className="text-text font-mono">{selectedAccount.label ?? selectedAccount.accountId}</span>.
+          </p>
           <button
             onClick={() => navigate('/agents/new')}
             className="px-5 py-2.5 text-sm border border-green text-green rounded-lg hover:bg-green-dim transition-colors font-medium"
           >
-            + Add Your First Agent
+            + Add First Agent
           </button>
         </div>
-      ) : (
+      )}
+
+      {selectedAccount && agents.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {agents.map(agent => (
-            <AgentCard key={agent.agentKey} agent={agent} onRefresh={() => getAgents().then(setAgents).catch(() => {})} />
+            <AgentCard
+              key={agent.agentKey}
+              agent={agent}
+              onRefresh={() => getAgents({ market: selectedAccount.market, accountId: selectedAccount.accountId }).then(setAgents).catch(() => {})}
+            />
           ))}
         </div>
       )}

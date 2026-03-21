@@ -60,9 +60,10 @@ function isCommodity(symbol: string): boolean {
     s.includes('OIL') || s.includes('GAS') || s.includes('GOLD') || s.includes('SILVER')
 }
 
-function pipSizeHeuristic(symbol: string, point?: number): number {
-  // Commodities: pip == point (e.g., XAUUSD point=0.01, 1 point IS 1 pip in gold terms)
-  if (isCommodity(symbol)) return point ?? 0.01
+function pipSizeHeuristic(symbol: string, _point?: number): number {
+  // Commodities: 1 pip = $1 price move (e.g., XAUUSD 3040→3041 = 1 pip).
+  // This keeps ATR/SL/TP numbers intuitive for the LLM (~40 pips instead of ~4000).
+  if (isCommodity(symbol)) return 1.0
   if (symbol.toUpperCase().includes('JPY')) return 0.01
   return 0.0001
 }
@@ -99,10 +100,12 @@ interface BridgeSnapshot {
   symbol: string
   price: { bid: number; ask: number; last: number }
   candles: {
-    m1: BridgeCandle[]
+    m1:  BridgeCandle[]
+    m5:  BridgeCandle[]   // may be absent on older bridge versions
     m15: BridgeCandle[]
-    h1: BridgeCandle[]
-    h4: BridgeCandle[]
+    m30: BridgeCandle[]   // may be absent on older bridge versions
+    h1:  BridgeCandle[]
+    h4:  BridgeCandle[]
   }
   symbol_info: {
     spread: number
@@ -226,10 +229,12 @@ export class MT5Adapter implements IMarketAdapter {
         closeTime: c.closeTime,
       }))
 
-    const m1 = mapCandles(snap.candles.m1)
+    const m1  = mapCandles(snap.candles.m1)
+    const m5  = mapCandles(snap.candles.m5  ?? [])
     const m15 = mapCandles(snap.candles.m15)
-    const h1 = mapCandles(snap.candles.h1)
-    const h4 = mapCandles(snap.candles.h4)
+    const m30 = mapCandles(snap.candles.m30 ?? [])
+    const h1  = mapCandles(snap.candles.h1)
+    const h4  = mapCandles(snap.candles.h4)
 
     const { bid, ask, last } = snap.price
     const mid = last || (bid + ask) / 2
@@ -296,10 +301,12 @@ export class MT5Adapter implements IMarketAdapter {
       comment: o.comment,
     }))
 
-    // Pip value: for standard forex, point * contract_size
-    // For 6-char forex pairs: pipValue = point * contractSize (e.g. 0.0001 * 100000 = 10 USD per lot)
+    // Pip value: $ per pip per 1 standard lot.
+    // pipSize defines what "1 pip" means (0.0001 for forex, 1.0 for gold).
+    // For EURUSD: 0.0001 * 100000 = $10/pip/lot.  For XAUUSD: 1.0 * 100 = $100/pip/lot.
     const contractSize = info.trade_contract_size || 100_000
-    const pipValue = point * contractSize
+    const pipSize  = pipSizeHeuristic(symbol, point)
+    const pipValue = pipSize * contractSize
 
     const keyLevels = computeKeyLevels(h4, h1, mid)
 
@@ -314,7 +321,7 @@ export class MT5Adapter implements IMarketAdapter {
         high: high24h,
         low: low24h === Infinity ? 0 : low24h,
       },
-      candles: { m1, m15, h1, h4 },
+      candles: { m1, m5, m15, m30, h1, h4 },
       indicators: computeIndicators(h1),
       account: { balances, openOrders },
       positions,       // rich MT5 position detail (sl, tp, profit, priceCurrent, swap)
@@ -328,9 +335,10 @@ export class MT5Adapter implements IMarketAdapter {
         leverage: snap.account.leverage,
       },
       forex: {
-        spread: info.spread * point / pipSizeHeuristic(symbol, point),
+        spread: info.spread * point / pipSize,
         pipValue,
         point,
+        pipSize,
         sessionOpen: info.session_open,
         swapLong: info.swap_long,
         swapShort: info.swap_short,

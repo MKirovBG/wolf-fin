@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Backend (wolf-fin server)",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev:server"],
+      "port": 3000
+    },
+    {
+      "name": "Frontend (Vite)",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "wolf-fin-frontend", "dev"],
+      "port": 5173
+    }
+  ]
+}

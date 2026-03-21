@@ -7,7 +7,8 @@ import { dirname, join } from 'path'
 import { existsSync, appendFileSync, readFileSync, writeFileSync } from 'fs'
 import pino from 'pino'
 import { getState, getAgent, upsertAgent, removeAgent, setAgentStatus, getLogs, subscribeToLogs, subscribeToAgentStatus } from './state.js'
-import { dbGetCycleResults, dbGetCycleResultsForAgent, dbGetCycleById, dbGetLogsForCycle, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor, makeAgentKey, dbGetStrategy, dbSaveStrategy, dbDeleteStrategy, dbGetMemories, dbClearMemories, dbDeleteMemory, dbGetActivePlan, dbGetAllPlans, dbResetAgentData } from '../db/index.js'
+import { dbGetCycleResults, dbGetCycleResultsForAgent, dbGetCycleById, dbGetLogsForCycle, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor, makeAgentKey, dbGetStrategy, dbSaveStrategy, dbDeleteStrategy, dbGetMemories, dbClearMemories, dbDeleteMemory, dbGetActivePlan, dbGetAllPlans, dbResetAgentData, dbGetSelectedAccount, dbSetSelectedAccount } from '../db/index.js'
+import type { SelectedAccount } from '../db/index.js'
 import { getRiskState } from '../guardrails/riskState.js'
 import { getRiskStateFor } from '../guardrails/riskStateStore.js'
 import { startAgentSchedule, pauseAgentSchedule, stopAgentSchedule } from '../scheduler/index.js'
@@ -150,11 +151,34 @@ export async function startServer(): Promise<void> {
     }
   })
 
+  // ── Selected account ────────────────────────────────────────────────────────
+
+  app.get('/api/selected-account', async () => {
+    return dbGetSelectedAccount() ?? null
+  })
+
+  app.post('/api/selected-account', async (req) => {
+    const body = req.body as SelectedAccount | null
+    dbSetSelectedAccount(body)
+    return { ok: true }
+  })
+
   // ── Agents ──────────────────────────────────────────────────────────────────
 
-  app.get('/api/agents', async () => {
+  app.get('/api/agents', async (req) => {
+    const { market, accountId } = req.query as { market?: string; accountId?: string }
+    let entries = Object.entries(getState().agents)
+    // Filter by market when specified
+    if (market) entries = entries.filter(([, a]) => a.config.market === market)
+    // Filter by accountId (MT5 login or 'binance')
+    if (accountId !== undefined) {
+      if (market === 'mt5' || (!market && accountId !== 'binance')) {
+        entries = entries.filter(([, a]) => String(a.config.mt5AccountId ?? '') === accountId)
+      }
+      // crypto/binance: accountId='binance' — market filter above is sufficient
+    }
     // Include agentKey in every response so frontend never has to reconstruct it
-    return Object.entries(getState().agents).map(([key, agent]) => ({ ...agent, agentKey: key }))
+    return entries.map(([key, agent]) => ({ ...agent, agentKey: key }))
   })
 
   app.post('/api/agents', async (req) => {

@@ -17,6 +17,8 @@ import { buildMarketContext } from './context.js'
 import { sessionLabel, minutesUntilSessionClose } from '../adapters/session.js'
 import { fetchForexNews } from '../adapters/finnhubNews.js'
 import type { ForexNewsItem } from '../adapters/finnhubNews.js'
+import { runMonteCarlo, formatMCBlock } from '../adapters/montecarlo.js'
+import type { MCResult } from '../adapters/montecarlo.js'
 import { getTools } from '../tools/definitions.js'
 import { recordCycle, logEvent, tryAcquireCycleLock, releaseCycleLock, getAgent, setAgentStatus, setAgentPaused, consumePlanRequest } from '../server/state.js'
 import {
@@ -185,32 +187,31 @@ function priceDp(p: number): number {
 }
 
 // Show ATR in both raw and pip-equivalent so the agent understands scale.
-// pip = 0.0001 for 4/5-dp symbols, 0.01 for 2/3-dp symbols.
-function formatAtr(atr: number, dp: number): string {
-  const pipSize = dp >= 4 ? 0.0001 : 0.01
-  const pips = atr / pipSize
+function formatAtr(atr: number, dp: number, pipSize?: number): string {
+  const ps = pipSize ?? (dp >= 4 ? 0.0001 : 0.01)
+  const pips = atr / ps
   return `${atr.toFixed(dp)} (${pips.toFixed(1)} pips)`
 }
 
-interface Candle { open: number; high: number; low: number; close: number; openTime?: number | string }
+interface Candle { open: number; high: number; low: number; close: number; volume: number; closeTime: number; openTime?: number | string }
 
 function candleTrendLine(candles: Candle[], count: number, dp: number): string {
   const bars = candles.slice(-count)
   return bars.map(c => `${c.close.toFixed(dp)}${c.close >= c.open ? '▲' : '▼'}`).join(' ')
 }
 
-function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string, config?: AgentConfig): string {
+function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string, config?: AgentConfig, mc?: MCResult): string {
   const price = snap.price as { bid?: number; ask?: number; last?: number } | undefined
-  const indicators = snap.indicators as { rsi14?: number; ema20?: number; ema50?: number; atr14?: number } | undefined
-  const forex = snap.forex as { spread?: number; sessionOpen?: boolean; pipValue?: number; point?: number } | undefined
-  const candles = snap.candles as { h1?: Candle[]; h4?: Candle[] } | undefined
+  const indicators = snap.indicators as { rsi14?: number; ema20?: number; ema50?: number; atr14?: number; vwap?: number; bbWidth?: number } | undefined
+  const forex = snap.forex as { spread?: number; sessionOpen?: boolean; pipValue?: number; point?: number; pipSize?: number; swapLong?: number; swapShort?: number } | undefined
+  const candles = snap.candles as { m1?: Candle[]; m5?: Candle[]; m15?: Candle[]; m30?: Candle[]; h1?: Candle[]; h4?: Candle[] } | undefined
   const positions = snap.positions as Array<{
     ticket: number; side: string; volume: number; priceOpen: number
-    priceCurrent: number; profit: number; sl?: number | null; tp?: number | null
+    priceCurrent: number; profit: number; sl?: number | null; tp?: number | null; swap?: number; comment?: string
   }> | undefined
   const pendingOrders = snap.pendingOrders as Array<{
-    ticket: number; type: string; volume: number; priceTarget: number
-    sl?: number | null; tp?: number | null
+    ticket: number; type: string; volume: number; priceTarget: number; priceCurrent?: number
+    sl?: number | null; tp?: number | null; comment?: string
   }> | undefined
   const recentDeals = snap.recentDeals as Array<{
     ticket: number; type: number; volume: number; price: number
@@ -225,52 +226,111 @@ function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string,
 
   const lines: string[] = []
 
+  // ── Account health ──────────────────────────────────────────────────────────
   if (accountInfo?.equity != null) {
-    const lev = accountInfo.leverage ? `1:${accountInfo.leverage}` : '?'
+    const lev        = accountInfo.leverage ? `1:${accountInfo.leverage}` : '?'
+    const usedM      = accountInfo.usedMargin ?? 0
+    const marginLvl  = usedM > 0 ? `${(accountInfo.equity / usedM * 100).toFixed(0)}%` : '∞'
+    const totalFloat = positions?.reduce((s, p) => s + p.profit, 0) ?? 0
+    const floatStr   = totalFloat !== 0 ? ` | Float P&L: ${totalFloat >= 0 ? '+' : ''}$${totalFloat.toFixed(2)}` : ''
     lines.push(
-      `Account: Balance $${accountInfo.balance?.toFixed(2) ?? '?'} | Equity $${accountInfo.equity.toFixed(2)} | Free Margin $${accountInfo.freeMargin?.toFixed(2) ?? '?'} | Leverage ${lev}`
+      `Account: Balance $${accountInfo.balance?.toFixed(2) ?? '?'} | Equity $${accountInfo.equity.toFixed(2)} | Free Margin $${accountInfo.freeMargin?.toFixed(2) ?? '?'} | Used $${usedM.toFixed(2)} | Margin Level ${marginLvl} | Leverage ${lev}${floatStr}`
     )
   }
 
   if (price) {
-    lines.push(`Price: ${price.last?.toFixed(dp)} | Bid: ${price.bid?.toFixed(dp)} | Ask: ${price.ask?.toFixed(dp)}`)
+    const stats24h = snap.stats24h as { high?: number; low?: number; changePercent?: number } | undefined
+    const rangePart = (stats24h?.high != null && stats24h?.low != null)
+      ? ` | Day Range: ${stats24h.low.toFixed(dp)} – ${stats24h.high.toFixed(dp)}`
+      : ''
+    const chgPart = stats24h?.changePercent != null
+      ? ` | 24h Chg: ${stats24h.changePercent >= 0 ? '+' : ''}${stats24h.changePercent.toFixed(2)}%`
+      : ''
+    lines.push(`Price: ${price.last?.toFixed(dp)} | Bid: ${price.bid?.toFixed(dp)} | Ask: ${price.ask?.toFixed(dp)}${rangePart}${chgPart}`)
+  }
+
+  // ── Daily risk budget ───────────────────────────────────────────────────────
+  const risk = snap.risk as { dailyPnlUsd?: number; remainingBudgetUsd?: number; positionNotionalUsd?: number } | undefined
+  if (risk != null) {
+    const pnlStr  = risk.dailyPnlUsd != null
+      ? `Today P&L: ${risk.dailyPnlUsd >= 0 ? '+' : ''}$${risk.dailyPnlUsd.toFixed(2)}`
+      : ''
+    const budgStr = risk.remainingBudgetUsd != null
+      ? `Remaining budget: $${risk.remainingBudgetUsd.toFixed(2)}`
+      : ''
+    const notStr  = risk.positionNotionalUsd != null && risk.positionNotionalUsd > 0
+      ? `Notional exposed: $${risk.positionNotionalUsd.toFixed(2)}`
+      : ''
+    const parts   = [pnlStr, budgStr, notStr].filter(Boolean)
+    if (parts.length > 0) lines.push(`Risk Budget: ${parts.join(' | ')}`)
   }
   if (forex) {
     // Show spread in both points and price-equivalent to avoid model confusion
-    const spreadPoints = forex.spread ?? 0
-    const spreadPrice  = forex.point != null ? spreadPoints * forex.point : 0
-    // Compare spread cost to ATR to give a clear verdict
-    const atrPrice     = indicators?.atr14 ?? 0
+    const spreadPoints   = forex.spread ?? 0
+    const spreadPrice    = forex.point != null ? spreadPoints * forex.point : 0
+    const atrPrice       = indicators?.atr14 ?? 0
     const spreadPctOfAtr = atrPrice > 0 ? (spreadPrice / atrPrice * 100) : 0
     const spreadVerdict  = spreadPctOfAtr <= 5 ? '✅ TIGHT' : spreadPctOfAtr <= 20 ? '⚠️ OK' : '❌ WIDE'
-    const spreadLabel  = dp >= 4
+    const spreadLabel    = dp >= 4
       ? `${(spreadPoints / 10).toFixed(1)} pips ($${spreadPrice.toFixed(4)})`
       : `${spreadPoints} points ($${spreadPrice.toFixed(2)})`
-    lines.push(`Spread: ${spreadLabel} = ${spreadPctOfAtr.toFixed(1)}% of ATR → ${spreadVerdict} | Session: ${forex.sessionOpen ? 'OPEN' : 'CLOSED'}`)
+    const swapStr = (forex.swapLong != null || forex.swapShort != null)
+      ? ` | Swap Long/Short: ${forex.swapLong?.toFixed(2) ?? '?'}/${forex.swapShort?.toFixed(2) ?? '?'} $/lot/night`
+      : ''
+    lines.push(`Spread: ${spreadLabel} = ${spreadPctOfAtr.toFixed(1)}% of ATR → ${spreadVerdict} | Session: ${forex.sessionOpen ? 'OPEN' : 'CLOSED'}${swapStr}`)
   }
+
+  // ── Indicators with inline interpretation labels ────────────────────────────
   if (indicators) {
+    const trendLabel = (indicators.ema20 != null && indicators.ema50 != null)
+      ? indicators.ema20 > indicators.ema50 ? '▲ BULLISH TREND' : '▼ BEARISH TREND'
+      : ''
+    const rsiLabel = indicators.rsi14 != null
+      ? indicators.rsi14 >= 65 ? '(strong bullish momentum)'
+        : indicators.rsi14 <= 35 ? '(strong bearish momentum)'
+        : indicators.rsi14 > 50  ? '(bullish lean)'
+        : '(bearish lean)'
+      : ''
     const parts = []
-    if (indicators.rsi14 != null)  parts.push(`RSI14: ${indicators.rsi14.toFixed(1)}`)
+    if (indicators.rsi14 != null)  parts.push(`RSI14: ${indicators.rsi14.toFixed(1)} ${rsiLabel}`)
     if (indicators.ema20 != null)  parts.push(`EMA20: ${indicators.ema20.toFixed(dp)}`)
-    if (indicators.ema50 != null)  parts.push(`EMA50: ${indicators.ema50.toFixed(dp)}`)
-    if (indicators.atr14 != null)  parts.push(`ATR14: ${formatAtr(indicators.atr14, dp)}`)
+    if (indicators.ema50 != null)  parts.push(`EMA50: ${indicators.ema50.toFixed(dp)} → ${trendLabel}`)
+    if (indicators.atr14 != null)  parts.push(`ATR14: ${formatAtr(indicators.atr14, dp, forex?.pipSize)}`)
+    if (indicators.bbWidth != null && indicators.bbWidth > 0) {
+      const bbPct    = (indicators.bbWidth * 100).toFixed(2)
+      const bbLabel  = indicators.bbWidth < 0.005 ? ' ⚠ SQUEEZE' : indicators.bbWidth > 0.03 ? ' (high volatility)' : ''
+      parts.push(`BB Width: ${bbPct}%${bbLabel}`)
+    }
+    if (indicators.vwap != null && indicators.vwap > 0) {
+      const vwapRel = price?.last != null
+        ? price.last > indicators.vwap ? ' (price above VWAP — bullish intraday)' : ' (price below VWAP — bearish intraday)'
+        : ''
+      parts.push(`VWAP: ${indicators.vwap.toFixed(dp)}${vwapRel}`)
+    }
     if (parts.length > 0) lines.push(parts.join(' | '))
   }
 
-  // Multi-timeframe candle trend — compact bar-by-bar read
+  // ── Multi-timeframe candle trend ────────────────────────────────────────────
   if (candles?.h4 && candles.h4.length >= 3) {
     lines.push(`H4 (last 3 bars): ${candleTrendLine(candles.h4, 3, dp)}`)
   }
   if (candles?.h1 && candles.h1.length >= 5) {
     lines.push(`H1 (last 5 bars): ${candleTrendLine(candles.h1, 5, dp)}`)
   }
+  if (candles?.m15 && candles.m15.length >= 5) {
+    lines.push(`M15 (last 5 bars): ${candleTrendLine(candles.m15, 5, dp)}`)
+  }
+  if (candles?.m1 && candles.m1.length >= 5) {
+    lines.push(`M1 (last 10 bars): ${candleTrendLine(candles.m1, 10, dp)}`)
+  }
 
   // ── Dynamic position sizing ────────────────────────────────────────────────
   // Computes lots from: daily target, R:R, ATR-based stop, leverage, margin
-  if (forex?.pipValue != null && forex?.point != null && forex.point > 0
+  const pipSz = forex?.pipSize
+  if (forex?.pipValue != null && pipSz != null && pipSz > 0
       && accountInfo?.equity != null && indicators?.atr14 != null) {
     const pipVal         = forex.pipValue                     // $ value of 1 pip per 1 lot
-    const atrPips        = indicators.atr14 / (forex.point * (dp >= 4 ? 10 : 1))   // ATR in pips
+    const atrPips        = indicators.atr14 / pipSz           // ATR in pips (uses pipSize, not point)
     const slPips         = Math.round(atrPips * 1.0 * 10) / 10 // SL = 1× ATR (structural)
     const equity         = accountInfo.equity
     const freeMargin     = accountInfo.freeMargin ?? equity
@@ -293,7 +353,7 @@ function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string,
 
     // 3) Margin cap: lots that use ≤ 50% of free margin
     const currentPrice   = price?.last ?? 0
-    const contractSize   = pipVal / (forex.point * (dp >= 4 ? 10 : 1))  // ~100000 for forex, ~100 for gold
+    const contractSize   = pipVal / pipSz                     // ~100000 for forex, ~100 for gold
     const marginPerLot   = currentPrice > 0 ? (contractSize * currentPrice) / leverage : 0
     const lotsByMargin   = marginPerLot > 0 ? (freeMargin * 0.5) / marginPerLot : 0.01
 
@@ -317,9 +377,24 @@ function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string,
   }
 
   if (positions && positions.length > 0) {
-    lines.push(`OPEN POSITIONS (${positions.length}):`)
+    const totalFloat = positions.reduce((s, p) => s + p.profit, 0)
+    lines.push(`OPEN POSITIONS (${positions.length}) | Total Float: ${totalFloat >= 0 ? '+' : ''}$${totalFloat.toFixed(2)}:`)
+    const pipSz  = forex?.pipSize ?? 1
+    const pipVal = forex?.pipValue ?? 0
     for (const p of positions) {
-      lines.push(`  #${p.ticket} ${p.side} ${p.volume} @ ${p.priceOpen.toFixed(dp)} | now: ${p.priceCurrent.toFixed(dp)} | P&L: $${p.profit.toFixed(2)} | SL: ${p.sl?.toFixed(dp) ?? 'none'} TP: ${p.tp?.toFixed(dp) ?? 'none'}`)
+      // SL: show price + pip distance + dollar risk at current size
+      let slDetail: string
+      if (p.sl != null && p.sl > 0 && pipSz > 0) {
+        const slPips   = Math.abs(p.priceCurrent - p.sl) / pipSz
+        const slRiskUsd = pipVal > 0 ? slPips * pipVal * p.volume : 0
+        slDetail = `SL: ${p.sl.toFixed(dp)} (${slPips.toFixed(1)} pips away, $${slRiskUsd.toFixed(0)} risk)`
+      } else {
+        slDetail = 'SL: ⚠ NONE — unprotected!'
+      }
+      const tpDetail     = p.tp != null && p.tp > 0 ? `TP: ${p.tp.toFixed(dp)}` : 'TP: none'
+      const swapDetail   = p.swap != null && p.swap !== 0 ? ` | swap: $${p.swap.toFixed(2)}` : ''
+      const commentDetail = p.comment ? ` [${p.comment}]` : ''
+      lines.push(`  #${p.ticket} ${p.side} ${p.volume}L @ ${p.priceOpen.toFixed(dp)} | now: ${p.priceCurrent.toFixed(dp)} | P&L: $${p.profit.toFixed(2)} | ${slDetail} | ${tpDetail}${swapDetail}${commentDetail}`)
     }
   } else {
     lines.push('Open Positions: none')
@@ -328,7 +403,11 @@ function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string,
   if (pendingOrders && pendingOrders.length > 0) {
     lines.push(`Pending Orders (${pendingOrders.length}):`)
     for (const o of pendingOrders) {
-      lines.push(`  #${o.ticket} ${o.type} ${o.volume} @ ${o.priceTarget.toFixed(dp)} | SL: ${o.sl?.toFixed(dp) ?? 'none'} TP: ${o.tp?.toFixed(dp) ?? 'none'}`)
+      const distPart = (o.priceCurrent != null && o.priceTarget != null && forex?.pipSize != null)
+        ? ` | ${Math.abs(o.priceCurrent - o.priceTarget) / forex.pipSize < 0.1 ? '⚡ AT LEVEL' : `${(Math.abs(o.priceCurrent - o.priceTarget) / forex.pipSize).toFixed(1)} pips away`}`
+        : ''
+      const commentPart = o.comment ? ` [${o.comment}]` : ''
+      lines.push(`  #${o.ticket} ${o.type} ${o.volume}L @ ${o.priceTarget.toFixed(dp)}${distPart} | SL: ${o.sl?.toFixed(dp) ?? 'none'} TP: ${o.tp?.toFixed(dp) ?? 'none'}${commentPart}`)
     }
   }
 
@@ -357,15 +436,26 @@ function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string,
     const DEAL_TYPE: Record<number, string> = { 0: 'BUY', 1: 'SELL' }
     const tradingDeals = recentDeals.filter(d => d.type === 0 || d.type === 1)
     if (tradingDeals.length > 0) {
-      lines.push(`Closed trades today (${tradingDeals.length}):`)
+      // Sum today's realized P&L (profit + commission + swap on closed trades)
+      const totalRealized = tradingDeals.reduce((s, d) => s + d.profit + d.commission + d.swap, 0)
+      const realizedStr   = totalRealized >= 0 ? `+$${totalRealized.toFixed(2)}` : `-$${Math.abs(totalRealized).toFixed(2)}`
+      lines.push(`Closed trades today (${tradingDeals.length}) | Realized P&L: ${realizedStr}:`)
       for (const d of tradingDeals.slice(0, 8)) {
         const dir  = DEAL_TYPE[d.type] ?? `TYPE${d.type}`
         const pnl  = d.profit >= 0 ? `+$${d.profit.toFixed(2)}` : `-$${Math.abs(d.profit).toFixed(2)}`
+        const fees = (d.commission !== 0 || d.swap !== 0)
+          ? ` (comm: $${d.commission.toFixed(2)}, swap: $${d.swap.toFixed(2)})`
+          : ''
         const exit = d.comment ? ` [${d.comment}]` : ''
         const t    = new Date(d.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        lines.push(`  #${d.ticket} ${dir} ${d.volume} @ ${d.price.toFixed(dp)} | P&L: ${pnl}${exit} at ${t}`)
+        lines.push(`  #${d.ticket} ${dir} ${d.volume} @ ${d.price.toFixed(dp)} | P&L: ${pnl}${fees}${exit} at ${t}`)
       }
     }
+  }
+
+  // ── Monte Carlo probability table ──────────────────────────────────────────
+  if (mc) {
+    lines.push(formatMCBlock(mc, forex?.pipSize ?? 1, dp))
   }
 
   return lines.join('\n')
@@ -667,21 +757,52 @@ OUTPUT RULES — CRITICAL:
 EVALUATION ORDER — follow strictly every tick:
 0. VERIFY STATE — call get_open_orders FIRST, every tick, no exceptions.
    MT5 can fill, reject, or externally close orders between ticks. Never trust memory alone.
+   Then read the full snapshot above. Explicitly note:
+   - Account: Balance / Equity / Free Margin / Margin Level — can you afford another trade?
+   - Today's Realized P&L — are you at or near your daily target? Already at max loss?
+   - Float P&L — are open positions winning or losing right now?
+   - Trend (EMA cross label) + Momentum (RSI label) — what does the market say RIGHT NOW?
+   - BB Width — is the market squeezing (low volatility, breakout imminent) or expanding?
+   - VWAP — is price above or below intraday fair value?
+   - Session — is the session OPEN? How much time is left?
+   You must reference these in your reasoning. Skipping any of them is not permitted.
 1. MANAGE OPEN POSITIONS (if any):
-   a. Check P&L vs your thesis — is the reason you entered still valid?
-   b. If in profit > 1× ATR → move SL to breakeven (modify_position).
-   c. If in profit > 2× ATR → trail SL behind the last structural level.
-   d. ONLY close early if the trade thesis is CLEARLY broken (e.g. trend reversal on higher timeframe, key level lost).
-   e. Do NOT close just because profit is shrinking — let your SL handle that.
+   a. State the current P&L in dollars and pips. State whether the position is in profit or loss RIGHT NOW.
+   b. Evaluate the position direction against CURRENT market structure — regardless of who placed the trade:
+      - Is this a LONG? → Is EMA20 > EMA50? Is RSI > 50? Is price above key support? If NO to most → thesis is broken.
+      - Is this a SHORT? → Is EMA20 < EMA50? Is RSI < 50? Is price below key resistance? If NO to most → thesis is broken.
+      - A position with a SL is NOT a reason to skip analysis. "It has a stop loss" is not a decision — it is an abdication.
+   c. Check SL and TP: Are they set? Are they at structural levels? If TP is missing, call modify_position to add one.
+   d. If in profit > 1× ATR → move SL to breakeven (modify_position).
+   e. If in profit > 2× ATR → trail SL behind the last structural level.
+   f. EXTERNALLY PLACED positions (positions you did not enter this session): apply the same framework as above.
+      Ask yourself: "Would I enter this trade RIGHT NOW given current data?" If YES → hold and manage it.
+      If NO → close it. Do NOT passively monitor an externally placed trade just because it has a stop loss.
+   g. ONLY use "let the SL handle it" if the trade direction IS confirmed by current structure AND price has not yet reached your target. Never use it as a substitute for analysis.
 2. MANAGE PENDING ORDERS — cancel limit/stop orders only if the level is no longer relevant.
-3. IF NO POSITION — analyse for a new entry:
-   a. TREND — EMA20 vs EMA50 alignment gives directional bias
-   b. MOMENTUM — RSI14: below 35 = bullish lean, above 65 = bearish lean
-   c. KEY LEVELS — identify nearest support/resistance from candle data. Entry must be near a level.
-   d. VOLATILITY — ATR14 for stop sizing; spread should be < 20% of ATR before entering
-   e. RISK:REWARD — SL at structural level, TP at next structural level. R:R must be ≥ 1.5.
-   f. CONVICTION CHECK — trend + momentum + level must ALL agree. If only 1-2 align, HOLD.
-   g. HISTORY CHECK — have you been stopped out at this same level/setup before today? If yes, DO NOT re-enter the same trade. The market is telling you something — listen.
+3. IF NO POSITION — you MUST evaluate BOTH a long setup AND a short setup. Do not evaluate one direction and stop.
+   For each direction, work through the checklist and state explicitly whether it PASSES or FAILS with a reason.
+
+   LONG SETUP (BUY):
+   a. TREND: EMA20 > EMA50? If NO → long trend fails.
+   b. MOMENTUM: RSI14 > 50 confirms bullish momentum. RSI 35–50 = neutral-bearish caution. RSI < 35 = strong
+      bearish momentum — do NOT use as a "buy signal"; it means the market is selling hard. Long FAILS.
+   c. KEY LEVEL: Is price at or bouncing from a clear support level? If NO → long level fails.
+   d. VOLATILITY: ATR14 for stop sizing. Spread < 20% of expected profit in dollar terms.
+   e. R:R: SL below structural support, TP at next resistance. R:R ≥ 1.5. If not achievable → long fails.
+   f. VERDICT: LONG VALID only if trend + momentum + level ALL pass. State "LONG: VALID" or "LONG: REJECTED — [reason]".
+
+   SHORT SETUP (SELL):
+   a. TREND: EMA20 < EMA50? If NO → short trend fails.
+   b. MOMENTUM: RSI14 < 50 confirms bearish momentum. RSI 50–65 = neutral-bullish caution. RSI > 65 = strong
+      bullish momentum — do NOT use as a "sell signal"; it means the market is buying hard. Short FAILS.
+   c. KEY LEVEL: Is price at or breaking below a clear resistance or previous support turned resistance? If NO → short level fails.
+   d. VOLATILITY: ATR14 for stop sizing. Spread < 20% of expected profit in dollar terms.
+   e. R:R: SL above structural resistance, TP at next support. R:R ≥ 1.5. If not achievable → short fails.
+   f. VERDICT: SHORT VALID only if trend + momentum + level ALL pass. State "SHORT: VALID" or "SHORT: REJECTED — [reason]".
+
+   HOLD only if BOTH long AND short are REJECTED. Your reasoning must show both verdicts.
+   g. HISTORY CHECK — have you been stopped out at this same level/setup before today? If yes, DO NOT re-enter. Save it to memory.
 4. LIMIT ORDERS — if conditions are close but not quite right, consider a LIMIT order at a better price rather than chasing with a MARKET order.
 5. LEARN — after ANY position closes (SL hit, TP hit, or manual close):
    a. Call save_memory with category "risk" to record what worked/failed and why.
@@ -695,7 +816,7 @@ ${snapshotBlock}${extNote}${newsBlock}
 
 ${historyNote}
 ${signalPriority}
-TASK: Evaluate the market and manage your positions. If you have an open position, your PRIMARY job is managing it well — not looking for the next trade. If flat, only enter when trend + momentum + key level ALL align and R:R ≥ 1.5. Patience is your edge. A missed trade costs nothing; a bad trade costs real money.${config.market !== 'mt5' ? ' Call get_order_book only if sizing a new entry.' : ''}
+TASK: Evaluate the market and manage your positions. If you have an open position, your PRIMARY job is managing it actively — state its P&L, validate its direction against current structure, and decide: hold (with reason), modify SL/TP, or close. "I will monitor it" is not a valid decision. If flat, only enter when trend + momentum + key level ALL align and R:R ≥ 1.5. Patience is your edge. A missed trade costs nothing; a bad trade costs real money.${config.market !== 'mt5' ? ' Call get_order_book only if sizing a new entry.' : ''}
 
 When you are done analysing, write your FULL analysis summary (what you checked, what the data shows, why you are making this decision), then end with EXACTLY these two lines:
 DECISION: [HOLD | BUY <qty> @ <price> SL:<price> TP:<price> | SELL <qty> @ <price> SL:<price> TP:<price> | CLOSE <ticket> | CANCEL <orderId>]
@@ -1012,7 +1133,60 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
         }
       }
 
-      const summary = formatSnapshotSummary(snap, agentKey, config)
+      // ── Monte Carlo simulation ─────────────────────────────────────────────
+      // Pure math — runs synchronously in <50ms. Zero LLM involvement.
+      let mcResult: MCResult | undefined
+      try {
+        const snapCandles = snap.candles as { m1?: Candle[]; m5?: Candle[]; m15?: Candle[]; m30?: Candle[]; h1?: Candle[]; h4?: Candle[] } | undefined
+        const snapInds    = snap.indicators as { ema20?: number; ema50?: number; atr14?: number } | undefined
+        const snapFx      = snap.forex as { pipSize?: number; pipValue?: number } | undefined
+        const snapAcct    = snap.accountInfo as { equity?: number } | undefined
+        const snapPrice   = snap.price as { last?: number } | undefined
+
+        // Derive suggested lot size from the sizing block (already computed in formatSnapshotSummary)
+        const equity    = snapAcct?.equity ?? 0
+        const pipSz     = snapFx?.pipSize ?? 1
+        const pipVal    = snapFx?.pipValue ?? 0
+        const atr14     = snapInds?.atr14 ?? 0
+        const maxRiskPct = config?.maxRiskPercent ?? 10
+        const maxRiskUsd = equity * (maxRiskPct / 100)
+        const slPips     = atr14 > 0 && pipSz > 0 ? (atr14 / pipSz) * 1.0 : 0
+        const riskPerLot = slPips * pipVal
+        const suggestedLots = riskPerLot > 0
+          ? Math.max(0.01, Math.floor((maxRiskUsd / riskPerLot) * 100) / 100)
+          : 0.01
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        type AnyCandle = any
+        if (snapCandles?.m1 && snapInds && snapPrice?.last && suggestedLots > 0) {
+          const mc = runMonteCarlo({
+            m1:  (snapCandles.m1  ?? []) as AnyCandle[],
+            m5:  (snapCandles.m5  ?? []) as AnyCandle[],
+            m15: (snapCandles.m15 ?? []) as AnyCandle[],
+            m30: (snapCandles.m30 ?? []) as AnyCandle[],
+            h1:  (snapCandles.h1  ?? []) as AnyCandle[],
+            h4:  (snapCandles.h4  ?? []) as AnyCandle[],
+            currentPrice: snapPrice.last,
+            pipSize:      pipSz,
+            pipValue:     pipVal,
+            lotSize:      suggestedLots,
+            atr14,
+            ema20: snapInds.ema20 ?? 0,
+            ema50: snapInds.ema50 ?? 0,
+          })
+
+          if (mc) {
+            mcResult = mc
+            // Log MC result so it appears in the Logs panel per tick
+            logEvent(agentKey, 'info', 'mc_result',
+              `MC: LONG win=${mc.long.winRate.toFixed(1)}% EV=${mc.long.ev >= 0 ? '+' : ''}$${mc.long.ev.toFixed(0)} | SHORT win=${mc.short.winRate.toFixed(1)}% EV=${mc.short.ev >= 0 ? '+' : ''}$${mc.short.ev.toFixed(0)} | Recommended: ${mc.recommended}`,
+              { long: mc.long, short: mc.short, recommended: mc.recommended, edgeDelta: mc.edgeDelta, pathCount: mc.pathCount, barsForward: mc.barsForward }
+            )
+          }
+        }
+      } catch { /* MC is non-fatal — agent continues without it */ }
+
+      const summary = formatSnapshotSummary(snap, agentKey, config, mcResult)
 
       // Fetch recent forex news (non-blocking, fails silently)
       let newsItems: ForexNewsItem[] | undefined

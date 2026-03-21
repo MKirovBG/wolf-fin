@@ -390,7 +390,12 @@ export function dbGetLogsForCycle(agentKey: string, cycleEndTime: string): LogEn
 
 export function dbGetLogClearFloor(): number {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('log_clear_floor') as { value: string } | undefined
-  return row ? parseInt(row.value, 10) : 0
+  if (!row) return 0
+  const floor = parseInt(row.value, 10)
+  // If the floor exceeds the actual max log ID (e.g. after a DB reset), treat as 0
+  // to avoid hiding all logs permanently.
+  const maxId = dbGetMaxLogId()
+  return floor > maxId ? 0 : floor
 }
 
 export function dbSetLogClearFloor(id: number): void {
@@ -398,6 +403,31 @@ export function dbSetLogClearFloor(id: number): void {
     INSERT INTO settings (key, value) VALUES ('log_clear_floor', ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `).run(String(id))
+}
+
+// ── Selected account ──────────────────────────────────────────────────────────
+
+export interface SelectedAccount {
+  market: 'mt5' | 'crypto'
+  accountId: string   // mt5 login as string, or 'binance' for crypto
+  label?: string      // e.g. "#1512796653 @ ICMarkets-Demo02"
+}
+
+export function dbGetSelectedAccount(): SelectedAccount | null {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'selected_account'").get() as { value: string } | undefined
+  if (!row) return null
+  try { return JSON.parse(row.value) as SelectedAccount } catch { return null }
+}
+
+export function dbSetSelectedAccount(account: SelectedAccount | null): void {
+  if (account === null) {
+    db.prepare("DELETE FROM settings WHERE key = 'selected_account'").run()
+  } else {
+    db.prepare(`
+      INSERT INTO settings (key, value) VALUES ('selected_account', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(JSON.stringify(account))
+  }
 }
 
 // ── Log entries ──────────────────────────────────────────────────────────────

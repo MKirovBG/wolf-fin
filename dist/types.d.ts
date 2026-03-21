@@ -15,7 +15,7 @@ export interface AgentConfig {
     promptTemplate?: string;
     guardrails?: Partial<GuardrailsConfig>;
     mt5AccountId?: number;
-    llmProvider?: 'anthropic' | 'openrouter';
+    llmProvider?: 'anthropic' | 'openrouter' | 'ollama';
     llmModel?: string;
     dailyTargetUsd?: number;
     maxRiskPercent?: number;

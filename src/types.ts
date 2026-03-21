@@ -65,6 +65,7 @@ export type LogEvent =
   | 'memory_write' | 'plan_created'
   | 'pnl_record' | 'auto_plan'
   | 'quota_error'
+  | 'mc_result'
 
 export interface LogEntry {
   id: number

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { getAccounts } from '../api/client.ts'
 import type { AccountEntry, BinanceAccountEntry, Mt5AccountEntry, BinanceBalance, BinanceOpenOrder, Mt5Position } from '../types/index.ts'
+import { useAccount, entryToSelectedAccount } from '../contexts/AccountContext.tsx'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -98,6 +99,42 @@ function PnlSpan({ value }: { value: number }) {
   return <span className={`font-mono ${color}`}>{value >= 0 ? '+' : ''}${usd(value)}</span>
 }
 
+// ── Set Active button ─────────────────────────────────────────────────────────
+
+function SetActiveButton({ entry }: { entry: AccountEntry }) {
+  const { selectedAccount, setSelectedAccount } = useAccount()
+  const target = entryToSelectedAccount(entry)
+  const isActive = selectedAccount?.market === target.market && selectedAccount?.accountId === target.accountId
+  const [loading, setLoading] = useState(false)
+
+  const handleClick = async () => {
+    setLoading(true)
+    try { await setSelectedAccount(isActive ? null : target) }
+    finally { setLoading(false) }
+  }
+
+  if (isActive) {
+    return (
+      <button
+        onClick={handleClick}
+        disabled={loading}
+        className="px-3 py-1 text-xs font-semibold rounded-md border border-green/40 text-green bg-green-dim hover:bg-transparent transition-colors disabled:opacity-50"
+      >
+        ✓ Active
+      </button>
+    )
+  }
+  return (
+    <button
+      onClick={handleClick}
+      disabled={loading}
+      className="px-3 py-1 text-xs rounded-md border border-border text-muted hover:border-green hover:text-green transition-colors disabled:opacity-50"
+    >
+      Set Active
+    </button>
+  )
+}
+
 // ── Binance card ───────────────────────────────────────────────────────────────
 
 function BinanceCard({ entry }: { entry: BinanceAccountEntry }) {
@@ -119,11 +156,14 @@ function BinanceCard({ entry }: { entry: BinanceAccountEntry }) {
           <ModeBadge mode={entry.mode} />
           <ConnectedDot ok={entry.connected} />
         </div>
-        {entry.connected && (
-          <span className="text-sm text-muted">
-            {balances.length} asset{balances.length !== 1 ? 's' : ''}
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {entry.connected && (
+            <span className="text-sm text-muted">
+              {balances.length} asset{balances.length !== 1 ? 's' : ''}
+            </span>
+          )}
+          <SetActiveButton entry={entry} />
+        </div>
       </div>
 
       {!entry.connected && (
@@ -236,12 +276,13 @@ function Mt5Card({ entry }: { entry: Mt5AccountEntry }) {
           <span className="text-text font-bold text-sm">METATRADER 5</span>
           <ModeBadge mode={entry.mode} />
           <ConnectedDot ok={entry.connected} inactive={!entry.connected && entry.error?.startsWith('Not active')} />
+          {s && (
+            <span className="text-sm text-muted font-mono">
+              #{s.login} @ {s.server}
+            </span>
+          )}
         </div>
-        {s && (
-          <span className="text-sm text-muted font-mono">
-            #{s.login} @ {s.server}
-          </span>
-        )}
+        <SetActiveButton entry={entry} />
       </div>
 
       {!entry.connected && (
@@ -323,6 +364,7 @@ export function Account() {
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const { refreshAccounts } = useAccount()
 
   const load = useCallback(async () => {
     setError(null)
@@ -330,12 +372,14 @@ export function Account() {
       const data = await getAccounts()
       setAccounts(data)
       setLastUpdated(new Date().toLocaleTimeString())
+      // Keep the context accounts list in sync so the sidebar selector is fresh
+      await refreshAccounts()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [refreshAccounts])
 
   useEffect(() => {
     load()
@@ -350,8 +394,8 @@ export function Account() {
     <div className="p-6">
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h1 className="text-xl font-bold text-text">Accounts</h1>
-          <p className="text-muted text-sm mt-1">Balances, holdings, and activity across all configured exchanges</p>
+          <h1 className="text-xl font-bold text-text">Account Management</h1>
+          <p className="text-muted text-sm mt-1">All connected accounts — set one as active to scope the rest of the app</p>
         </div>
         <div className="flex items-center gap-3">
           {lastUpdated && <span className="text-sm text-muted">Updated {lastUpdated}</span>}

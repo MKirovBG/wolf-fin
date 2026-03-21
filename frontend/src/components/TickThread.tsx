@@ -103,6 +103,7 @@ const EVENT_COLOR: Partial<Record<LogEvent, string>> & { default: string } = {
   session_skip:       'text-muted',
   auto_execute:       'text-yellow',
   auto_execute_error: 'text-red',
+  mc_result:          'text-[#a78bfa]',
   default:            'text-text',
 }
 
@@ -127,6 +128,7 @@ const EVENT_PREFIX: Partial<Record<LogEvent, string>> & { default: string } = {
   session_skip:       '— SKIP',
   auto_execute:       '⚡ EXEC',
   auto_execute_error: '✗ EXEC',
+  mc_result:          '🎲 MC',
   default:            '·',
 }
 
@@ -207,6 +209,94 @@ function Section({
   )
 }
 
+// ── Monte Carlo result table ───────────────────────────────────────────────────
+
+interface MCActionResult {
+  winRate: number; ev: number; p10: number; p50: number; p90: number
+  slHitPct: number; medianBarsToClose: number
+}
+interface MCData {
+  long: MCActionResult; short: MCActionResult
+  recommended: 'LONG' | 'SHORT' | 'HOLD'
+  edgeDelta: number; pathCount: number; barsForward: number
+}
+
+function fmt$(v: number) { return `${v >= 0 ? '+' : ''}$${Math.abs(v).toFixed(0)}` }
+function pct(v: number)  { return `${v.toFixed(1)}%` }
+
+function MCTable({ entry }: { entry: LogEntry }) {
+  const mc = entry.data as unknown as MCData | undefined
+  if (!mc?.long || !mc?.short) {
+    // Fallback: just show the message as monospace
+    return (
+      <pre className="text-xs font-mono text-[#a78bfa] whitespace-pre-wrap break-words p-3 leading-relaxed">
+        {entry.message}
+      </pre>
+    )
+  }
+
+  const recColor = mc.recommended === 'LONG'  ? 'text-green'
+                 : mc.recommended === 'SHORT' ? 'text-red'
+                 : 'text-muted'
+
+  const rows: Array<{ label: string; r: MCActionResult; isRec: boolean }> = [
+    { label: 'LONG',  r: mc.long,  isRec: mc.recommended === 'LONG'  },
+    { label: 'SHORT', r: mc.short, isRec: mc.recommended === 'SHORT' },
+  ]
+
+  return (
+    <div className="p-3 space-y-2">
+      {/* Header */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[10px] font-bold text-[#a78bfa] font-sans uppercase tracking-wider">Monte Carlo</span>
+        <span className="text-[10px] text-muted2 font-mono">{mc.pathCount.toLocaleString()} paths · M1 · {mc.barsForward}-bar fwd</span>
+        <span className={`ml-auto text-xs font-bold font-sans ${recColor}`}>
+          {mc.recommended === 'HOLD' ? '⚠ HOLD — negative EV both sides' : `▶ ${mc.recommended} recommended`}
+        </span>
+      </div>
+
+      {/* Table */}
+      <div className="overflow-x-auto rounded border border-border">
+        <table className="w-full text-xs font-mono border-collapse">
+          <thead>
+            <tr className="border-b border-border bg-surface2">
+              <th className="text-left px-3 py-1.5 text-muted font-semibold">Action</th>
+              <th className="text-right px-2 py-1.5 text-muted font-semibold">Win %</th>
+              <th className="text-right px-2 py-1.5 text-muted font-semibold">EV</th>
+              <th className="text-right px-2 py-1.5 text-muted font-semibold">P10</th>
+              <th className="text-right px-2 py-1.5 text-muted font-semibold">P50</th>
+              <th className="text-right px-2 py-1.5 text-muted font-semibold">P90</th>
+              <th className="text-right px-2 py-1.5 text-muted font-semibold">SL hit</th>
+              <th className="text-right px-2 py-1.5 text-muted font-semibold">Med.bars</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(({ label, r, isRec }) => (
+              <tr key={label} className={`border-b border-border/50 ${isRec ? 'bg-surface2' : ''}`}>
+                <td className={`px-3 py-1.5 font-bold ${label === 'LONG' ? 'text-green' : 'text-red'}`}>
+                  {label}{isRec ? ' ◀' : ''}
+                </td>
+                <td className="text-right px-2 py-1.5 text-text">{pct(r.winRate)}</td>
+                <td className={`text-right px-2 py-1.5 font-bold ${r.ev >= 0 ? 'text-green' : 'text-red'}`}>{fmt$(r.ev)}</td>
+                <td className="text-right px-2 py-1.5 text-red">{fmt$(r.p10)}</td>
+                <td className="text-right px-2 py-1.5 text-text">{fmt$(r.p50)}</td>
+                <td className="text-right px-2 py-1.5 text-green">{fmt$(r.p90)}</td>
+                <td className="text-right px-2 py-1.5 text-muted">{pct(r.slHitPct)}</td>
+                <td className="text-right px-2 py-1.5 text-muted">{r.medianBarsToClose.toFixed(0)}m</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Edge delta */}
+      <p className="text-[10px] text-muted2 font-mono">
+        Edge delta vs HOLD: {fmt$(mc.edgeDelta)}
+      </p>
+    </div>
+  )
+}
+
 // ── Main TickThread component ──────────────────────────────────────────────────
 
 interface Props {
@@ -280,6 +370,16 @@ export function TickThread({ thread, defaultExpanded = false }: Props) {
               {thread.reason.slice(0, 90)}{thread.reason.length > 90 ? '…' : ''}
             </span>
           )}
+          {thread.mcLogs.length > 0 && (() => {
+            const mc = thread.mcLogs[0]?.data as unknown as { recommended?: string; long?: { ev?: number }; short?: { ev?: number } } | undefined
+            const rec = mc?.recommended
+            const evColor = rec === 'LONG' ? 'text-green' : rec === 'SHORT' ? 'text-red' : 'text-muted'
+            return (
+              <span className={`text-[10px] font-mono shrink-0 hidden sm:inline ${evColor}`}>
+                🎲 {rec ?? 'MC'}
+              </span>
+            )
+          })()}
           <span className="text-xs text-muted2 shrink-0 ml-auto">{rel(thread.startTime)}</span>
           <span className="text-muted2 text-xs shrink-0">▼</span>
         </div>
@@ -329,6 +429,15 @@ export function TickThread({ thread, defaultExpanded = false }: Props) {
 
       {/* Sections */}
       <div className="overflow-y-auto" style={{ maxHeight: '560px', scrollbarWidth: 'thin', scrollbarColor: '#2a2a32 #111113' }}>
+        <Section
+          title="Monte Carlo"
+          count={thread.mcLogs.length}
+          defaultOpen={thread.mcLogs.length > 0}
+          color="text-[#a78bfa]"
+        >
+          {thread.mcLogs.map(e => <MCTable key={e.id} entry={e} />)}
+        </Section>
+
         <Section
           title="Decision & Reason"
           count={thread.decisionLogs.length}

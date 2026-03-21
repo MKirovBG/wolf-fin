@@ -5,6 +5,7 @@ import type { AgentConfig, GuardrailsConfig, Mt5AccountInfo, OpenRouterModel, Ol
 import { useToast } from '../components/Toast.tsx'
 import { PromptEditor } from '../components/PromptEditor.tsx'
 import { GuardrailsEditor } from '../components/GuardrailsEditor.tsx'
+import { useAccount } from '../contexts/AccountContext.tsx'
 
 // ── Interval helpers ───────────────────────────────────────────────────────────
 const INTERVALS = [2, 5, 10, 15, 20, 30, 60, 300, 900, 1800, 3600, 14400]
@@ -127,12 +128,17 @@ function SymbolSearch({
 export function AgentCreate() {
   const navigate = useNavigate()
   const toast = useToast()
+  const { selectedAccount } = useAccount()
 
-  // Basic
+  // Basic — pre-fill market + accountId from selected account
   const [agentName, setAgentName] = useState('')
-  const [market, setMarket] = useState<'crypto' | 'mt5'>('crypto')
+  const [market, setMarket] = useState<'crypto' | 'mt5'>(
+    selectedAccount?.market === 'mt5' ? 'mt5' : 'crypto'
+  )
   const [symbol, setSymbol] = useState('')
-  const [mt5AccountId, setMt5AccountId] = useState<number | undefined>()
+  const [mt5AccountId, setMt5AccountId] = useState<number | undefined>(
+    selectedAccount?.market === 'mt5' ? parseInt(selectedAccount.accountId, 10) : undefined
+  )
 
   // Schedule
   const [fetchMode, setFetchMode] = useState<'manual' | 'scheduled' | 'autonomous'>('scheduled')
@@ -155,7 +161,7 @@ export function AgentCreate() {
 
   // UI state
   const [mt5Accounts, setMt5Accounts] = useState<Mt5AccountInfo[]>([])
-  const [selectedAccount, setSelectedAccount] = useState<Mt5AccountInfo | null>(null)
+  const [selectedMt5Account, setSelectedMt5Account] = useState<Mt5AccountInfo | null>(null)
   const [orModels, setOrModels] = useState<OpenRouterModel[]>([])
   const [orLoading, setOrLoading] = useState(false)
   const [orError, setOrError] = useState<string | null>(null)
@@ -190,7 +196,7 @@ export function AgentCreate() {
   }, [llmProvider])
 
   useEffect(() => {
-    setSelectedAccount(mt5Accounts.find(a => a.login === mt5AccountId) ?? null)
+    setSelectedMt5Account(mt5Accounts.find(a => a.login === mt5AccountId) ?? null)
   }, [mt5AccountId, mt5Accounts])
 
   useEffect(() => { setSymbol('') }, [market])
@@ -283,26 +289,26 @@ export function AgentCreate() {
                       </select>
                     </Field>
 
-                    {selectedAccount && (
+                    {selectedMt5Account && (
                       <div className="bg-bg border border-border rounded-lg p-3 text-sm">
                         <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
                           <div className="text-muted">Balance
                             <span className="text-text font-medium ml-2">
-                              {selectedAccount.balance != null
-                                ? `${selectedAccount.currency ?? 'USD'} ${selectedAccount.balance.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+                              {selectedMt5Account.balance != null
+                                ? `${selectedMt5Account.currency ?? 'USD'} ${selectedMt5Account.balance.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
                                 : '—'}
                             </span>
                           </div>
                           <div className="text-muted">Mode
-                            <span className={`font-semibold ml-2 ${selectedAccount.mode === 'LIVE' ? 'text-red' : 'text-yellow'}`}>
-                              {selectedAccount.mode}
+                            <span className={`font-semibold ml-2 ${selectedMt5Account.mode === 'LIVE' ? 'text-red' : 'text-yellow'}`}>
+                              {selectedMt5Account.mode}
                             </span>
                           </div>
                           <div className="text-muted">Server
-                            <span className="text-muted2 ml-2 text-xs">{selectedAccount.server}</span>
+                            <span className="text-muted2 ml-2 text-xs">{selectedMt5Account.server}</span>
                           </div>
                           <div className="text-muted">Login
-                            <span className="text-muted2 ml-2 text-xs">#{selectedAccount.login}</span>
+                            <span className="text-muted2 ml-2 text-xs">#{selectedMt5Account.login}</span>
                           </div>
                         </div>
                       </div>

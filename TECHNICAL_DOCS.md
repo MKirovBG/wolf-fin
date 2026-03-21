@@ -1,6 +1,7 @@
 # Wolf-Fin Technical Documentation
 
 > Complete reference for the Wolf-Fin autonomous AI trading platform.
+> Last updated: 2026-03-21
 
 ---
 
@@ -12,226 +13,226 @@
 4. [Database Layer](#4-database-layer)
 5. [Adapter System](#5-adapter-system)
    - 5.1 [IMarketAdapter Interface](#51-imarketadapter-interface)
-   - 5.2 [Binance Adapter (Crypto)](#52-binance-adapter-crypto)
-   - 5.3 [Alpaca Adapter (Forex)](#53-alpaca-adapter-forex)
+   - 5.2 [MT5 Adapter](#52-mt5-adapter)
+   - 5.3 [Binance Adapter (Crypto)](#53-binance-adapter-crypto)
    - 5.4 [Technical Indicators](#54-technical-indicators)
-   - 5.5 [Market Enrichment](#55-market-enrichment)
-6. [Agent System](#6-agent-system)
-   - 6.1 [Agent Configuration](#61-agent-configuration)
-   - 6.2 [The Agent Cycle Loop](#62-the-agent-cycle-loop)
-   - 6.3 [Claude Tool Definitions](#63-claude-tool-definitions)
-   - 6.4 [System Prompt Construction](#64-system-prompt-construction)
-7. [Guardrails & Risk Management](#7-guardrails--risk-management)
-   - 7.1 [Crypto Validation](#71-crypto-validation)
-   - 7.2 [Forex Validation](#72-forex-validation)
-   - 7.3 [Per-Market Risk State](#73-per-market-risk-state)
-8. [Scheduler](#8-scheduler)
-9. [HTTP API Server](#9-http-api-server)
-   - 9.1 [All Endpoints](#91-all-endpoints)
-   - 9.2 [API Key Testing](#92-api-key-testing)
-   - 9.3 [Startup Connectivity Check](#93-startup-connectivity-check)
-10. [In-Memory State & Logging](#10-in-memory-state--logging)
-11. [Frontend](#11-frontend)
-    - 11.1 [Routing](#111-routing)
-    - 11.2 [Pages](#112-pages)
-    - 11.3 [Key Components](#113-key-components)
-    - 11.4 [API Client](#114-api-client)
-12. [Data Flow: End-to-End Agent Cycle](#12-data-flow-end-to-end-agent-cycle)
-13. [Paper Trading vs Live Trading](#13-paper-trading-vs-live-trading)
-14. [Known Limitations & Notes](#14-known-limitations--notes)
+   - 5.5 [Key Levels (Support/Resistance/Pivots)](#55-key-levels-supportresistancepivots)
+   - 5.6 [Market Context & News](#56-market-context--news)
+   - 5.7 [Forex Session Management](#57-forex-session-management)
+6. [Monte Carlo Simulation Engine](#6-monte-carlo-simulation-engine)
+7. [LLM Provider System](#7-llm-provider-system)
+   - 7.1 [Provider Factory](#71-provider-factory)
+   - 7.2 [Anthropic Provider](#72-anthropic-provider)
+   - 7.3 [OpenRouter Provider](#73-openrouter-provider)
+   - 7.4 [Ollama Provider (Local Models)](#74-ollama-provider-local-models)
+8. [Agent System](#8-agent-system)
+   - 8.1 [Agent Configuration](#81-agent-configuration)
+   - 8.2 [Session-Based Tick Architecture](#82-session-based-tick-architecture)
+   - 8.3 [Tick Lifecycle (runAgentTick)](#83-tick-lifecycle-runagenttick)
+   - 8.4 [Market Snapshot & Data Injection](#84-market-snapshot--data-injection)
+   - 8.5 [Position Sizing Engine](#85-position-sizing-engine)
+   - 8.6 [System Prompt Construction](#86-system-prompt-construction)
+   - 8.7 [Session Compression](#87-session-compression)
+   - 8.8 [Tool Definitions](#88-tool-definitions)
+   - 8.9 [External Close Detection](#89-external-close-detection)
+9. [Guardrails & Risk Management](#9-guardrails--risk-management)
+   - 9.1 [Crypto Validation](#91-crypto-validation)
+   - 9.2 [MT5 Validation](#92-mt5-validation)
+   - 9.3 [Daily Loss Auto-Pause](#93-daily-loss-auto-pause)
+   - 9.4 [Drawdown Auto-Pause](#94-drawdown-auto-pause)
+   - 9.5 [Lot Size Clamping](#95-lot-size-clamping)
+   - 9.6 [Per-Market Risk State](#96-per-market-risk-state)
+10. [Scheduler](#10-scheduler)
+    - 10.1 [Fetch Modes](#101-fetch-modes)
+    - 10.2 [HOLD Backoff](#102-hold-backoff)
+    - 10.3 [Scheduled Windows](#103-scheduled-windows)
+11. [HTTP API Server](#11-http-api-server)
+    - 11.1 [All Endpoints](#111-all-endpoints)
+    - 11.2 [SSE Event Stream](#112-sse-event-stream)
+    - 11.3 [API Key Testing](#113-api-key-testing)
+12. [In-Memory State & Logging](#12-in-memory-state--logging)
+13. [Frontend](#13-frontend)
+    - 13.1 [Routing](#131-routing)
+    - 13.2 [Pages](#132-pages)
+    - 13.3 [Key Components](#133-key-components)
+    - 13.4 [Account Context](#134-account-context)
+    - 13.5 [API Client](#135-api-client)
+    - 13.6 [Live Session (ThreadedLogsPanel)](#136-live-session-threadedlogspanel)
+14. [Data Flow: End-to-End Agent Tick](#14-data-flow-end-to-end-agent-tick)
+15. [Known Limitations & Notes](#15-known-limitations--notes)
 
 ---
 
 ## 1. System Overview
 
-Wolf-Fin is an autonomous AI trading platform that uses **Claude** (Anthropic) as the decision-making brain. Claude calls a set of tools to gather market data, review its account state, and optionally place or cancel orders. The system supports two markets:
+Wolf-Fin is an autonomous AI trading platform. An LLM (Claude, OpenRouter models, or local Ollama models) serves as the decision-making brain. Each scheduled interval fires a "tick" — a new message turn appended to the same ongoing conversation. The LLM calls tools to gather market data, review account state, and optionally place, modify, or close orders. The system supports two markets:
 
-| Market | Exchange | Adapter |
-|--------|----------|---------|
-| Crypto | Binance  | `BinanceAdapter` |
-| Forex  | Alpaca   | `AlpacaAdapter`  |
+| Market | Exchange | Adapter | Bridge |
+|--------|----------|---------|--------|
+| Crypto | Binance  | `BinanceAdapter` | Direct REST API |
+| MT5    | MetaTrader 5 (any broker) | `MT5Adapter` | Python FastAPI bridge on localhost:8000 |
 
-Each market is handled by an independent **agent** — a named configuration that runs on a schedule (or manually). Multiple agents can run simultaneously (e.g., `crypto:BTCUSDT` and `forex:EURUSD`).
+Each market is handled by independent **agents** — named configurations identified by a composite key `market:symbol:accountId:name`. Multiple agents can run simultaneously (e.g., `mt5:XAUUSD:1512796653:gold` and `crypto:BTCUSDT`).
 
 **Technology stack:**
 
 | Layer | Technology |
 |-------|-----------|
-| Runtime | Node.js (ESM, TypeScript) |
-| AI     | Anthropic SDK (`@anthropic-ai/sdk`) |
-| Crypto data/trading | `binance` npm package + custom HMAC-SHA256 REST |
-| Forex data/trading | Alpaca REST API (no SDK) |
+| Runtime | Node.js 22+ (ESM, TypeScript) |
+| AI | Anthropic SDK, OpenRouter API, Ollama (OpenAI-compatible) |
+| MT5 trading | Python FastAPI bridge → MetaTrader5 C++ API |
+| Crypto trading | `binance` npm package + custom HMAC-SHA256 REST |
 | HTTP server | Fastify |
 | Database | SQLite via `better-sqlite3` (WAL mode) |
-| Scheduler | `node-cron` |
-| Frontend | React + Vite + Tailwind |
+| Frontend | React 18 + Vite + Tailwind CSS |
 | Frontend routing | React Router v6 |
+| Charting | Recharts |
+| Real-time | Server-Sent Events (SSE) |
 
 ---
 
 ## 2. Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                          FRONTEND (React)                        │
-│  Dashboard │ Agents │ AgentDetail │ Positions │ ApiKeys │ Reports │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ HTTP (REST)
-┌────────────────────────────▼────────────────────────────────────┐
-│                     FASTIFY HTTP SERVER                          │
-│  /api/agents  /api/logs  /api/positions  /api/keys  /api/reports │
-└──────────┬─────────────────┬──────────────────┬─────────────────┘
-           │                 │                  │
-    ┌──────▼──────┐   ┌──────▼──────┐   ┌──────▼──────┐
-    │  SCHEDULER  │   │  APP STATE  │   │   SQLITE DB  │
-    │ (node-cron) │   │ (in-memory) │   │ (WAL mode)  │
-    └──────┬──────┘   └─────────────┘   └─────────────┘
-           │
-    ┌──────▼──────────────────────────────────────────────┐
-    │                  AGENT CYCLE LOOP                    │
-    │   Build prompt → Call Claude → Dispatch tools        │
-    │   → Guardrail check → Execute → Log result           │
-    └──────┬──────────────────────────┬───────────────────┘
-           │                          │
-    ┌──────▼──────┐           ┌───────▼───────┐
-    │  CLAUDE API  │           │   GUARDRAILS  │
-    │ (tool_use)  │           │  Risk limits  │
-    └─────────────┘           └───────────────┘
-           │
-    ┌──────▼──────────────────────────────────────────────┐
-    │                    ADAPTERS                          │
-    │  BinanceAdapter (crypto)   AlpacaAdapter (forex)    │
-    │  - getSnapshot()           - getSnapshot()           │
-    │  - placeOrder()            - placeOrder()            │
-    │  - cancelOrder()           - cancelOrder()           │
-    └──────┬──────────────────────────┬───────────────────┘
-           │                          │
-    ┌──────▼──────┐           ┌───────▼───────┐
-    │  BINANCE API │           │  ALPACA API   │
-    │ REST + WS   │           │  REST only    │
-    └─────────────┘           └───────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                         FRONTEND (React 18)                         │
+│  Dashboard │ Agents │ AgentDetail │ Reports │ Account │ ApiKeys     │
+│            │        │             │         │         │             │
+│  ThreadedLogsPanel (SSE) ←── Real-time tick threads w/ MC results  │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                │ HTTP REST + SSE
+┌───────────────────────────────▼─────────────────────────────────────┐
+│                      FASTIFY HTTP SERVER (:3000)                    │
+│  /api/agents  /api/events(SSE)  /api/logs  /api/keys  /api/reports │
+│  /api/selected-account  /api/system-prompt  /api/market             │
+└───────┬───────────────────────┬───────────────────┬─────────────────┘
+        │                       │                   │
+  ┌─────▼─────┐          ┌─────▼─────┐      ┌──────▼──────┐
+  │ SCHEDULER │          │ APP STATE │      │  SQLITE DB   │
+  │ 3 modes:  │          │ (memory)  │      │  (WAL mode)  │
+  │ manual    │          │ agents{}  │      │ 9+ tables    │
+  │ auto      │          │ logBuffer │      └──────────────┘
+  │ scheduled │          │ SSE subs  │
+  └─────┬─────┘          └───────────┘
+        │
+  ┌─────▼─────────────────────────────────────────────────────────────┐
+  │                      AGENT TICK PIPELINE                           │
+  │                                                                    │
+  │  1. Fetch MT5/Binance snapshot (price, candles, account, positions)│
+  │  2. Compute indicators (RSI14, EMA20/50, ATR14, VWAP, BB Width)   │
+  │  3. Compute key levels (support, resistance, pivots)               │
+  │  4. Run Monte Carlo simulation (5,000 paths, M1 bootstrap)        │
+  │  5. Format snapshot summary (all data → text block)                │
+  │  6. Build tick message with snapshot + news + session context       │
+  │  7. Append to LLM conversation → get response with tool calls      │
+  │  8. Execute tool calls (guardrail-checked) → loop until done       │
+  │  9. Parse decision → log result → record cycle                     │
+  └─────┬────────────────────────┬────────────────────┬───────────────┘
+        │                        │                    │
+  ┌─────▼──────┐          ┌──────▼──────┐     ┌──────▼───────┐
+  │ LLM LAYER  │          │ GUARDRAILS  │     │  MT5 BRIDGE  │
+  │ Anthropic  │          │ lot clamp   │     │  FastAPI     │
+  │ OpenRouter │          │ spread chk  │     │  :8000       │
+  │ Ollama     │          │ margin chk  │     └──────────────┘
+  └────────────┘          │ daily loss  │
+                          │ drawdown    │
+                          └─────────────┘
 ```
 
 ---
 
 ## 3. Environment Configuration
 
-All configuration is in `.env` at the project root.
+All variables are managed via `.env` file in the project root. The API keys page in the frontend can persist keys directly to `.env`.
 
-```bash
-# ── Anthropic ──────────────────────────────────────────
-ANTHROPIC_API_KEY=sk-ant-...
-CLAUDE_MODEL=claude-haiku-4-5-20251001   # cheaper for dev; switch to claude-opus-4-6 for live
-
-# ── Binance (Crypto) ───────────────────────────────────
-BINANCE_API_KEY=...
-BINANCE_API_SECRET=...
-BINANCE_TESTNET=false   # set true to use testnet.binance.vision
-
-# ── Alpaca (Forex) ─────────────────────────────────────
-ALPACA_API_KEY=...              # live trading keys
-ALPACA_API_SECRET=...
-ALPACA_BASE_URL=https://api.alpaca.markets
-
-ALPACA_PAPER_KEY=...            # paper trading keys
-ALPACA_PAPER_SECRET=...
-ALPACA_PAPER_URL=https://paper-api.alpaca.markets
-ALPACA_PAPER=true               # master paper mode override
-
-# ── Enrichment (optional) ──────────────────────────────
-FINNHUB_KEY=...                 # news and events
-TWELVE_DATA_KEY=...             # forex fallback data
-COINGECKO_KEY=CG-...            # demo key (starts CG-); leave blank for free tier
-
-# ── Risk Limits ────────────────────────────────────────
-MAX_DAILY_LOSS_USD=200          # per-market daily loss gate
-MAX_POSITION_USD=1000           # max single position notional
-# MAX_COMBINED_NOTIONAL_USD defaults to 2000 (hardcoded)
-# MAX_SPREAD_PIPS defaults to 3 (forex)
-# MIN_STOP_PIPS defaults to 10 (forex)
-
-# ── Runtime ────────────────────────────────────────────
-PAPER_TRADING=true              # master paper-mode override
-LOG_LEVEL=info
-PORT=3000
-```
-
-**CoinGecko key detection:** Keys starting with `CG-` are Demo keys and use `api.coingecko.com` with `x-cg-demo-api-key` header. Any other key format is treated as a Pro key and uses `pro-api.coingecko.com` with `x-cg-pro-api-key`.
-
-**Alpaca paper vs live:**
-- When `ALPACA_PAPER=true` or agent config `paper=true`, trading goes to `ALPACA_PAPER_URL` with `ALPACA_PAPER_KEY`/`ALPACA_PAPER_SECRET`.
-- Market data **always** uses live keys (`ALPACA_API_KEY`) regardless of paper mode, because the data endpoint is separate from the trading endpoint.
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PORT` | `3000` | HTTP server port |
+| `LOG_LEVEL` | `info` | Pino log level |
+| **LLM Providers** | | |
+| `ANTHROPIC_API_KEY` | — | Claude direct API |
+| `OPENROUTER_API_KEY` | — | OpenRouter proxy (access 100+ models) |
+| `OLLAMA_URL` | `http://localhost:11434` | Local Ollama server URL |
+| `CLAUDE_MODEL` | `claude-opus-4-5-20251101` | Default Anthropic model |
+| **Crypto** | | |
+| `BINANCE_API_KEY` | — | Binance API key |
+| `BINANCE_API_SECRET` | — | Binance API secret |
+| `BINANCE_TESTNET` | `false` | Use Binance testnet |
+| **Market Data** | | |
+| `FINNHUB_KEY` | — | Finnhub forex news |
+| `TWELVE_DATA_KEY` | — | TwelveData (not actively used) |
+| `COINGECKO_KEY` | — | CoinGecko market cap / fear & greed |
+| **Risk Constants** | | |
+| `MIN_ORDER_NOTIONAL_USD` | `10` | Minimum order value (Binance) |
+| `MIN_ORDER_QTY` | `0.00001` | Minimum quantity |
+| `MAX_ORDER_QTY` | `9000` | Maximum quantity |
+| `MAX_DAILY_LOSS_USD` | `200` | Daily loss limit per market |
+| `MAX_POSITION_USD` | `1000` | Max position notional per symbol |
+| `MAX_COMBINED_NOTIONAL_USD` | `2000` | Max total notional across all markets |
 
 ---
 
 ## 4. Database Layer
 
-**File:** `src/db/index.ts`
-**Engine:** SQLite via `better-sqlite3`, WAL journal mode
+**Engine:** SQLite via `better-sqlite3` (synchronous, WAL mode)
+**File:** `data/wolf-fin.db`
+**Module:** `src/db/index.ts`
 
-### Schema
+### Tables
 
-```sql
--- Agent configurations and status
-CREATE TABLE agents (
-  key         TEXT PRIMARY KEY,   -- "market:symbol" e.g. "crypto:BTCUSDT"
-  config      TEXT,               -- JSON: AgentConfig
-  status      TEXT,               -- 'idle' | 'running' | 'paused'
-  cycle_count INTEGER DEFAULT 0,
-  started_at  TEXT,               -- ISO timestamp
-  last_cycle  TEXT                -- JSON: CycleResult
-);
-
--- Historical cycle outcomes
-CREATE TABLE cycle_results (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  agent_key   TEXT,
-  symbol      TEXT,
-  market      TEXT,
-  paper       INTEGER,            -- 0 or 1
-  decision    TEXT,               -- 'HOLD' | 'BUY' | 'SELL' | 'CANCEL'
-  reason      TEXT,
-  time        TEXT,               -- ISO timestamp
-  error       TEXT                -- null if no error
-);
-
--- Detailed event logs
-CREATE TABLE log_entries (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  time        TEXT,
-  agent_key   TEXT,
-  level       TEXT,               -- 'info' | 'warn' | 'error' | 'debug'
-  event       TEXT,               -- LogEvent enum
-  message     TEXT,
-  data        TEXT                -- JSON (optional structured data)
-);
-
--- Key-value settings
-CREATE TABLE settings (
-  key         TEXT PRIMARY KEY,
-  value       TEXT
-);
-```
+| Table | Purpose | Key columns |
+|-------|---------|-------------|
+| `agents` | Agent config persistence | `key` (PK), `config` (JSON), `created_at` |
+| `agent_cycles` | Trade decision history | `agent_key`, `decision`, `reason`, `pnl_usd`, `time` |
+| `log_entries` | All agent log events | `id` (auto), `agent_key`, `event`, `level`, `message`, `data` (JSON), `time` |
+| `agent_memories` | Long-term agent memory | `agent_key`, `category`, `key`, `value`, `confidence`, `expires_at` |
+| `agent_strategies` | Named trading strategies | `agent_key`, `name`, `description`, `rules` (JSON) |
+| `agent_plans` | Daily session plans | `agent_key`, `market_bias`, `key_levels`, `risk_notes`, `plan_text`, `session_label` |
+| `agent_analyses` | Performance review records | `agent_key`, `analysis` (JSON), `created_at` |
+| `agent_sessions` | Persisted LLM conversation state | `agent_key`, `session_label`, `messages` (JSON), `tick_count`, `compressed_history` |
+| `settings` | Key-value app settings | `key` (PK: `log_clear_floor`, etc.), `value` |
 
 ### Key Functions
 
-| Function | Description |
-|----------|-------------|
-| `dbGetAllAgents()` | Returns all persisted AgentState rows |
-| `dbUpsertAgent(agent)` | INSERT OR REPLACE agent record |
-| `dbRemoveAgent(key)` | Delete agent by key |
-| `dbUpdateAgentStatus(key, status, startedAt)` | Update status and startedAt fields |
-| `dbRecordCycle(key, result)` | Insert cycle_results row |
-| `dbGetCycleResults(market?, limit)` | Query cycle history, newest first |
-| `dbLogEvent(entry)` | Insert log entry |
-| `dbGetLogs(sinceId?, agentKey?, limit)` | Query log_entries with optional filters |
-| `dbGetMaxLogId()` | Returns highest log entry id (used for logSeq init) |
-| `dbGetLogClearFloor()` | Returns the `log_clear_floor` setting value |
-| `dbSetLogClearFloor(id)` | Update `log_clear_floor` in settings table |
+```typescript
+// Agents
+dbSaveAgent(key, config)
+dbGetAgents(): AgentConfig[]
+dbRemoveAgent(key)  // cascade deletes cycles + logs
+dbResetAgentData(key)  // clears cycles, logs, memories, plans, strategies, sessions
+
+// Cycles
+dbSaveCycle(agent_key, result)
+dbGetCycles(agent_key, limit=100)
+dbGetCyclesForPeriod(agent_key, startTime, endTime)
+
+// Logs
+dbLogEvent(entry)
+dbGetLogs(sinceId?, agentKey?, limit=200)
+dbGetMaxLogId()
+dbGetLogClearFloor() / dbSetLogClearFloor(id)  // virtual log clearing
+
+// Memory
+dbSaveMemory(agent_key, category, key, value, confidence, ttlHours?)
+dbGetMemories(agent_key, category?)
+dbDeleteMemory(agent_key, category, key)
+
+// Plans
+dbSavePlan(agent_key, plan) → planId
+dbGetActivePlan(agent_key)
+
+// Sessions
+dbSaveSession(agent_key, sessionLabel, messages, tickCount, compressedHistory?)
+dbGetTodaySession(agent_key, sessionLabel)
+dbGetPreviousSession(agent_key, currentLabel)
+
+// Performance
+dbGetAgentPerformance(agent_key, days=7) → { winRate, avgPnl, totalPnl, tradeCount }
+```
 
 ### Log Clear Floor
 
-When a user clicks "Clear" in the frontend, the server records the current max log ID as `log_clear_floor` in the `settings` table. All subsequent `GET /api/logs` requests apply `max(sinceId, floor)` so old entries are never returned again — even after a page refresh. The raw data remains in SQLite for audit purposes.
+When the user clicks "Clear" in the live session panel, instead of deleting rows, a `log_clear_floor` setting is stored with the current max log ID. All queries respect this floor by filtering `id > floor`. If the floor exceeds the actual max ID (e.g., after a database reset), it automatically resets to 0 to prevent permanently hiding all logs.
 
 ---
 
@@ -239,862 +240,964 @@ When a user clicks "Clear" in the frontend, the server records the current max l
 
 ### 5.1 IMarketAdapter Interface
 
-**File:** `src/adapters/interface.ts`
+**Module:** `src/adapters/types.ts`
 
-Both adapters implement this common interface:
+Every market adapter implements:
 
 ```typescript
 interface IMarketAdapter {
-  readonly market: 'crypto' | 'forex'
-
+  readonly market: 'crypto' | 'mt5'
   getSnapshot(symbol: string, riskState: RiskState): Promise<MarketSnapshot>
   getOrderBook(symbol: string, depth?: number): Promise<OrderBook>
   getRecentTrades(symbol: string, limit?: number): Promise<Trade[]>
-  getBalances(): Promise<Balance[]>
-  getOpenOrders(symbol?: string): Promise<Order[]>
-  getTradeHistory(symbol: string, limit?: number): Promise<Fill[]>
+  getOpenOrders(symbol: string): Promise<Order[]>
   placeOrder(params: OrderParams): Promise<OrderResult>
-  cancelOrder(symbol: string, orderId: string | number): Promise<void>
-
-  // Forex-only optional
-  getSpread?(symbol: string): Promise<number | null>
-  isMarketOpen?(symbol: string): Promise<boolean>
+  cancelOrder(symbol: string, orderId: number): Promise<boolean>
 }
 ```
 
-The adapter registry (`src/adapters/index.ts`) maps market string to adapter instance:
+The adapter registry (`src/adapters/registry.ts`) routes `getAdapter(market, accountId?)` to the correct implementation.
+
+### 5.2 MT5 Adapter
+
+**Module:** `src/adapters/mt5.ts`
+**Bridge:** Python FastAPI at `http://127.0.0.1:8000`
+
+The MT5Adapter communicates with a local Python bridge that wraps the MetaTrader5 C++ API. Each adapter instance is scoped to an `accountId`, appended as `?accountId=...` to every request.
+
+**Snapshot data (fetched per tick):**
+
+| Data | Source | Fields |
+|------|--------|--------|
+| Price | Bridge | `bid`, `ask`, `last` (mid) |
+| Candles | Bridge (6 TFs) | `m1` (200), `m5`, `m15`, `m30`, `h1` (50+), `h4` (30+) |
+| Account info | Bridge | `balance`, `equity`, `freeMargin`, `usedMargin`, `leverage` |
+| Open positions | Bridge | `ticket`, `side`, `volume`, `priceOpen`, `priceCurrent`, `profit`, `sl`, `tp`, `swap`, `comment` |
+| Pending orders | Bridge | `ticket`, `type`, `volume`, `priceTarget`, `sl`, `tp` |
+| Symbol info | Bridge | `spread`, `point`, `digits`, `pipSize`, `pipValue`, `sessionOpen`, `swapLong`, `swapShort`, `contractSize` |
+| 24h stats | Computed from H1 | `high`, `low`, `volume`, `changePercent` |
+| Indicators | Computed from H1 | RSI14, EMA20, EMA50, ATR14, VWAP, BB Width |
+| Key levels | Computed from H4+H1 | Support, resistance, pivots with strength ratings |
+
+**Pip sizing heuristic:**
+
+```
+pipSizeHeuristic(symbol, point):
+  XAUUSD/XAGUSD → pipSize = 0.1
+  JPY crosses   → pipSize = 0.01
+  Others        → pipSize = 0.0001
+  Fallback      → pipSize = point * 10
+```
+
+**Additional MT5-specific operations:**
 
 ```typescript
-export const adapters: Record<string, IMarketAdapter> = {
-  crypto: binanceAdapter,
-  forex:  alpacaAdapter,
-}
+closePosition(ticket: number): Promise<MT5TradeResult>
+modifyPosition(ticket: number, sl?: number, tp?: number): Promise<MT5TradeResult>
+getDeals(symbol: string, days: number, limit: number): Promise<Deal[]>
+getAccounts(): Promise<MT5Account[]>
 ```
 
----
+### 5.3 Binance Adapter (Crypto)
 
-### 5.2 Binance Adapter (Crypto)
+**Module:** `src/adapters/binance.ts`
 
-**File:** `src/adapters/binance.ts`
+Direct REST API using the `binance` npm package plus custom HMAC-SHA256 signing for authenticated endpoints. Supports both production and testnet via `BINANCE_TESTNET` env var.
 
-#### Authentication
-
-The `binance` npm SDK (`MainClient`) is used only for **public unauthenticated calls** (klines, ticker, order book). All authenticated calls use a custom `signedGet<T>()` helper that signs requests with HMAC-SHA256 directly:
-
-```
-timestamp → HMAC-SHA256(queryString, BINANCE_API_SECRET) → signature appended to URL
-```
-
-This was necessary because the SDK's signing was producing incorrect signatures in the deployed environment.
-
-#### signedGet()
-
-```
-GET https://api.binance.com{path}?{params}&timestamp={ts}&signature={hmac}
-Headers: X-MBX-APIKEY: {BINANCE_API_KEY}
-```
-
-Testnet (`BINANCE_TESTNET=true`) uses `https://testnet.binance.vision` instead.
-
-#### getSnapshot() — parallel fetches
-
-```
-Promise.all([
-  24hr ticker statistics     (SDK - public)
-  1m klines ×100             (SDK - public)
-  15m klines ×100            (SDK - public)
-  1h klines ×100             (SDK - public)
-  4h klines ×100             (SDK - public)
-  Order book depth 5         (SDK - public)
-  /api/v3/account            (signedGet - authenticated)
-  /api/v3/openOrders         (signedGet - authenticated)
-])
-```
-
-Returns a `MarketSnapshot` with all timeframes, indicators (computed from H1 candles), balances, and open orders.
-
----
-
-### 5.3 Alpaca Adapter (Forex)
-
-**File:** `src/adapters/alpaca.ts`
-
-#### Base URLs
-
-| Purpose | URL | Keys Used |
-|---------|-----|-----------|
-| Market data | `https://data.alpaca.markets` | Live keys always |
-| Live trading | `https://api.alpaca.markets` | Live keys |
-| Paper trading | `https://paper-api.alpaca.markets` | Paper keys |
-
-#### Symbol Normalization
-
-Alpaca data API uses `/` format (e.g., `EUR/USD`), but agents use `EURUSD` or `EUR_USD`. The adapter converts automatically:
-
-```
-XAUUSD  → XAU/USD
-EURUSD  → EUR/USD
-EUR_USD → EUR/USD
-```
-
-#### Pip Calculations (inline)
-
-```typescript
-function pipSize(symbol: string): number {
-  return symbol.includes('JPY') ? 0.01 : 0.0001
-}
-
-function pipValueUsd(symbol: string, price: number): number {
-  const standardLot = 100_000
-  return symbol.includes('JPY')
-    ? (0.01 * standardLot) / price
-    : 0.0001 * standardLot  // = $10 for non-JPY
-}
-```
-
-#### Error Handling
-
-The data endpoint (`alpacaDataGet`) returns `null` on HTTP 404 (instead of throwing), allowing agents to continue without crashing when a symbol isn't available on the current subscription tier. XAUUSD (gold) is a commodity, not a forex pair, and Alpaca doesn't serve its data.
-
-#### getSnapshot() — parallel fetches
-
-```
-Promise.all([
-  1m bars ×100     (/v1beta3/forex/bars)
-  15m bars ×100    (/v1beta3/forex/bars)
-  1h bars ×100     (/v1beta3/forex/bars)
-  4h bars ×100     (/v1beta3/forex/bars)
-  latest quote     (/v1beta3/forex/latest/quotes)
-  account info     (/v2/account)   [paper or live]
-  positions        (/v2/positions) [paper or live]
-])
-```
-
-Returns `MarketSnapshot` with forex extras:
-- `spread` — in pips, from `(ask - bid) / pipSize`
-- `pipValue` — USD value per pip per lot
-- `sessionOpen` — whether major forex sessions overlap
-- `swapLong` / `swapShort` — rollover rates (if available)
-
----
+Snapshot provides the same structure as MT5 but without positions, pending orders, account info, or forex-specific fields. M5 and M30 candle arrays are empty (not supported by this adapter).
 
 ### 5.4 Technical Indicators
 
-**File:** `src/adapters/indicators.ts`
+**Module:** `src/adapters/indicators.ts`
 
-All six indicators are computed from the **1-hour (H1) candle series**.
+All indicators are computed server-side from H1 candles (primary timeframe):
 
-| Indicator | Period | Algorithm |
-|-----------|--------|-----------|
-| RSI | 14 | Wilder's smoothed average gains/losses |
-| EMA | 20, 50 | Seed with SMA, then k = 2/(n+1) multiplier |
-| ATR | 14 | True Range with Wilder smoothing |
-| VWAP | all bars | Cumulative (typical_price × volume) / cumulative_volume |
-| BB Width | 20 | (Upper − Lower) / Middle where bands = SMA ± 2σ |
+| Indicator | Function | Algorithm |
+|-----------|----------|-----------|
+| RSI(14) | `rsi(candles, 14)` | Wilder smoothing: seed with SMA, then exponential smoothing |
+| EMA(20) | `ema(candles, 20)` | Standard EMA: k = 2/(period+1) |
+| EMA(50) | `ema(candles, 50)` | Same algorithm, longer lookback |
+| ATR(14) | `atr(candles, 14)` | True range with Wilder smoothing |
+| VWAP | `vwap(candles)` | Cumulative (typical price * volume) / cumulative volume |
+| BB Width | `bbWidth(candles, 20, 2)` | (upper - lower) / middle using 20-period SMA + 2 std devs |
 
-Returns `{ rsi14, ema20, ema50, atr14, vwap, bbWidth }`.
+**Bundle export:**
+```typescript
+computeIndicators(h1Candles) → { rsi14, ema20, ema50, atr14, vwap, bbWidth }
+```
+
+### 5.5 Key Levels (Support/Resistance/Pivots)
+
+**Module:** `src/adapters/indicators.ts → computeKeyLevels()`
+
+Four sources of key levels, sorted by proximity to current price (max 12 returned):
+
+1. **Daily highs/lows** — from H4 candles (6 H4 bars = 1 day), last 5 days. Strength: 3 (today) → 1 (5d ago).
+2. **Weekly pivot points** — classic floor pivots (PP, R1, R2, S1, S2) from last 30 H4 candles.
+3. **H1 swing highs/lows** — last 48 H1 candles (2 days), lookback=3 for swing detection. Deduped by 5 significant figures.
+4. **Merge & rank** — all levels sorted by distance from current price, capped at 12.
+
+### 5.6 Market Context & News
+
+**Module:** `src/agent/context.ts`, `src/adapters/finnhubNews.ts`
+
+**Forex news (MT5):**
+- Source: Finnhub `/news?category=forex` API
+- Filters by symbol keywords (e.g., "gold" for XAUUSD)
+- Sentiment classification: bullish / bearish / neutral (keyword-based)
+- Injected into the agent's tick message as `RECENT NEWS` section
+
+**Crypto context:**
+- Fear & Greed index (CoinGecko / alternative.me)
+- Top news from CryptoPanic
+- Macro data (BTC dominance, total market cap)
+
+### 5.7 Forex Session Management
+
+**Module:** `src/adapters/session.ts`
+
+Tracks four forex sessions by UTC hours:
+
+| Session | UTC Hours | Note |
+|---------|-----------|------|
+| Sydney | 22:00–07:00 | Wraps midnight |
+| Tokyo | 00:00–09:00 | |
+| London | 08:00–17:00 | |
+| New York | 13:00–22:00 | |
+
+**Exports:**
+- `isForexSessionOpen()` — true if Tokyo, London, or New York is open (excludes Sydney-only)
+- `minutesUntilSessionClose()` — minutes until the earliest active session ends
+- `sessionLabel()` — human-readable label with overlap info (e.g., "London / New York overlap (highest liquidity)")
+- `openSessions()` — array of all currently active session names
 
 ---
 
-### 5.5 Market Enrichment
+## 6. Monte Carlo Simulation Engine
 
-**File:** `src/agent/context.ts`
+**Module:** `src/adapters/montecarlo.ts`
 
-Before each agent cycle, optional market context is fetched in parallel. All failures are silent — a broken enrichment source never blocks trading.
+A fully scriptable probability engine with **zero LLM involvement**. Runs synchronously in <50ms on every agent tick. Bootstraps price paths from real M1 candle history and applies SL/TP rules to produce per-action probability tables.
 
-**Crypto enrichment:**
+### How It Works
 
-| Source | Data | Used For |
-|--------|------|----------|
-| Alternative.me | Fear & Greed Index (0-100) | Sentiment context |
-| CoinGecko | BTC dominance %, total market cap | Macro crypto health |
-| CryptoPanic | Latest news headlines for symbol | News-based reasoning |
-| Finnhub | Upcoming economic calendar events | Macro event awareness |
+1. **Extract log returns** from last 200 M1 candles (close-to-close)
+2. **Calculate regime bias** from EMA20 vs EMA50 — shifts the return distribution to respect the current trend (capped at 0.5x standard deviation)
+3. **For each action (LONG and SHORT):**
+   - Simulate 5,000 price paths, 60 bars forward (60 minutes at M1 resolution)
+   - Each bar: sample a random historical M1 return (bootstrap with replacement) + regime bias
+   - Apply SL at 1x ATR and TP at 1.5x ATR distance
+   - Track which paths hit TP first (wins), SL first (losses), or stay open
+4. **Recommend** the action with highest positive expected value; HOLD if both are negative
 
-**Forex enrichment:**
+### Inputs
 
-| Source | Data |
-|--------|------|
-| Finnhub | Upcoming economic calendar events only |
+```typescript
+interface MCInputs {
+  m1:  Candle[]   // Path engine (bootstrap source)
+  m5:  Candle[]   // Available for future multi-TF regime calibration
+  m15: Candle[]   // Session volatility profile
+  m30: Candle[]   // Mean-reversion tendency
+  h1:  Candle[]   // Daily volatility regime
+  h4:  Candle[]   // Macro trend bias weight
+  currentPrice: number
+  pipSize:  number   // 1.0 for gold, 0.0001 for forex
+  pipValue: number   // $/pip/lot
+  lotSize:  number   // from position sizing engine
+  atr14:    number   // ATR for SL/TP distance
+  ema20:    number   // trend direction
+  ema50:    number   // trend direction
+}
+```
+
+### Output
+
+```typescript
+interface MCResult {
+  long:        MCActionResult  // win%, EV, P10/P50/P90, SL hit%, median bars
+  short:       MCActionResult
+  recommended: 'LONG' | 'SHORT' | 'HOLD'
+  edgeDelta:   number          // EV(best) - EV(HOLD)
+  pathCount:   number          // 5,000
+  barsForward: number          // 60
+  generatedAt: number          // timestamp
+}
+
+interface MCActionResult {
+  winRate: number          // % of paths that hit TP before SL (0-100)
+  ev: number               // expected value in $
+  p10: number              // worst 10% outcome
+  p50: number              // median outcome
+  p90: number              // best 10% outcome
+  slHitPct: number         // % of paths where SL was hit
+  medianBarsToClose: number // median bars until position closes
+}
+```
+
+### What the Agent Sees
+
+The MC results are formatted as a text table injected into the snapshot summary:
+
+```
+MONTE CARLO  (5,000 paths · M1 · 60-bar fwd · SL=1xATR TP=1.5xATR):
+  Action   Win%    EV      P10     P50     P90    SL hit%  Med.bars
+  ─────────────────────────────────────────────────────────────────
+  LONG      41%   +$28    -$95    +$31   +$187     59%     23m
+  SHORT     62%   +$74    -$41    +$68   +$203     38%     18m ← recommended
+  ─────────────────────────────────────────────────────────────────
+  Edge delta: +$74 vs HOLD
+```
+
+### Frontend Display
+
+MC results are logged as `mc_result` events with the full data object attached. The `TickThread` component renders them as a styled table with color-coded columns (green for positive EV, red for negative, violet header). The collapsed tick row shows a `dice MC LONG/SHORT/HOLD` badge.
 
 ---
 
-## 6. Agent System
+## 7. LLM Provider System
 
-### 6.1 Agent Configuration
+### 7.1 Provider Factory
+
+**Module:** `src/llm/index.ts`
+
+Each agent independently chooses its LLM provider and model via `AgentConfig.llmProvider` and `AgentConfig.llmModel`.
+
+```typescript
+getLLMProvider(config: AgentConfig): LLMProvider
+getModelForConfig(config: AgentConfig): string
+```
+
+| Provider value | Default model | Implementation |
+|---------------|---------------|----------------|
+| `'anthropic'` (default) | `claude-opus-4-5-20251101` | Anthropic SDK direct |
+| `'openrouter'` | `anthropic/claude-opus-4-5` | OpenRouter REST API |
+| `'ollama'` | `llama3.1` | Ollama OpenAI-compat endpoint |
+
+All providers implement the `LLMProvider` interface:
+
+```typescript
+interface LLMProvider {
+  createMessage(params: LLMCreateParams): Promise<LLMResponse>
+}
+```
+
+### 7.2 Anthropic Provider
+
+Direct Anthropic SDK usage. The `@anthropic-ai/sdk` client sends tool-use messages natively. No format translation needed.
+
+### 7.3 OpenRouter Provider
+
+**Module:** `src/llm/openrouter.ts`
+
+Translates Anthropic tool schemas to OpenAI format via shared `oai-compat.ts` utilities:
+
+- `toOAITools(anthropicTools)` — converts Anthropic tool definitions to OpenAI function-calling format
+- `toOAIMessages(anthropicMessages, systemPrompt)` — converts Anthropic message format to OpenAI chat messages
+- `fromOAIResponse(oaiResponse)` — converts OpenAI response back to Anthropic format
+
+**Error handling:**
+- HTTP 429 → `RateLimitError` with optional `resetAt` timestamp for backoff
+- HTTP 402 → quota exceeded → agent auto-pauses with `pauseReason = 'quota_exceeded'`
+
+### 7.4 Ollama Provider (Local Models)
+
+**Module:** `src/llm/ollama.ts`
+
+Talks to Ollama's OpenAI-compatible endpoint at `{OLLAMA_URL}/v1/chat/completions`. Uses the same `oai-compat.ts` translators as OpenRouter. Non-streaming mode (`stream: false`).
+
+---
+
+## 8. Agent System
+
+### 8.1 Agent Configuration
 
 **Type:** `AgentConfig` in `src/types.ts`
 
 ```typescript
 interface AgentConfig {
-  symbol:                  string   // e.g. "BTCUSDT", "EURUSD"
-  market:                  'crypto' | 'forex'
-  paper:                   boolean  // false = live trading
-  maxIterations:           number   // max Claude tool calls per cycle (default 5)
-  fetchMode:               'manual' | 'scheduled' | 'autonomous'
-  scheduleIntervalMinutes: number   // cron interval (1–1440)
-  maxLossUsd:              number   // per-agent daily loss limit override
-  maxPositionUsd:          number   // per-agent position size limit override
-  customPrompt?:           string   // additional instructions appended to system prompt
+  name?: string                // Display name (supports multiple agents per symbol)
+  symbol: string               // Trading instrument (XAUUSD, BTCUSDT, etc.)
+  market: 'crypto' | 'mt5'
+  fetchMode: 'manual' | 'scheduled' | 'autonomous'
+  scheduleIntervalSeconds: number  // base interval between ticks
+  leverage?: number            // account leverage (used in sizing context)
+  customPrompt?: string        // additional prompt text appended to system prompt
+  promptTemplate?: string      // full system prompt override (replaces default)
+  guardrails?: Partial<GuardrailsConfig>
+  mt5AccountId?: number        // which MT5 account this agent trades on
+  llmProvider?: 'anthropic' | 'openrouter' | 'ollama'
+  llmModel?: string            // model ID per the provider's naming
+  dailyTargetUsd?: number      // daily profit target (default 500) — used for position sizing
+  maxRiskPercent?: number      // max % of equity at risk per trade (default 10)
+  maxDailyLossUsd?: number     // auto-pause when realized P&L drops below this
+  maxDrawdownPercent?: number  // auto-pause when equity drops X% below session peak
+  scheduledStartUtc?: string   // HH:MM — autonomous loop only runs inside this window
+  scheduledEndUtc?: string     // HH:MM — autonomous loop only runs inside this window
+}
+
+interface GuardrailsConfig {
+  sessionOpenCheck: boolean     // block orders when market session is closed
+  extremeSpreadCheck: boolean   // block orders with >$500/lot spread
+  stopPipsRequired: boolean     // MT5 orders must include stopPips
 }
 ```
 
-**Agent key:** `"${market}:${symbol}"` — e.g., `"crypto:BTCUSDT"`, `"forex:EURUSD"`.
+**Agent key format:** `{market}:{symbol}:{mt5AccountId}:{name}` — e.g., `mt5:XAUUSD:1512796653:gold`
 
-**Agent status:** `'idle' | 'running' | 'paused'`
+### 8.2 Session-Based Tick Architecture
+
+The agent uses a persistent conversation session per trading day. Each tick appends a new user message to the same LLM conversation, so the model remembers every decision it made earlier in the session.
+
+**Session lifecycle:**
+
+1. **Session start** — on the first tick of a new day (determined by `sessionLabel()` which returns a date string), the agent creates a fresh LLM conversation. If a previous day's session exists in the DB, its compressed summary is loaded and injected as context.
+
+2. **Within-session ticks** — each subsequent tick appends the new snapshot data as a user message. The LLM responds in context of its prior reasoning. The agent maintains running `session.messages` and `session.tickCount`.
+
+3. **Session compression** — when the conversation exceeds `KEEP_MESSAGES` (20), older messages are compressed into a text summary that preserves key decisions, P&L records, and trade history. This prevents context overflow while maintaining memory.
+
+4. **Cross-session memory** — at session end, the conversation is auto-compressed and saved to `agent_memories` with category `'session'` and a 14-day TTL. The next day's session inherits these memories.
+
+### 8.3 Tick Lifecycle (runAgentTick)
+
+**Module:** `src/agent/index.ts → runAgentTick()`
+
+Complete execution flow for one tick:
+
+```
+1. Acquire cycle lock (prevents concurrent ticks for same agent)
+2. Load or create today's session (messages, tick count)
+3. Determine tick type: 'planning' (first tick or plan request) or 'trading'
+4. Fetch market snapshot via adapter
+5. Detect externally closed positions (SL/TP hit, manual close)
+6. Fetch today's closed deals (P&L history)
+7. Compute per-agent risk budget from deals
+8. Check daily loss guard → auto-pause if limit exceeded
+9. Check drawdown guard → auto-pause if equity dropped too far
+10. Run Monte Carlo simulation (5,000 paths)
+11. Format snapshot summary (all data → structured text)
+12. Fetch forex news (non-blocking)
+13. Build tick message (header + snapshot + news + instructions)
+14. Send to LLM with full conversation history + system prompt
+15. Process response: dispatch tool calls with guardrail checks
+16. Loop tool calls until LLM stops (max 10 iterations)
+17. Parse final decision from response text
+18. Record cycle result (decision, reason, P&L)
+19. Save session to database
+20. Release cycle lock
+```
+
+### 8.4 Market Snapshot & Data Injection
+
+Every tick, `formatSnapshotSummary()` transforms the raw snapshot into structured text the LLM reads. The following data sections are included:
+
+**Account health:**
+```
+Account: Balance $1,234.56 | Equity $1,241.30 | Free Margin $1,180.00 | Used $61.30 | Margin Level 2024% | Leverage 1:100 | Float P&L: +$6.74
+```
+
+**Price & spread:**
+```
+Price: 2912.45 | Bid: 2912.40 | Ask: 2912.50
+Spread: 10 points ($1.00) = 3.1% of ATR → TIGHT | Session: OPEN | Swap Long/Short: -8.50/+2.10 $/lot/night
+```
+
+**Indicators with interpretation labels:**
+```
+RSI14: 31.1 (strong bearish momentum) | EMA20: 2910.50 | EMA50: 2918.30 → BEARISH TREND | ATR14: 32.4 pips | BB Width: 0.82% | VWAP: 2914.20 (price below VWAP — bearish intraday)
+```
+
+**Multi-timeframe candles:**
+```
+H4 (last 3 bars): [compact bar-by-bar trend with O/H/L/C]
+H1 (last 5 bars): [compact bar-by-bar trend]
+M15 (last 5 bars): [compact bar-by-bar trend]
+```
+
+**Position sizing (computed, not from LLM):**
+```
+POSITION SIZING (use this):
+  Daily target: $500 | Max risk: 10% ($124) | Leverage: 1:100
+  ATR-based SL: ~32.4 pips ($324/lot) | TP at R:R 1.5: ~48.6 pips ($486/lot)
+  SUGGESTED SIZE: 0.03 lots — risk $97, reward $146, margin $87
+  (System will reject orders above 0.06 lots)
+```
+
+**Open positions (enriched):**
+```
+OPEN POSITIONS (1) | Total Float: -$42.00:
+  #404830084 SELL 0.05L @ 2920.00 | now: 2928.40 | P&L: -$42.00 | SL: 2935.00 (6.6 pips away, $33 risk) | TP: 2900.00 | swap: $0.00
+```
+
+**Key levels, news sentiment, closed trades with realized P&L, Monte Carlo table.**
+
+### 8.5 Position Sizing Engine
+
+The position sizing engine computes a suggested lot size from three independent constraints. The minimum of all three is used:
+
+1. **Target-based sizing** — how many lots to hit the daily profit target at TP:
+   ```
+   lotsByTarget = dailyTargetUsd / (slPips × R:R × pipValue)
+   ```
+
+2. **Risk cap** — max lots where loss at SL stays within risk tolerance:
+   ```
+   lotsByRisk = (equity × maxRiskPercent / 100) / (slPips × pipValue)
+   ```
+
+3. **Margin cap** — lots that use at most 50% of free margin:
+   ```
+   marginPerLot = (contractSize × currentPrice) / leverage
+   lotsByMargin = (freeMargin × 0.5) / marginPerLot
+   ```
+
+**Final:** `max(0.01, floor(min(target, risk, margin), 2 decimals))`
+
+The lot clamp guardrail rejects any order above 2x the suggested size.
+
+### 8.6 System Prompt Construction
+
+The system prompt is assembled dynamically per agent. Structure:
+
+1. **Role declaration** — "Patient, disciplined, risk-first trader"
+2. **Session context** — current plan (if any), active memories, previous session summary
+3. **Evaluation order** — mandatory step-by-step checklist:
+   - Step 0: VERIFY STATE (call `get_open_orders`, read snapshot fully)
+   - Step 1: Manage existing positions (SL/TP review, close if warranted)
+   - Step 2: Cancel/modify pending orders if conditions changed
+   - Step 3: Evaluate new entry — must reference all data points (account health, indicators, MC results, key levels, news)
+   - Step 4: Record observations via `save_memory`
+4. **Output rules** — must write reasoning text before/after every tool call
+5. **Risk management rules** — structural SL placement, minimum R:R 1.5, use suggested lots
+6. **Trading tool descriptions** — available tools vary by tick type (planning removes execution tools)
+
+### 8.7 Session Compression
+
+**Module:** `src/agent/index.ts → compressToSummary()`
+
+When conversation history exceeds `KEEP_MESSAGES` (20 messages), older messages are compressed:
+
+1. Find a safe cut point at a "tick boundary" (a user message with string content, not tool results)
+2. Extract key information from discarded messages: decisions, trade actions, P&L records, plan saves
+3. Build a compact summary text preserving the essential history
+4. Replace discarded messages with a single summary user message
+5. Continue with the recent messages intact
+
+### 8.8 Tool Definitions
+
+**Module:** `src/tools/definitions.ts`
+
+14 tools available to the agent, categorized:
+
+| Category | Tool | Description |
+|----------|------|-------------|
+| **Market Data** | `get_snapshot` | Full market state: price, candles, indicators, account, positions |
+| | `get_order_book` | Depth of market (crypto only) |
+| | `get_recent_trades` | Recent public trades (tape) |
+| | `get_open_orders` | Current positions and pending orders |
+| **Execution** | `place_order` | MARKET or LIMIT order with SL/TP |
+| | `cancel_order` | Cancel pending limit/stop order |
+| | `close_position` | Close MT5 position by ticket |
+| | `modify_position` | Update SL/TP on existing MT5 position |
+| **Memory** | `save_memory` | Persist observation (categories: pattern, risk, price_level, session, general) |
+| | `read_memories` | Query stored memories by category |
+| | `delete_memory` | Remove outdated memory |
+| **Planning** | `save_plan` | Store session plan with bias, levels, risk notes |
+| | `get_plan` | Retrieve current session plan |
+| **History** | `get_trade_history` | Closed deals with P&L and exit reason |
+
+**Tool availability by context:**
+- MT5 agents: exclude `get_order_book`
+- Crypto agents: exclude `close_position`, `modify_position`, `get_trade_history`
+- Planning ticks: exclude all execution tools (`place_order`, `cancel_order`, `close_position`, `modify_position`)
+
+### 8.9 External Close Detection
+
+**Module:** `src/agent/index.ts → detectExternalCloses()`
+
+Between ticks, positions can be closed externally (SL hit, TP hit, manual close by user). The agent tracks positions tick-to-tick:
+
+1. On each tick, compare current positions against `lastKnownPositions` map
+2. For any position that disappeared without the agent closing it:
+   - Query deal history from MT5 bridge
+   - Compute actual P&L
+   - Log as external close event
+3. Inject a warning note into the next tick message so the LLM knows:
+   ```
+   EXTERNALLY CLOSED POSITIONS (since last tick):
+   #404830084 SELL 0.05 @ 2920.00 → closed externally P&L: -$42.00
+   Do NOT attempt to close these tickets — they no longer exist.
+   IMPORTANT: Call save_memory to record what happened.
+   ```
 
 ---
 
-### 6.2 The Agent Cycle Loop
+## 9. Guardrails & Risk Management
 
-**File:** `src/agent/loop.ts` (exported as `runAgentCycle`)
+### 9.1 Crypto Validation
 
+**Module:** `src/guardrails/validate.ts`
+
+| Check | Constraint | Action |
+|-------|-----------|--------|
+| Quantity range | 0.00001 ≤ qty ≤ 9000 | Reject with reason |
+| Min notional | qty × price ≥ $10 | Reject |
+| Max position | qty × price ≤ $1000 | Reject |
+| LIMIT price | price > 0 | Reject |
+
+### 9.2 MT5 Validation
+
+**Module:** `src/guardrails/mt5.ts`
+
+| Check | Constraint | Configurable |
+|-------|-----------|-------------|
+| Session open | Must be in active forex session | `guardrails.sessionOpenCheck` |
+| Extreme spread | Spread × pipValue × volume < $500/lot | `guardrails.extremeSpreadCheck` |
+| Stop required | `stopPips` must be set on order | `guardrails.stopPipsRequired` |
+| Pip risk budget | volume × pipValue × stopPips ≤ remainingBudgetUsd | Always |
+| Combined notional | Sum across all markets ≤ $2000 (buys only) | Always |
+
+### 9.3 Daily Loss Auto-Pause
+
+If `config.maxDailyLossUsd` is set, the agent checks today's realized P&L (sum of closed deals) at the start of each tick. If `todayPnl <= -maxDailyLossUsd`, the agent auto-pauses with a logged `guardrail_block` event.
+
+### 9.4 Drawdown Auto-Pause
+
+If `config.maxDrawdownPercent` is set, the agent tracks peak equity per session. If current equity drops below `peak × (1 - maxDrawdownPercent/100)`, the agent auto-pauses. Example: with `maxDrawdownPercent = 5` and peak equity $1,300, the agent pauses if equity drops to $1,235.
+
+### 9.5 Lot Size Clamping
+
+Orders exceeding 2x the position sizing engine's suggested lots are automatically clamped. This prevents the LLM from hallucinating absurdly large positions. The clamp value is shown in the snapshot:
 ```
-runAgentCycle(config)
-│
-├─ logEvent(cycle_start)
-├─ adapter = adapters[config.market]
-├─ riskState = getRiskStateFor(config.market)
-│
-├─ Build system prompt (see §6.4)
-├─ messages = []
-│
-└─ LOOP (iteration 0..maxIterations)
-   │
-   ├─ Call Anthropic API (claude-haiku / claude-sonnet / claude-opus)
-   │     model: CLAUDE_MODEL env var
-   │     max_tokens: 1024
-   │     tools: TOOLS array (6 tools)
-   │
-   ├─ Log claude_thinking (full text response)
-   │
-   ├─ stop_reason === 'end_turn'
-   │     Extract DECISION and REASON with regex
-   │     logEvent(decision)
-   │     dbRecordCycle()
-   │     logEvent(cycle_end)
-   │     RETURN CycleResult
-   │
-   └─ stop_reason === 'tool_use'
-         For each tool_use block:
-           logEvent(tool_call)
-           result = dispatchTool(tool.name, tool.input, config)
-           logEvent(tool_result or tool_error)
-         Append [assistant turn, tool_result turn] to messages
-         CONTINUE LOOP
-```
-
-**Decision extraction regex:**
-
-```
-/DECISION:\s*(HOLD|BUY\s+[\d.]+\s+@\s+[\d.]+|SELL\s+[\d.]+\s+@\s+[\d.]+|CANCEL\s+\S+)/i
-/REASON:\s*(.+)/i
+(System will reject orders above 0.06 lots)
 ```
 
-If `maxIterations` is reached without an `end_turn`, the cycle records an error: `"Max iterations reached without decision"`.
+### 9.6 Per-Market Risk State
 
----
+**Module:** `src/guardrails/riskStateStore.ts`
 
-### 6.3 Claude Tool Definitions
-
-**File:** `src/tools/definitions.ts`
-
-Claude has access to exactly 6 tools per cycle:
-
-#### `get_snapshot`
-Fetches a full market snapshot for a symbol.
-- Input: `{ symbol: string, market: "crypto"|"forex" }`
-- Returns: Price, 24h stats, candles (4 timeframes), indicators, account balances, open orders, risk state, optional market context (fear/greed, news, events)
-
-#### `get_order_book`
-Fetches the live order book (bids and asks).
-- Input: `{ symbol, market, depth?: number (max 100) }`
-- Returns: Array of `[price, quantity]` pairs for bids and asks
-
-#### `get_recent_trades`
-Fetches the most recent public trades (tape).
-- Input: `{ symbol, market, limit?: number (max 1000) }`
-- Returns: Array of `{ price, qty, time, isBuyerMaker }`
-
-#### `get_open_orders`
-Lists currently open orders on the exchange account.
-- Input: `{ market, symbol?: string }`
-- Returns: Array of Order objects with orderId, side, type, price, qty, status
-
-#### `place_order`
-Places a buy or sell order. Runs guardrails first.
-- Input: `{ symbol, market, side: "BUY"|"SELL", type: "LIMIT"|"MARKET", quantity, price? (required for LIMIT), timeInForce?, stopPips? (forex only) }`
-- Returns: `{ orderId, status }` on success, or `{ blocked: true, reason: string }` if guardrail fires
-
-#### `cancel_order`
-Cancels an existing open order.
-- Input: `{ symbol, market, orderId: string }`
-- Returns: `{ cancelled: true }`
-
----
-
-### 6.4 System Prompt Construction
-
-The system prompt is assembled fresh for each cycle:
-
-```
-[PAPER TRADING — no real orders placed] OR [LIVE TRADING — real orders will execute]
-
-You are an autonomous trading agent for {symbol} on {market}.
-
-Today's date/time: {ISO timestamp}
-
---- FOREX BLOCK (forex only) ---
-Forex session rules:
-  - Only trade during major session overlaps (London-NY: 13:00-17:00 UTC)
-  - Always include stopPips parameter
-  - Typical spread on {symbol}: ~{X} pips
-  - Session currently: OPEN / CLOSED
---- END FOREX BLOCK ---
-
-Your decision format:
-  DECISION: HOLD
-  DECISION: BUY {qty} @ {price}
-  DECISION: SELL {qty} @ {price}
-  DECISION: CANCEL {orderId}
-  REASON: {your reasoning}
-
-Risk rules:
-  - Daily loss limit: ${maxLossUsd}
-  - Max position: ${maxPositionUsd}
-  - Minimum 1% stop-out discipline (never risk more than 1% on a single trade)
-  - No pyramiding without RSI+EMA confirmation
-
-{customPrompt if set}
-```
-
----
-
-## 7. Guardrails & Risk Management
-
-### 7.1 Crypto Validation
-
-**File:** `src/guardrails/validate.ts`
-
-Checks run in order before any order placement:
-
-| Check | Limit | Action |
-|-------|-------|--------|
-| Daily loss gate | `MAX_DAILY_LOSS_USD` | BLOCK |
-| Quantity ≤ 0 or < 0.00001 | — | BLOCK |
-| Quantity > 9000 | — | BLOCK |
-| Notional < $10 | — | BLOCK |
-| Projected notional > `MAX_POSITION_USD` | — | BLOCK |
-| BUY notional > remaining budget | `remainingBudgetUsd` | BLOCK |
-| LIMIT without price | — | BLOCK |
-
----
-
-### 7.2 Forex Validation
-
-**File:** `src/guardrails/forex.ts`
-
-Additional forex-specific checks:
-
-| Check | Limit | Action |
-|-------|-------|--------|
-| Forex daily loss gate | `MAX_DAILY_LOSS_USD` | BLOCK |
-| Market session closed | — | BLOCK (forex only trades during sessions) |
-| Spread > max | `MAX_SPREAD_PIPS` (default 3) | BLOCK |
-| Missing stopPips | — | BLOCK |
-| stopPips < minimum | `MIN_STOP_PIPS` (default 10) | BLOCK |
-| Pip risk > remaining budget | `qty × pipValue × stopPips` | BLOCK |
-| Combined notional > cap (BUY) | `MAX_COMBINED_NOTIONAL_USD` (2000) | BLOCK |
-
----
-
-### 7.3 Per-Market Risk State
-
-**File:** `src/guardrails/riskStateStore.ts`
-
-Risk state is tracked per market with **automatic UTC daily reset**:
+Tracks per market (`crypto` / `mt5`) with daily reset at UTC midnight:
 
 ```typescript
-interface DayState {
-  date: string              // 'YYYY-MM-DD' UTC — resets when date changes
-  realizedPnlUsd: number    // sum of all fills today
-  peakPnlUsd: number        // highest realized P&L reached today
-  positionNotionalUsd: number // current open position notional
+interface RiskState {
+  dailyPnlUsd: number           // cumulative realized P&L today
+  remainingBudgetUsd: number     // MAX_DAILY_LOSS_USD - dailyPnlUsd
+  positionNotionalUsd: number    // current open position size in USD
 }
 ```
 
-**Functions:**
-- `recordFillFor(market, pnlUsd)` — Called when an order fills; updates realized P&L
-- `updatePositionNotionalFor(market, notional)` — Updated after position changes
-- `getRiskStateFor(market)` → `{ dailyPnlUsd, remainingBudgetUsd, positionNotionalUsd }`
-- `isDailyLimitHitFor(market)` → `true` if `realizedPnlUsd ≤ -MAX_DAILY_LOSS_USD`
-- `getCombinedNotionalUsd()` → sum across both markets (used in forex combined cap check)
+Constants:
+- `MAX_DAILY_LOSS_USD` = 200
+- `MAX_POSITION_USD` = 1000
+- `MAX_COMBINED_NOTIONAL_USD` = 2000
 
-**Forex context cache:** The adapter's latest spread, sessionOpen, and pipValue are cached in the risk store so the forex guardrail can access them without an extra API call.
+State is hydrated from the database on server restart via `hydrateRiskStateFromDb()`.
 
 ---
 
-## 8. Scheduler
+## 10. Scheduler
 
-**File:** `src/scheduler/index.ts`
+**Module:** `src/scheduler/index.ts`
 
-The scheduler manages cron jobs for each agent. An agent can have one of three fetch modes:
+The scheduler manages per-agent execution loops. Each agent gets its own independent loop controlled by its `fetchMode`.
 
-| Mode | Behaviour |
-|------|-----------|
-| `manual` | No automatic execution. User triggers cycles via API or UI button. |
-| `scheduled` | Runs on the configured interval regardless of market conditions. |
-| `autonomous` | Runs on the configured interval but **skips** cycles when the forex market session is closed (for forex agents). |
+### 10.1 Fetch Modes
 
-**Cron interval conversion:**
+| Mode | Behavior |
+|------|----------|
+| `manual` | Agent marked "running" but only ticks when user clicks Trigger button |
+| `autonomous` | Continuous loop: tick → await completion → optional backoff → next tick |
+| `scheduled` | Like autonomous but only runs inside `scheduledStartUtc`–`scheduledEndUtc` window |
 
+### 10.2 HOLD Backoff
+
+When the agent repeatedly decides HOLD (no trade action), progressive backoff reduces API cost:
+
+| Consecutive HOLDs | Delay before next tick |
+|-------------------|----------------------|
+| 1–3 | 0ms (immediate) |
+| 4–10 | 30 seconds |
+| 11–20 | 60 seconds |
+| 20+ | 120 seconds (cap) |
+
+The counter resets when the agent makes a non-HOLD decision.
+
+### 10.3 Scheduled Windows
+
+When `fetchMode = 'scheduled'` and both `scheduledStartUtc`/`scheduledEndUtc` are set, the autonomous loop only runs inside that UTC time window. Outside the window, the scheduler sleeps in 30-second cancellable chunks, checking each iteration if the window has opened.
+
+The first tick after pressing Start always fires immediately regardless of the schedule window, so the user gets instant feedback.
+
+**Lifecycle functions:**
+```typescript
+startAgentSchedule(config)   // Begin/restart agent loop
+pauseAgentSchedule(key)      // Pause (can resume)
+stopAgentSchedule(key)       // Stop (resets to idle)
+resumeAgentSchedule(config)  // Resume from paused
+stopAllSchedules()           // Graceful shutdown
 ```
-scheduleIntervalMinutes < 60  →  "*/{n} * * * *"   (every N minutes)
-scheduleIntervalMinutes >= 60 →  "0 */{h} * * *"   (every N hours)
-```
-
-**Functions:**
-
-| Function | Description |
-|----------|-------------|
-| `startAgentSchedule(config)` | Creates node-cron task, sets status = 'running' |
-| `pauseAgentSchedule(key)` | Destroys task, sets status = 'paused' |
-| `stopAgentSchedule(key)` | Destroys task, sets status = 'idle' |
-| `stopAllSchedules()` | Graceful shutdown — stops all tasks |
-
-Each scheduled execution calls `runAgentCycle(config)` and catches any unhandled errors, logging them as `cycle_error`.
 
 ---
 
-## 9. HTTP API Server
+## 11. HTTP API Server
 
-**File:** `src/server/index.ts`
+**Module:** `src/server/index.ts`
 **Framework:** Fastify
-**Port:** `process.env.PORT` (default 3000)
+**Default port:** 3000
 
-### 9.1 All Endpoints
-
-#### Agents
+### 11.1 All Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/agents` | List all agents with current state |
-| `POST` | `/api/agents` | Create new agent (`AgentConfig` in body) |
-| `DELETE` | `/api/agents/:key` | Remove agent and stop its schedule |
-| `PATCH` | `/api/agents/:key/config` | Update agent config (stops/restarts schedule) |
-| `POST` | `/api/agents/:key/start` | Start agent schedule |
-| `POST` | `/api/agents/:key/pause` | Pause agent schedule |
-| `POST` | `/api/agents/:key/stop` | Stop agent schedule |
-| `POST` | `/api/agents/:key/trigger` | Manually trigger one agent cycle immediately |
+| **Status** | | |
+| `GET` | `/api/status` | All agents, recent events, risk state per market |
+| **Account** | | |
+| `GET` | `/api/selected-account` | Current selected MT5 account |
+| `POST` | `/api/selected-account` | Set selected account |
+| **Agents** | | |
+| `GET` | `/api/agents` | List all agents (with state) |
+| `POST` | `/api/agents` | Create agent (validates no duplicate key) |
+| `DELETE` | `/api/agents/:key` | Delete agent + cascade data |
+| `DELETE` | `/api/agents/:key/data` | Reset data only (keeps config) |
+| `PATCH` | `/api/agents/:key/config` | Update config (restarts schedule if running) |
+| `POST` | `/api/agents/:key/start` | Start agent loop |
+| `POST` | `/api/agents/:key/pause` | Pause agent |
+| `POST` | `/api/agents/:key/stop` | Stop agent |
+| `POST` | `/api/agents/:key/trigger` | Fire one tick (manual mode) |
+| `POST` | `/api/agents/:key/plan` | Queue a planning tick |
+| `GET` | `/api/agents/:key/cycles` | Cycle history |
+| `GET` | `/api/system-prompt/:key` | Full system prompt for debugging |
+| **Logs** | | |
+| `GET` | `/api/logs` | Log entries (with `since` and `agent` filters) |
+| `POST` | `/api/logs/clear` | Virtual clear (sets floor) |
+| `GET` | `/api/events` | SSE stream for real-time log updates |
+| **Market** | | |
+| `GET` | `/api/market/:market/:symbol` | Read-only snapshot |
+| **Keys** | | |
+| `GET` | `/api/keys` | List configured API keys |
+| `POST` | `/api/keys` | Save API key to .env |
+| `POST` | `/api/keys/test/:service` | Test connection to service |
+| **Reports** | | |
+| `GET` | `/api/reports/summary` | P&L summary across agents |
 
-#### Status & Logs
+### 11.2 SSE Event Stream
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/status` | App-level summary (agents, recent events, risk state) |
-| `GET` | `/api/logs` | Log entries. Query: `?since={id}&agent={key}` |
-| `POST` | `/api/logs/clear` | Set log clear floor to current max ID |
+`GET /api/events?agent=<key>&since=<id>`
 
-#### Market Data
+Server-Sent Events endpoint that streams log entries in real-time. On connection:
+1. Sends any missed events since `sinceId` (up to 100)
+2. Subscribes to the live log stream
+3. Each event is a JSON-serialized `LogEntry` as an SSE `data:` frame
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/market/:market/:symbol` | Fetch market snapshot (no AI, direct adapter call) |
+The frontend uses this instead of polling for the live session view.
 
-#### Positions & Trades
+### 11.3 API Key Testing
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/positions` | Open positions across all agents |
-| `GET` | `/api/trades` | Trade fill history across all agents |
+`POST /api/keys/test/:service`
 
-#### API Keys
+Tests connectivity to external services:
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/keys` | Returns which env keys are currently set (values hidden) |
-| `POST` | `/api/keys` | Save a key value to `.env` file |
-| `POST` | `/api/keys/test/:service` | Test connectivity for a service |
-
-#### Reports
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/reports/summary` | Trade stats grouped by market |
-| `GET` | `/api/reports/trades` | All cycle results |
-
-#### Frontend
-
-Static files from `frontend-dist/` are served for all non-API routes. If the directory doesn't exist (dev mode), routes return a development mode message.
+| Service | Test method |
+|---------|------------|
+| `anthropic` | `GET /v1/models` |
+| `openrouter` | `GET /api/v1/models` |
+| `binance` | `GET /api/v3/ping` |
+| `ollama` | `GET /api/tags` |
+| `finnhub` | `GET /api/v1/news?category=forex` |
+| `twelvedata` | `GET /time_series?symbol=EUR/USD` |
+| `coingecko` | `GET /api/v3/ping` |
 
 ---
 
-### 9.2 API Key Testing
+## 12. In-Memory State & Logging
 
-`POST /api/keys/test/:service` calls `testConnection(service)`:
+**Module:** `src/server/state.ts`
 
-| Service | Test Method | Success Response |
-|---------|-------------|-----------------|
-| `anthropic` | List first model from API | `"Anthropic OK — {model}"` |
-| `alpaca` | Data API: GET `/v2/stocks/AAPL/snapshot` (live keys) + Trading API: GET `/v2/account` (paper or live keys) | `"Data API OK \| Paper trading OK"` |
-| `binance` | Signed GET `/api/v3/account` with HMAC-SHA256 | `"Account OK — N non-zero balances"` |
-| `finnhub` | GET `/api/v1/stock/profile2?symbol=AAPL` | `"Finnhub OK"` |
-| `twelvedata` | GET `/time_series?symbol=EURUSD&interval=1min&outputsize=1` | `"Twelve Data OK"` |
-| `coingecko` | Ping free or demo/pro API based on key prefix | `"CoinGecko OK (demo key)"` or `"CoinGecko OK (free tier)"` |
-
----
-
-### 9.3 Startup Connectivity Check
-
-On server start, after `fastify.listen()`, all configured services are tested in parallel:
-
-```
-✓ anthropic  — Anthropic OK — claude-haiku-4-5-20251001
-✓ alpaca     — Data API OK | Paper trading OK
-✗ binance    — HTTP 401: {"code":-2014,...}
-✓ coingecko  — CoinGecko OK (demo key)
-  finnhub    — [skipped — key not set]
-  twelvedata — [skipped — key not set]
-```
-
-Services with no key set are skipped (not shown as failures).
-
----
-
-## 10. In-Memory State & Logging
-
-**File:** `src/server/state.ts`
-
-### AppState
+### Application State
 
 ```typescript
 interface AppState {
-  agents: Record<string, AgentState>   // key = "market:symbol"
-  recentEvents: CycleResult[]          // last 50 cycles across all agents
+  agents: Record<string, AgentState>   // key = makeAgentKey(market, symbol, accountId, name)
+  recentEvents: CycleResult[]          // last N cycle results
 }
 ```
 
-State is loaded from the database on startup (agents, last cycle per agent).
+### Logging System
 
-### Log Sequence
+All log entries flow through `logEvent()`:
+
+1. Assigned a monotonically increasing `id`
+2. Added to an in-memory `logBuffer` (max 500 entries)
+3. Persisted to SQLite `log_entries` table
+4. Broadcast to all SSE subscribers
+
+**Log event types:**
+
+| Event | Meaning |
+|-------|---------|
+| `tick_start` / `tick_end` | Tick boundaries |
+| `tick_error` | Tick failed with error |
+| `tick_skip` / `cycle_skip` | Tick skipped (agent busy, etc.) |
+| `session_start` / `session_reset` | New trading day session |
+| `tool_call` / `tool_result` / `tool_error` | Tool execution |
+| `claude_thinking` | LLM reasoning text |
+| `llm_request` | LLM API call metadata |
+| `decision` | Final trading decision |
+| `guardrail_block` | Order rejected by guardrails |
+| `auto_execute` / `auto_execute_error` | Auto-execution of tool results |
+| `memory_write` | Memory saved |
+| `plan_created` | Session plan saved |
+| `pnl_record` | P&L recorded |
+| `mc_result` | Monte Carlo simulation results |
+| `quota_error` | LLM provider quota/billing error |
+| `auto_plan` | Auto-generated planning tick |
+
+---
+
+## 13. Frontend
+
+**Framework:** React 18 + TypeScript + Vite
+**Styling:** Tailwind CSS with custom dark theme
+**State:** React context (AccountContext) + local state
+**Real-time:** Server-Sent Events via `EventSource` API
+
+### 13.1 Routing
+
+```
+/              → Dashboard (home)
+/agents        → Agent list
+/agents/new    → Create new agent
+/agents/:market/:symbol/:accountId?  → Agent detail (by market+symbol)
+/agents/k/:agentKey                   → Agent detail (by full key)
+/keys          → API key management
+/reports       → Trade history + P&L
+/account       → MT5 account selector
+```
+
+### 13.2 Pages
+
+| Page | File | Purpose |
+|------|------|---------|
+| Dashboard | `Dashboard.tsx` | Real-time agent status, P&L summary, live session view (last 10 ticks) |
+| Agents | `Agents.tsx` | List all agents with start/stop/delete controls |
+| Agent Create | `AgentCreate.tsx` | New agent form: market, symbol, LLM provider, guardrails, risk settings |
+| Agent Detail | `AgentDetail.tsx` | Deep view: config editor, system prompt viewer, full tick logs, performance |
+| API Keys | `ApiKeys.tsx` | Manage API keys with connection testing |
+| Reports | `Reports.tsx` | Trade history, closed deals, P&L by market and period |
+| Account | `Account.tsx` | MT5 account selector (persistent to server settings) |
+
+### 13.3 Key Components
+
+| Component | Purpose |
+|-----------|---------|
+| `ThreadedLogsPanel` | Live session view with SSE streaming, pause/resume/clear |
+| `TickThread` | Single tick: collapsible card with decision badge, MC table, thinking, tool calls, errors |
+| `useTickThreads` | Hook that groups raw log entries into structured tick threads |
+| `Layout` | App shell with navigation, account selector in header |
+
+### 13.4 Account Context
+
+`AccountContext` provides a globally selected MT5 account. All pages (except Account management) scope their data to the selected account:
+
+- Agent list filtered by account
+- Dashboard shows only selected account's agents
+- Live session filters SSE events by agent keys belonging to the account
+
+The selected account is persisted server-side via `/api/selected-account`.
+
+### 13.5 API Client
+
+**Module:** `frontend/src/api/client.ts`
+
+Typed fetch wrapper with functions for every API endpoint:
 
 ```typescript
-let logSeq = -1  // -1 = uninitialized sentinel
+getStatus()
+getAgents() / createAgent(config) / deleteAgent(key)
+startAgent(key) / pauseAgent(key) / stopAgent(key) / triggerAgent(key)
+getLogs(sinceId?, agent?) / clearLogs()
+getReportSummary()
+getKeys() / saveKey(service, key) / testKey(service)
+getSelectedAccount() / setSelectedAccount(accountId)
+```
 
-function nextLogId(): number {
-  if (logSeq === -1) logSeq = dbGetMaxLogId()  // lazy init from DB on first log
-  return ++logSeq
+### 13.6 Live Session (ThreadedLogsPanel)
+
+The live session panel shows real-time tick activity using Server-Sent Events:
+
+1. **Initial fetch** — loads last 200 log entries via `GET /api/logs`
+2. **SSE connection** — connects to `GET /api/events` for real-time updates
+3. **Thread grouping** — `useTickThreads` hook groups entries into `TickThread` objects by scanning for `tick_start` / `tick_end` boundaries
+4. **Rendering** — each thread is a collapsible card showing:
+   - Header: symbol (color-coded), tick number, decision badge, MC badge, relative time
+   - Sections: Monte Carlo (auto-expanded), Decision & Reason, Thinking, Tool Calls, Errors
+5. **Pause/Resume** — pauses SSE processing without disconnecting
+6. **Clear** — sets log clear floor server-side, clears local state
+
+The `TickThread` data structure:
+
+```typescript
+interface TickThread {
+  id: string
+  agentKey: string
+  startTime: string
+  endTime?: string
+  status: 'running' | 'complete' | 'error' | 'skipped' | 'session_event'
+  tickNumber: number
+  iterationCount: number
+  decision?: string
+  reason?: string
+  logs: LogEntry[]
+  thinkingLogs: LogEntry[]
+  toolLogs: LogEntry[]
+  decisionLogs: LogEntry[]
+  errorLogs: LogEntry[]
+  mcLogs: LogEntry[]
 }
 ```
 
-This prevents `UNIQUE constraint failed: log_entries.id` on server restart — the counter always continues from the highest existing DB id.
-
-### logEvent()
-
-```typescript
-logEvent(agentKey, level, event, message, data?)
-```
-
-- Creates `LogEntry` with auto-incrementing `id`
-- Writes to SQLite immediately (`dbLogEvent`)
-- Adds to in-memory buffer (capped at 500 entries)
-- Used throughout agent cycle, tool dispatch, guardrails
-
-### LogEvent Types
-
-| Event | Color | Description |
-|-------|-------|-------------|
-| `cycle_start` | green | Agent cycle begins |
-| `cycle_end` | green | Agent reached a decision |
-| `cycle_error` | red | Unhandled error in cycle |
-| `tool_call` | blue | Claude called a tool |
-| `tool_result` | cyan | Tool returned successfully |
-| `tool_error` | red | Tool threw an error |
-| `claude_thinking` | yellow | Claude's reasoning text |
-| `decision` | green | Final DECISION extracted |
-| `guardrail_block` | red | Order blocked by guardrails |
-| `session_skip` | muted | Autonomous cycle skipped (market closed) |
-
 ---
 
-## 11. Frontend
-
-**Location:** `frontend/`
-**Build tool:** Vite
-**Framework:** React 18 + TypeScript
-**Styling:** Tailwind CSS (dark theme, custom design tokens)
-
-### 11.1 Routing
-
-**File:** `frontend/src/App.tsx`
+## 14. Data Flow: End-to-End Agent Tick
 
 ```
-/                   → Dashboard
-/agents             → Agents list
-/agents/:market/:symbol → Agent detail
-/positions          → Positions & trade history
-/keys               → API key management
-/reports            → Trade reports & analytics
-```
-
-All routes are wrapped in the `<Layout>` component which provides the navigation sidebar.
-
----
-
-### 11.2 Pages
-
-#### Dashboard (`/`)
-
-- **Summary cards:** Total agents, running/paused/idle counts, today's P&L, position notional, remaining budget, risk indicator
-- **Activity stats:** Total cycles today, buy/sell/hold/error counts
-- **Cycle chart:** Bar chart showing last 20 time buckets of cycle activity
-- **Decision distribution:** Horizontal bar showing HOLD/BUY/SELL/ERROR proportions
-- **Agent overview grid:** Status badge per agent
-- **Live logs terminal:** All agents combined, auto-scrolling
-- **Recent cycles table:** Last 20 decisions with symbol, market, decision, reason
-
-Auto-refresh options: 5s / 15s / 30s / Off (default 10s)
-
-#### Agents (`/agents`)
-
-- **Add agent form:** Symbol, market (crypto/forex), paper toggle, max iterations, fetch mode, schedule interval, loss/position limits, custom prompt
-- **Agent cards grid:** Each card shows status badge, market, paper/live label, last decision/reason
-- **Per-agent actions:** Start / Pause / Stop / Trigger / Market Data
-- Clicking the symbol name navigates to `/agents/:market/:symbol`
-
-#### Agent Detail (`/agents/:market/:symbol`)
-
-- **Header:** Agent name, status badge, market, paper/live
-- **Actions:** Start / Pause / Stop / Trigger / Market Data
-- **Stats panel:** Total cycles, mode, interval, limits, started time
-- **Last decision card:** Decision, reason, error (if any)
-- **Configuration panel:** Editable settings (inline SettingsPanel component)
-- **Logs terminal:** Filtered to only this agent's events
-- **Market data modal:** Read-only snapshot (no AI cycle triggered)
-
-#### Positions (`/positions`)
-
-Three tabs:
-
-| Tab | Content | Filter |
-|-----|---------|--------|
-| Active | Currently open/partially filled positions | status = OPEN or PARTIALLY_FILLED |
-| Pending | Orders awaiting fill | status = NEW |
-| History | Completed trade fills | All fills from `/api/trades` |
-
-Auto-refresh every 15s.
-
-#### API Keys (`/keys`)
-
-Displays rows for each configured service. Each row shows:
-- Label and description
-- Status indicator (green = set, gray = missing)
-- Masked password input to update the value
-- Save button
-- Test button → calls `/api/keys/test/:service` and shows result inline
-
-Services listed: Anthropic, Claude Model, Alpaca (live + paper), Binance, Finnhub, Twelve Data, CoinGecko.
-
-#### Reports (`/reports`)
-
-- **Summary cards** per market: total cycles, buys/sells/holds, errors, active %, daily P&L, remaining budget
-- **Cycle activity chart:** Line chart, crypto vs forex series
-- **Trade history table:** Filterable by market. Columns: Time, Symbol, Market, Decision, Reason, Mode (paper/live)
-
----
-
-### 11.3 Key Components
-
-#### `LogsTerminal`
-
-**File:** `frontend/src/components/LogsTerminal.tsx`
-
-Features:
-- Polls `/api/logs` every 1500ms
-- Shows only entries with `id > lastIdRef.current` (incremental fetch)
-- Filter tabs: All / Decisions / Tools / Claude / Errors
-- Pause / Auto-scroll / Clear buttons
-- Per-agent icon in the log line (₿ BTC, Ξ ETH, ◎ SOL, ◈ BNB, € EUR, £ GBP, ◆ default)
-- Clear calls `POST /api/logs/clear`, stores returned `clearedAt` as new floor — survives page refresh
-
-#### `AgentCard`
-
-**File:** `frontend/src/components/AgentCard.tsx`
-
-- Symbol name is a `<Link>` to the agent detail page
-- Shows collapsible settings panel (`SettingsPanel`)
-- Start/Pause/Stop/Trigger/Market Data action buttons
-- Status badge (idle/running/paused) with color
-
-#### `MarketDataModal`
-
-Fetches and displays a raw `MarketSnapshot` from `/api/market/:market/:symbol` without triggering an AI cycle.
-
----
-
-### 11.4 API Client
-
-**File:** `frontend/src/api/client.ts`
-
-All API calls go through a central `api<T>()` helper that:
-- Prepends `/` base path
-- Sets `Content-Type: application/json`
-- Throws on non-2xx responses
-
-Key exported functions:
-
-```typescript
-getAgents()         → AgentState[]
-createAgent(cfg)    → AgentState
-removeAgent(key)    → void
-updateConfig(key, partial) → AgentState
-startAgent(key)     → void
-pauseAgent(key)     → void
-stopAgent(key)      → void
-triggerAgent(key)   → void
-getStatus()         → AppStatus
-getLogs(since?, agentKey?) → LogEntry[]
-clearLogs()         → { ok: boolean; clearedAt: number }
-getMarketData(market, symbol) → MarketSnapshot
-getKeys()           → Record<string, boolean>
-saveKey(envKey, value) → void
-testKey(service)    → { ok: boolean; message: string }
-getPositions()      → PositionEntry[]
-getTrades()         → FillEntry[]
-getReports()        → ReportSummary
+TIMER/TRIGGER FIRES
+        │
+        ▼
+┌─ SCHEDULER ──────────────────────────────────────────────────────┐
+│  Check fetch mode (manual/auto/scheduled)                        │
+│  Check HOLD backoff delay                                        │
+│  Check scheduled window (if applicable)                          │
+│  Call runAgentTick(config)                                        │
+└────────┬─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ ACQUIRE LOCK ───────────────────────────────────────────────────┐
+│  tryAcquireCycleLock(agentKey) — prevents concurrent ticks       │
+│  If locked → skip with tick_skip log                             │
+└────────┬─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ SESSION MANAGEMENT ─────────────────────────────────────────────┐
+│  Load today's session from DB (or create new)                    │
+│  If new day → compress previous session → save to memory         │
+│  Inject previous session summary + memories into system prompt   │
+└────────┬─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ DATA FETCH ─────────────────────────────────────────────────────┐
+│  adapter.getSnapshot(symbol)                                      │
+│    → price, 6 TF candles, indicators, positions, account info     │
+│  adapter.getDeals(symbol) → today's closed trades                 │
+│  detectExternalCloses() → compare positions vs last tick           │
+│  computeKeyLevels(h4, h1, price)                                  │
+│  fetchForexNews(symbol) → sentiment-tagged headlines              │
+└────────┬─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ RISK CHECKS ────────────────────────────────────────────────────┐
+│  Daily loss guard: todayPnl <= -maxDailyLossUsd → auto-pause     │
+│  Drawdown guard: equity vs peak → auto-pause if exceeded         │
+│  (If paused → return early, release lock)                        │
+└────────┬─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ MONTE CARLO ────────────────────────────────────────────────────┐
+│  runMonteCarlo({m1, m5, m15, m30, h1, h4, price, indicators})   │
+│    → 5,000 bootstrap paths from M1 candles                       │
+│    → LONG/SHORT win%, EV, P10/P50/P90, SL hit%                  │
+│    → Recommended: LONG | SHORT | HOLD                            │
+│  Log mc_result event with full data                              │
+└────────┬─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ SNAPSHOT FORMAT ────────────────────────────────────────────────┐
+│  formatSnapshotSummary(snap, agentKey, config, mcResult)         │
+│    → Account health (balance, equity, margin, float P&L)         │
+│    → Price + spread verdict + swap rates                         │
+│    → Indicators with interpretation labels (trend, momentum)     │
+│    → Multi-TF candles (H4, H1, M15)                             │
+│    → Position sizing block                                       │
+│    → Open positions (with SL pip distance + $ risk)              │
+│    → Key levels (up to 8)                                        │
+│    → News sentiment                                              │
+│    → Closed trades + today's realized P&L                        │
+│    → Monte Carlo probability table                               │
+└────────┬─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ TICK MESSAGE ASSEMBLY ──────────────────────────────────────────┐
+│  buildTickMessage(config, tickNumber, isFirstTick, tickType,     │
+│                   summary, externalCloseNote, newsItems)          │
+│    Header: "Tick #N | HH:MM | SYMBOL (MARKET) | Xh Xm left"    │
+│    Body: Snapshot + evaluation instructions                      │
+│    Planning tick: analysis + plan instructions                   │
+│    Trading tick: full evaluation order checklist                  │
+└────────┬─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ LLM CALL ───────────────────────────────────────────────────────┐
+│  provider.createMessage({                                         │
+│    model, system prompt, messages (full session history),         │
+│    tools (filtered by tick type), max_tokens: 4096               │
+│  })                                                               │
+│                                                                   │
+│  Response contains: text reasoning + tool_use blocks              │
+│  If stop_reason == 'tool_use' → dispatch and loop (max 10x)     │
+└────────┬─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ TOOL DISPATCH ──────────────────────────────────────────────────┐
+│  For each tool_use block:                                         │
+│    1. Log tool_call event                                        │
+│    2. Execute handler (get_snapshot, place_order, etc.)           │
+│    3. For place_order: run guardrail validation                   │
+│       → Reject if fails (log guardrail_block)                    │
+│       → Clamp if lot size > 2x suggested                         │
+│    4. Log tool_result event                                       │
+│    5. Add tool result to conversation                            │
+│    6. Call LLM again with updated conversation                   │
+│  Loop until stop_reason != 'tool_use' or max iterations reached  │
+└────────┬─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ DECISION PARSING ───────────────────────────────────────────────┐
+│  Search response text for "DECISION: ACTION — reason"            │
+│  Extract action (BUY, SELL, HOLD, CLOSE, CANCEL, etc.)           │
+│  Extract reason (up to 300 chars)                                │
+│  If no decision found → infer from tool calls or mark UNKNOWN    │
+└────────┬─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ RECORD & PERSIST ───────────────────────────────────────────────┐
+│  recordCycle(agentKey, result) → log + broadcast to SSE          │
+│  dbSaveSession(messages, tickCount) → persist conversation       │
+│  dbSaveCycle(decision, reason, pnl) → trade history              │
+│  Release cycle lock                                              │
+│  Scheduler checks backoff → schedule next tick                   │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 12. Data Flow: End-to-End Agent Cycle
+## 15. Known Limitations & Notes
 
-Below is the complete flow for one agent cycle (e.g., `crypto:BTCUSDT`):
+1. **MT5 bridge is Windows-only** — the MetaTrader5 Python package requires Windows. The bridge runs as a separate process on `localhost:8000`.
 
-```
-1. TRIGGER
-   ├── Via scheduler (cron fires)
-   └── Via API: POST /api/agents/crypto:BTCUSDT/trigger
+2. **M5 and M30 candles** — depend on the MT5 bridge returning them. Older bridge versions may not include these timeframes. The adapter gracefully falls back to empty arrays.
 
-2. runAgentCycle({ symbol: 'BTCUSDT', market: 'crypto', ... })
-   ├── logEvent('cycle_start')
-   ├── riskState = getRiskStateFor('crypto')
-   │     → checks if daily date changed → auto-resets if so
-   └── Build system prompt
+3. **Monte Carlo uses M1 only for path generation** — M5/M15/M30/H1/H4 candle data is available in `MCInputs` for future multi-timeframe regime calibration but is not yet used in the bootstrap sampling.
 
-3. ITERATION 1: Call Claude
-   ├── Anthropic SDK: messages.create(model, system, messages=[], tools)
-   ├── Claude responds: stop_reason='tool_use', tool='get_snapshot'
-   └── logEvent('claude_thinking', full reasoning text)
+4. **Session compression is lossy** — when the conversation exceeds 20 messages, older context is compressed into a summary. The LLM loses access to exact reasoning from early ticks but retains key decisions and P&L records.
 
-4. TOOL DISPATCH: get_snapshot
-   ├── logEvent('tool_call', 'get_snapshot')
-   ├── adapter.getSnapshot('BTCUSDT', riskState)
-   │     ├── Promise.all([ticker, m1, m15, h1, h4, orderBook, account, openOrders])
-   │     └── computeIndicators(h1) → { rsi14, ema20, ema50, atr14, vwap, bbWidth }
-   ├── buildMarketContext('BTCUSDT', 'crypto')
-   │     ├── fetchFearGreed()     → { value: 72, label: 'Greed' }
-   │     ├── fetchCryptoMarket()  → { btcDominance: 52.3, totalMarketCap: 2.1T }
-   │     └── fetchCryptoNews()    → [ headline1, headline2, ... ]
-   └── logEvent('tool_result', compressed snapshot summary)
+5. **Indicator computation uses H1 candles only** — RSI, EMA, ATR, VWAP, and Bollinger Bands are all computed from H1 candles. Multi-timeframe indicator computation (e.g., RSI on M15) is not yet implemented.
 
-5. ITERATION 2: Call Claude again
-   ├── messages = [user(tool_result), assistant(get_snapshot)]
-   ├── Claude responds: stop_reason='tool_use', tool='place_order'
-   │     input: { symbol: 'BTCUSDT', market: 'crypto', side: 'BUY',
-   │              type: 'LIMIT', quantity: 0.001, price: 67500 }
-   └── logEvent('claude_thinking')
+6. **Single account per agent** — each agent is bound to one MT5 account. Cross-account strategies are not supported.
 
-6. TOOL DISPATCH: place_order
-   ├── logEvent('tool_call', 'place_order')
-   ├── validateOrder({ side:'BUY', qty:0.001, price:67500, ... }, currentPrice)
-   │     ├── isDailyLimitHit? → false
-   │     ├── notional = 0.001 × 67500 = $67.50
-   │     ├── $67.50 < MAX_POSITION_USD ($1000)? → OK
-   │     ├── $67.50 < remainingBudgetUsd? → OK
-   │     └── returns { ok: true }
-   ├── config.paper = true → SIMULATE (no real API call)
-   │     returns { orderId: 'paper-1234', status: 'FILLED' }
-   └── logEvent('tool_result')
+7. **No backtesting** — the Monte Carlo engine simulates forward paths from current state, but there is no historical backtesting framework for strategy validation.
 
-7. ITERATION 3: Call Claude again
-   ├── Claude sees the FILLED result
-   ├── Claude responds: stop_reason='end_turn'
-   │     text: "DECISION: BUY 0.001 @ 67500\nREASON: RSI 42 oversold, EMA20 cross above EMA50..."
-   └── logEvent('claude_thinking')
+8. **SQLite concurrency** — WAL mode allows concurrent reads, but writes are serialized. Under heavy multi-agent load, database writes may become a bottleneck.
 
-8. EXTRACT DECISION
-   ├── regex extracts: decision='BUY', reason='RSI 42 oversold...'
-   ├── logEvent('decision', 'BUY 0.001 @ 67500')
-   ├── dbRecordCycle({ symbol, market, paper, decision, reason, time })
-   └── logEvent('cycle_end')
+9. **Ollama tool calling** — local models vary in their ability to follow tool-calling protocols. Smaller models may produce malformed tool calls that fail to parse.
 
-9. STATE UPDATE
-   └── setAgentLastCycle(key, cycleResult)
-       recentEvents.unshift(cycleResult) → cap at 50
-```
-
----
-
-## 13. Paper Trading vs Live Trading
-
-Two levels of paper trading control exist:
-
-| Level | Variable | Effect |
-|-------|----------|--------|
-| Global | `PAPER_TRADING=true` in `.env` | All agents forced to paper mode |
-| Per-agent | `config.paper = true` | This agent uses paper mode |
-
-**Paper mode behaviour:**
-
-In `place_order` tool dispatch:
-```typescript
-if (config.paper || process.env.PAPER_TRADING === 'true') {
-  // Simulate: return fake order result without calling the exchange
-  return {
-    orderId: `paper-${Date.now()}`,
-    status: 'FILLED',
-    // ... other fields mirrored from input
-  }
-}
-// Otherwise: call adapter.placeOrder(params)
-```
-
-In `cancel_order` tool dispatch:
-```typescript
-if (config.paper || process.env.PAPER_TRADING === 'true') {
-  return { cancelled: true }  // Simulate cancellation
-}
-await adapter.cancelOrder(symbol, orderId)
-```
-
-**Guardrails run identically in paper and live mode.** This ensures paper trading accurately reflects what would happen in production, including blocks.
-
----
-
-## 14. Known Limitations & Notes
-
-### Alpaca Forex Data
-- **XAUUSD (gold) is not available** on the Alpaca forex data endpoint. Gold is a commodity, not a forex pair. Use `BTCUSDT` on Binance if you need gold-like volatility exposure.
-- Alpaca forex data requires a **paid subscription** for some assets and time intervals. On free accounts, candle requests may return 404 (handled gracefully — agent continues with empty candles).
-- The data API **always uses live keys** (`ALPACA_API_KEY`), even when paper trading. Only the order execution API switches between live and paper keys.
-
-### Binance Authentication
-- The `binance` npm SDK's signing was producing invalid signatures. All authenticated calls use the custom `signedGet()` helper with Node.js `crypto.createHmac`.
-- The SDK is still used for unauthenticated public endpoints (klines, ticker, order book).
-
-### CoinGecko Key Tiers
-- Demo keys start with `CG-` and use the free-tier URL (`api.coingecko.com`) with `x-cg-demo-api-key` header.
-- Pro keys use `pro-api.coingecko.com` with `x-cg-pro-api-key` header.
-- Sending a demo key to the pro URL returns HTTP 400.
-
-### Log IDs on Restart
-- `logSeq` is initialized lazily from the database's max ID on first use. This prevents `UNIQUE constraint failed: log_entries.id` that occurred when the counter reset to 0 on server restart while the database retained old entries.
-
-### Risk State Reset
-- Risk state resets automatically at UTC midnight. If the server is restarted mid-day, the in-memory P&L counters reset to zero. The realized P&L is not persisted to the database — only cycle results are. This is a known limitation for multi-day risk tracking.
-
-### Single Process
-- Wolf-Fin runs as a single Node.js process. All agents share the same event loop. Long-running Claude API calls (multiple tool iterations) block that agent's cycle but not others (each agent cycle runs asynchronously via `async/await`).
-
-### No WebSocket
-- All frontend data is polled via HTTP REST. The log terminal polls every 1.5 seconds. The dashboard auto-refreshes on a configurable interval. There is no real-time WebSocket push.
+10. **Spread is computed from M1 close-to-close** — the Monte Carlo engine uses log returns from M1 closes. Intra-bar wicks (spikes beyond high/low) are not modeled, which may underestimate SL hit probability for highly volatile instruments.

@@ -1,10 +1,11 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import { getReportSummary, getReportTrades } from '../api/client.ts'
 import type { ReportSummary, CycleResult } from '../types/index.ts'
 import { Card } from '../components/Card.tsx'
 import { Badge, decisionVariant } from '../components/Badge.tsx'
 import { CycleDetailModal } from '../components/CycleDetailModal.tsx'
+import { useAccount } from '../contexts/AccountContext.tsx'
 
 function rel(iso: string) {
   const d = Date.now() - new Date(iso).getTime()
@@ -15,6 +16,18 @@ function rel(iso: string) {
 
 // Per-agent colour palette (cycles if > 8 agents)
 const AGENT_COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#a78bfa', '#ef4444', '#06b6d4', '#f97316', '#ec4899']
+
+// Per-symbol deterministic colour (same palette as TickThread)
+const SYMBOL_PALETTE = ['text-green','text-blue','text-yellow','text-[#e879f9]','text-[#38bdf8]','text-[#fb923c]','text-[#a78bfa]','text-[#34d399]']
+const _symColorCache = new Map<string, string>()
+function symbolColor(sym: string): string {
+  if (!_symColorCache.has(sym)) {
+    let h = 0
+    for (let i = 0; i < sym.length; i++) h = (h * 31 + sym.charCodeAt(i)) >>> 0
+    _symColorCache.set(sym, SYMBOL_PALETTE[h % SYMBOL_PALETTE.length]!)
+  }
+  return _symColorCache.get(sym)!
+}
 
 function buildChartData(events: CycleResult[]) {
   const sorted = [...events].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime())
@@ -37,23 +50,39 @@ function buildChartData(events: CycleResult[]) {
 
 export function Reports() {
   const [summary, setSummary] = useState<ReportSummary | null>(null)
-  const [trades, setTrades] = useState<CycleResult[]>([])
+  const [allTrades, setAllTrades] = useState<CycleResult[]>([])
   const [filter, setFilter] = useState<'all' | 'crypto' | 'mt5'>('all')
   const [selectedCycleId, setSelectedCycleId] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
+  const { selectedAccount } = useAccount()
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
       const [s, t] = await Promise.all([getReportSummary(), getReportTrades()])
       setSummary(s)
-      setTrades(t)
+      setAllTrades(t)
     } finally {
       setLoading(false)
     }
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Filter trades to selected account
+  const trades = useMemo(() => {
+    if (!selectedAccount) return allTrades
+    return allTrades.filter(t => {
+      if (t.market !== selectedAccount.market) return false
+      if (selectedAccount.market === 'mt5' && t.agentKey) {
+        // agentKey format: mt5:SYMBOL:ACCOUNTID or mt5:SYMBOL:ACCOUNTID:NAME
+        const parts = t.agentKey.split(':')
+        const keyAccountId = parts[2] ?? ''
+        if (keyAccountId !== selectedAccount.accountId) return false
+      }
+      return true
+    })
+  }, [allTrades, selectedAccount])
 
   const filtered = filter === 'all' ? trades : trades.filter(t => t.market === filter)
   const { data: chartData, agentKeys: chartAgentKeys } = buildChartData(trades)
@@ -175,12 +204,21 @@ export function Reports() {
                   scrollbarColor: '#2a2a32 #111113',
                 }}
               >
-                <table className="w-full text-sm">
+                <table className="w-full text-sm table-fixed">
+                  <colgroup>
+                    <col style={{ width: '7rem' }} />   {/* Time */}
+                    <col style={{ width: '7rem' }} />   {/* Symbol */}
+                    <col style={{ width: '5rem' }} />   {/* Market */}
+                    <col style={{ width: '8rem' }} />   {/* Decision */}
+                    <col />                              {/* Reason — takes remaining space */}
+                    <col style={{ width: '5.5rem' }} /> {/* Mode */}
+                    <col style={{ width: '2rem' }} />   {/* → */}
+                  </colgroup>
                   {/* Sticky header stays in view while scrolling */}
                   <thead className="sticky top-0 z-10 bg-surface">
                     <tr>
                       {['Time', 'Symbol', 'Market', 'Decision', 'Reason', 'Mode', ''].map(h => (
-                        <th key={h} className="text-left text-xs font-semibold uppercase tracking-wider text-muted py-2.5 pr-4 border-b border-border bg-surface">{h}</th>
+                        <th key={h} className="text-left text-xs font-semibold uppercase tracking-wider text-muted py-2.5 px-4 border-b border-border bg-surface">{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -191,13 +229,13 @@ export function Reports() {
                         onClick={() => e.id != null && setSelectedCycleId(e.id)}
                         className={`border-b border-border/40 transition-colors ${e.id != null ? 'hover:bg-surface2 cursor-pointer' : ''}`}
                       >
-                        <td className="py-2.5 pr-4 text-muted whitespace-nowrap text-xs">{rel(e.time)}</td>
-                        <td className="py-2.5 pr-4 font-semibold text-xs">{e.symbol}</td>
-                        <td className="py-2.5 pr-4"><Badge label={e.market} variant={e.market} /></td>
-                        <td className="py-2.5 pr-4"><Badge label={e.decision} variant={decisionVariant(e.decision)} /></td>
-                        <td className="py-2.5 pr-4 text-muted max-w-[260px] truncate text-xs">{e.reason || '—'}</td>
-                        <td className="py-2.5 pr-4"><Badge label={e.paper ? 'PAPER' : 'LIVE'} variant={e.paper ? 'paper' : 'live'} /></td>
-                        <td className="py-2.5 text-xs text-muted2 opacity-40">{e.id != null ? '→' : ''}</td>
+                        <td className="py-2.5 px-4 text-muted whitespace-nowrap text-xs">{rel(e.time)}</td>
+                        <td className={`py-2.5 px-4 font-mono font-semibold text-xs tracking-wide ${symbolColor(e.symbol)}`}>{e.symbol}</td>
+                        <td className="py-2.5 px-4"><Badge label={e.market} variant={e.market} /></td>
+                        <td className="py-2.5 px-4"><Badge label={e.decision} variant={decisionVariant(e.decision)} /></td>
+                        <td className="py-2.5 px-4 text-muted truncate text-xs">{e.reason || '—'}</td>
+                        <td className="py-2.5 px-4"><Badge label={e.paper ? 'PAPER' : 'LIVE'} variant={e.paper ? 'paper' : 'live'} /></td>
+                        <td className="py-2.5 px-2 text-xs text-muted2 opacity-40">{e.id != null ? '→' : ''}</td>
                       </tr>
                     ))}
                   </tbody>

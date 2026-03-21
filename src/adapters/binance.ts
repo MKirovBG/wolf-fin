@@ -131,7 +131,7 @@ export class BinanceAdapter implements IMarketAdapter {
         high: num(ticker.highPrice),
         low: num(ticker.lowPrice),
       },
-      candles: { m1, m15, h1, h4 },
+      candles: { m1, m5: [], m15, m30: [], h1, h4 },
       indicators: computeIndicators(h1),
       account: { balances, openOrders: orders },
       risk: riskState,

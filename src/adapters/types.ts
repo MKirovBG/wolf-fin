@@ -123,10 +123,12 @@ export interface MarketSnapshot {
     low: number
   }
   candles: {
-    m1: Candle[]
+    m1:  Candle[]
+    m5:  Candle[]   // empty array on brokers/bridges that don't supply M5
     m15: Candle[]
-    h1: Candle[]
-    h4: Candle[]
+    m30: Candle[]   // empty array on brokers/bridges that don't supply M30
+    h1:  Candle[]
+    h4:  Candle[]
   }
   indicators: Indicators
   account: {
@@ -141,6 +143,7 @@ export interface MarketSnapshot {
     spread: number       // ask - bid in pips
     pipValue: number     // USD per pip per standard lot
     point: number        // minimum price increment (0.0001 forex, 0.01 gold, 0.01 JPY crosses)
+    pipSize: number      // price move per 1 pip (1.0 for gold, 0.0001 for forex, 0.01 for JPY)
     sessionOpen: boolean // is market in an active session?
     swapLong: number     // overnight swap rate long
     swapShort: number    // overnight swap rate short

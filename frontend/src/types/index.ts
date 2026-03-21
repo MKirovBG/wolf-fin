@@ -1,3 +1,9 @@
+export interface SelectedAccount {
+  market: 'mt5' | 'crypto'
+  accountId: string   // MT5 login as string, or 'binance' for crypto
+  label?: string      // e.g. "MT5 · #1512796653 @ ICMarkets-Demo02"
+}
+
 export type AgentStatus = 'idle' | 'running' | 'paused'
 
 export interface GuardrailsConfig {

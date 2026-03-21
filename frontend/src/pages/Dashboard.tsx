@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, Cell } from 'recharts'
 import { getStatus } from '../api/client.ts'
@@ -7,6 +7,7 @@ import { Card } from '../components/Card.tsx'
 import { ThreadedLogsPanel } from '../components/ThreadedLogsPanel.tsx'
 import { Badge, decisionVariant } from '../components/Badge.tsx'
 import { AgentStatusBadge } from '../components/AgentStatusBadge.tsx'
+import { useAccount } from '../contexts/AccountContext.tsx'
 
 function rel(iso: string) {
   const d = Date.now() - new Date(iso).getTime()
@@ -29,9 +30,17 @@ function buildActivityData(events: CycleResult[]) {
   return Object.values(buckets).slice(-20)
 }
 
+// Returns true if an agent belongs to the selected account
+function agentMatchesAccount(agent: AgentState, market: string, accountId: string): boolean {
+  if (agent.config.market !== market) return false
+  if (market === 'mt5' && String(agent.config.mt5AccountId ?? '') !== accountId) return false
+  return true
+}
+
 export function Dashboard() {
   const [data, setData] = useState<StatusResponse | null>(null)
   const [lastUpdate, setLastUpdate] = useState('')
+  const { selectedAccount } = useAccount()
 
   const load = useCallback(async () => {
     try {
@@ -43,7 +52,7 @@ export function Dashboard() {
   // Initial load
   useEffect(() => { load() }, [load])
 
-  // SSE: apply individual agent updates in real-time, no polling needed
+  // SSE: apply individual agent updates in real-time, filtered by selected account
   useEffect(() => {
     const es = new EventSource('/api/events')
     es.addEventListener('agent', (e: MessageEvent) => {
@@ -65,11 +74,25 @@ export function Dashboard() {
     return () => es.close()
   }, [])
 
-  const agents = data?.agents ?? []
+  // Filter all data to the selected account
+  const allAgents = data?.agents ?? []
+  const allEvents = data?.recentEvents ?? []
+
+  const agents = useMemo(() => {
+    if (!selectedAccount) return allAgents
+    return allAgents.filter(a => agentMatchesAccount(a, selectedAccount.market, selectedAccount.accountId))
+  }, [allAgents, selectedAccount])
+
+  const agentKeys = useMemo(() => new Set(agents.map(a => a.agentKey)), [agents])
+
+  const events = useMemo(() => {
+    if (!selectedAccount) return allEvents
+    return allEvents.filter(e => !e.agentKey || agentKeys.has(e.agentKey))
+  }, [allEvents, agentKeys, selectedAccount])
+
   const running = agents.filter(a => a.status === 'running').length
   const paused  = agents.filter(a => a.status === 'paused').length
   const idle    = agents.filter(a => a.status === 'idle').length
-  const events  = data?.recentEvents ?? []
   const risk    = data?.risk ?? { dailyPnlUsd: 0, remainingBudgetUsd: 0, positionNotionalUsd: 0 }
 
   // Compute P&L stats from recent events that have pnlUsd
@@ -199,7 +222,7 @@ export function Dashboard() {
 
       {/* Equity curve */}
       {equityCurveData.length > 1 && (
-        <Card title="Equity Curve (all agents)" className="mb-4">
+        <Card title={`Equity Curve${selectedAccount ? ` — ${selectedAccount.label ?? selectedAccount.accountId}` : ''}`} className="mb-4">
           <ResponsiveContainer width="100%" height={160}>
             <AreaChart data={equityCurveData}>
               <defs>
@@ -261,9 +284,12 @@ export function Dashboard() {
         </Card>
       )}
 
-      {/* Live threaded logs */}
+      {/* Live threaded logs — filtered to selected account's agents only */}
       <div className="mb-4">
-        <ThreadedLogsPanel maxThreads={10} />
+        <ThreadedLogsPanel
+          agentKeys={agentKeys.size > 0 ? agentKeys : undefined}
+          maxThreads={10}
+        />
       </div>
 
     </div>

@@ -6,10 +6,11 @@ import { TickThread } from './TickThread.tsx'
 
 interface Props {
   agentKey?: string
+  agentKeys?: Set<string>
   maxThreads?: number
 }
 
-export function ThreadedLogsPanel({ agentKey, maxThreads }: Props) {
+export function ThreadedLogsPanel({ agentKey, agentKeys, maxThreads }: Props) {
   const allLogsRef = useRef<LogEntry[]>([])
   const lastIdRef  = useRef<number>(0)
   const [paused, setPaused] = useState(false)
@@ -39,6 +40,7 @@ export function ThreadedLogsPanel({ agentKey, maxThreads }: Props) {
       try {
         const entry = JSON.parse(e.data) as LogEntry
         if (agentKey && entry.agentKey !== agentKey) return
+        if (agentKeys && !agentKeys.has(entry.agentKey)) return
 
         allLogsRef.current = [entry, ...allLogsRef.current].slice(0, 2000)
         if (entry.id > lastIdRef.current) lastIdRef.current = entry.id
@@ -67,7 +69,7 @@ export function ThreadedLogsPanel({ agentKey, maxThreads }: Props) {
     setTick(t => t + 1)
   }
 
-  const allThreads = useTickThreads(allLogsRef.current, agentKey)
+  const allThreads = useTickThreads(allLogsRef.current, agentKey, agentKeys)
   const threads = maxThreads != null ? allThreads.slice(0, maxThreads) : allThreads
 
   return (

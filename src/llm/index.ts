@@ -29,4 +29,27 @@ export function getModelForConfig(config: AgentConfig): string {
   return process.env.CLAUDE_MODEL ?? 'claude-opus-4-5-20251101'
 }
 
+export function getPlatformLLMProvider(): LLMProvider {
+  const provider = process.env.PLATFORM_LLM_PROVIDER || 'anthropic'
+  if (provider === 'openrouter') {
+    const key = process.env.OPENROUTER_API_KEY
+    if (!key) throw new Error('OPENROUTER_API_KEY not set — add it on the Integrations page')
+    return new OpenRouterProvider(key)
+  }
+  if (provider === 'ollama') {
+    const url = process.env.OLLAMA_URL || 'http://localhost:11434'
+    return new OllamaProvider(url)
+  }
+  return new AnthropicProvider()
+}
+
+export function getPlatformLLMModel(): string {
+  const provider = process.env.PLATFORM_LLM_PROVIDER || 'anthropic'
+  const model = process.env.PLATFORM_LLM_MODEL?.trim()
+  if (model) return model
+  if (provider === 'openrouter') return 'anthropic/claude-opus-4-5'
+  if (provider === 'ollama') return 'llama3.1'
+  return process.env.CLAUDE_MODEL ?? 'claude-opus-4-5-20251101'
+}
+
 export type { LLMProvider, LLMCreateParams, LLMResponse } from './types.js'

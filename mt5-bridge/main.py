@@ -403,7 +403,7 @@ TIMEFRAME_MAP = {
 def get_candles(
     symbol: str,
     timeframe: str = Query("M15", description="MT5 timeframe: M1, M5, M15, M30, H1, H4, D1, W1, MN1"),
-    count: int = Query(100, ge=1, le=1000),
+    count: int = Query(100, ge=1, le=10000),
     accountId: Optional[int] = None,
 ) -> dict:
     require_connected()

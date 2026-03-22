@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback, type ReactNode } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import { getAgents, startAgent, pauseAgent, stopAgent, triggerAgent, resetAgentData, getAgentCycles, getAgentStats, updateAgentConfig } from '../api/client.ts'
-import type { CycleResult, AgentStats, LogEntry } from '../types/index.ts'
+import { getAgents, startAgent, pauseAgent, stopAgent, triggerAgent, resetAgentData, getAgentCycles, getAgentStats, updateAgentConfig, getLatestMC } from '../api/client.ts'
+import type { CycleResult, AgentStats, LogEntry, MCResultData } from '../types/index.ts'
 import type { AgentState } from '../types/index.ts'
 import { Badge, decisionVariant } from '../components/Badge.tsx'
 import { AgentStatusBadge } from '../components/AgentStatusBadge.tsx'
@@ -11,6 +11,9 @@ import { ThreadedLogsPanel } from '../components/ThreadedLogsPanel.tsx'
 import { SystemPromptEditor } from '../components/SystemPromptEditor.tsx'
 import { MarketDataModal } from '../components/MarketDataModal.tsx'
 import { IntelligencePanel } from '../components/IntelligencePanel.tsx'
+import { StrategyEditor } from '../components/StrategyEditor.tsx'
+import { PromptAnalysisPanel } from '../components/PromptAnalysisPanel.tsx'
+import { BacktestPanel } from '../components/BacktestPanel.tsx'
 import { useToast } from '../components/Toast.tsx'
 
 function rel(iso: string) {
@@ -20,13 +23,8 @@ function rel(iso: string) {
   return `${Math.floor(d / 3600000)}h ago`
 }
 
-function iLabel(s: number) {
-  if (s < 60) return `${s}s`
-  if (s < 3600) return `${s / 60} min`
-  return `${s / 3600}h`
-}
 
-type Tab = 'overview' | 'logs' | 'history' | 'performance' | 'intelligence'
+type Tab = 'overview' | 'logs' | 'history' | 'performance' | 'intelligence' | 'strategy' | 'prompt-analysis' | 'backtest'
 
 // ── Cycle Detail Modal ────────────────────────────────────────────────────────
 interface CycleDetailModalProps {
@@ -186,6 +184,310 @@ function CycleDetailModal({ cycleId, onClose }: CycleDetailModalProps) {
   )
 }
 
+// ── Monte Carlo card ──────────────────────────────────────────────────────────
+
+const CONSENSUS_COLOR: Record<string, string> = {
+  STRONG_LONG:  'text-green border-green/50 bg-green/10',
+  LEAN_LONG:    'text-green border-green/30 bg-green/5',
+  NEUTRAL:      'text-yellow border-yellow/40 bg-yellow/10',
+  LEAN_SHORT:   'text-red border-red/30 bg-red/5',
+  STRONG_SHORT: 'text-red border-red/50 bg-red/10',
+  AVOID:        'text-orange border-orange/40 bg-orange/10',
+}
+
+function Pill({ label, color }: { label: string; color?: string }) {
+  return (
+    <span className={`text-[10px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded border ${color ?? 'text-muted border-border/50'}`}>
+      {label}
+    </span>
+  )
+}
+
+function MCCard({ mc, time, compact = false }: { mc: MCResultData; time: string; compact?: boolean }) {
+  const fmt    = (v: number) => (v >= 0 ? `+$${v.toFixed(0)}` : `-$${Math.abs(v).toFixed(0)}`)
+  const pct    = (v: number) => `${v.toFixed(1)}%`
+  const relTime = (() => {
+    const d = Date.now() - new Date(time).getTime()
+    if (d < 60000) return `${Math.floor(d / 1000)}s ago`
+    if (d < 3600000) return `${Math.floor(d / 60000)}m ago`
+    return `${Math.floor(d / 3600000)}h ago`
+  })()
+
+  const recColor = mc.recommended === 'LONG' ? 'text-green border-green/40 bg-green/10'
+    : mc.recommended === 'SHORT' ? 'text-red border-red/40 bg-red/10'
+    : 'text-yellow border-yellow/40 bg-yellow/10'
+
+  const hasEnhanced = !!(mc.consensus || mc.markov || mc.agentBased || mc.scenarios || mc.bayesian || mc.kelly)
+
+  if (compact) {
+    return (
+      <div className="bg-surface border border-border rounded-lg p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-xs font-semibold uppercase tracking-wider text-muted">Monte Carlo</div>
+          <div className="flex items-center gap-2">
+            {mc.consensus && (
+              <span className={`text-xs font-bold px-2 py-0.5 rounded border ${CONSENSUS_COLOR[mc.consensus.signal] ?? 'text-muted border-border'}`}>
+                {mc.consensus.signal.replace('_', ' ')}
+              </span>
+            )}
+            <span className={`text-xs font-bold px-2 py-0.5 rounded border ${recColor}`}>{mc.recommended}</span>
+            <span className="text-xs text-muted">{relTime}</span>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <div className="space-y-1.5">
+            <div className="text-xs font-medium text-green uppercase tracking-wide">Long</div>
+            <div className="flex justify-between text-xs"><span className="text-muted">Win rate</span><span className="text-text font-mono">{pct(mc.long.winRate)}</span></div>
+            <div className="flex justify-between text-xs"><span className="text-muted">Exp. value</span><span className={`font-mono ${mc.long.ev >= 0 ? 'text-green' : 'text-red'}`}>{fmt(mc.long.ev)}</span></div>
+            <div className="flex justify-between text-xs"><span className="text-muted">P10 / P90</span><span className="font-mono text-muted">{fmt(mc.long.p10)} / {fmt(mc.long.p90)}</span></div>
+          </div>
+          <div className="space-y-1.5">
+            <div className="text-xs font-medium text-red uppercase tracking-wide">Short</div>
+            <div className="flex justify-between text-xs"><span className="text-muted">Win rate</span><span className="text-text font-mono">{pct(mc.short.winRate)}</span></div>
+            <div className="flex justify-between text-xs"><span className="text-muted">Exp. value</span><span className={`font-mono ${mc.short.ev >= 0 ? 'text-green' : 'text-red'}`}>{fmt(mc.short.ev)}</span></div>
+            <div className="flex justify-between text-xs"><span className="text-muted">P10 / P90</span><span className="font-mono text-muted">{fmt(mc.short.p10)} / {fmt(mc.short.p90)}</span></div>
+          </div>
+        </div>
+        {mc.consensus && (
+          <div className="mt-2 pt-2 border-t border-border/60 text-xs text-muted/80 leading-relaxed">
+            {mc.consensus.summary}
+          </div>
+        )}
+        <div className="mt-2 pt-2 border-t border-border flex items-center justify-between text-xs text-muted">
+          <span>Edge delta <span className={`font-mono ml-1 ${mc.edgeDelta >= 0 ? 'text-green' : 'text-red'}`}>{fmt(mc.edgeDelta)}</span></span>
+          <span>{mc.pathCount.toLocaleString()} paths · {mc.barsForward}m fwd</span>
+        </div>
+      </div>
+    )
+  }
+
+  // Full view (Performance tab)
+  return (
+    <div className="bg-surface border border-border rounded-lg p-5 space-y-4">
+      {/* Header */}
+      <div className="flex items-start justify-between">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wider text-muted">Monte Carlo Simulation</div>
+          <p className="text-xs text-muted mt-0.5">{mc.pathCount.toLocaleString()} bootstrapped paths · {mc.barsForward}-bar look-ahead · SL=1×ATR · TP=1.5×ATR</p>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {mc.consensus && (
+            <span className={`text-sm font-bold px-3 py-1 rounded-lg border ${CONSENSUS_COLOR[mc.consensus.signal] ?? ''}`}>
+              {mc.consensus.signal.replace('_', ' ')}
+            </span>
+          )}
+          <span className={`text-sm font-bold px-3 py-1 rounded-lg border ${recColor}`}>{mc.recommended}</span>
+          <span className="text-xs text-muted">{relTime}</span>
+        </div>
+      </div>
+
+      {/* Consensus summary */}
+      {mc.consensus && (
+        <div className={`rounded-lg border px-4 py-3 ${CONSENSUS_COLOR[mc.consensus.signal] ?? 'border-border'}`}>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-semibold uppercase tracking-wide opacity-70">Enhanced Consensus</span>
+            <Pill label={mc.consensus.confidence} />
+          </div>
+          <p className="text-sm">{mc.consensus.summary}</p>
+        </div>
+      )}
+
+      {/* Core LONG / SHORT table */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {(['long', 'short'] as const).map(dir => {
+          const r = mc[dir]
+          const isRec = mc.recommended === dir.toUpperCase()
+          return (
+            <div key={dir} className={`rounded-lg border p-4 space-y-2 ${isRec ? (dir === 'long' ? 'border-green/40 bg-green/5' : 'border-red/40 bg-red/5') : 'border-border'}`}>
+              <div className="flex items-center justify-between">
+                <span className={`text-sm font-bold uppercase ${dir === 'long' ? 'text-green' : 'text-red'}`}>{dir}</span>
+                {isRec && <span className="text-xs font-medium text-muted border border-border rounded px-1.5 py-0.5">Recommended</span>}
+              </div>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
+                <div className="flex justify-between"><span className="text-muted">Win rate</span><span className={`font-mono font-semibold ${r.winRate >= 50 ? 'text-green' : 'text-yellow'}`}>{pct(r.winRate)}</span></div>
+                <div className="flex justify-between"><span className="text-muted">SL hit</span><span className="font-mono text-muted">{pct(r.slHitPct)}</span></div>
+                <div className="flex justify-between"><span className="text-muted">Expected value</span><span className={`font-mono font-semibold ${r.ev >= 0 ? 'text-green' : 'text-red'}`}>{fmt(r.ev)}</span></div>
+                <div className="flex justify-between"><span className="text-muted">Median close</span><span className="font-mono text-muted">{r.medianBarsToClose.toFixed(0)}m</span></div>
+                <div className="flex justify-between"><span className="text-muted">P10 (worst 10%)</span><span className={`font-mono ${r.p10 < 0 ? 'text-red' : 'text-green'}`}>{fmt(r.p10)}</span></div>
+                <div className="flex justify-between"><span className="text-muted">P50 (median)</span><span className="font-mono text-muted">{fmt(r.p50)}</span></div>
+                <div className="flex justify-between"><span className="text-muted">P90 (best 10%)</span><span className={`font-mono ${r.p90 >= 0 ? 'text-green' : 'text-red'}`}>{fmt(r.p90)}</span></div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Enhanced layer pills */}
+      {hasEnhanced && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+
+          {/* Markov */}
+          {mc.markov && (
+            <div className="rounded-lg border border-border/60 bg-surface2 p-3 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-muted uppercase tracking-wide">Markov Regime</span>
+                <Pill label={mc.markov.currentState.replace('_', ' ')} color="text-accent border-accent/40" />
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-muted">Regime bias</span>
+                <span className={`font-mono ${mc.markov.regimeBias >= 0 ? 'text-green' : 'text-red'}`}>
+                  {mc.markov.regimeBias >= 0 ? '+' : ''}{mc.markov.regimeBias.toFixed(2)}
+                </span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-muted">Vol scalar</span>
+                <span className="font-mono text-text">{mc.markov.volatilityScalar.toFixed(1)}×</span>
+              </div>
+              <div className="text-[10px] text-muted/60 font-mono">
+                ↑{(mc.markov.nextStateProbs.TRENDING_UP * 100).toFixed(0)}%
+                ↓{(mc.markov.nextStateProbs.TRENDING_DOWN * 100).toFixed(0)}%
+                ↔{(mc.markov.nextStateProbs.RANGING * 100).toFixed(0)}%
+                ⚡{(mc.markov.nextStateProbs.VOLATILE * 100).toFixed(0)}%
+              </div>
+            </div>
+          )}
+
+          {/* Crowd Positioning */}
+          {mc.agentBased && (
+            <div className="rounded-lg border border-border/60 bg-surface2 p-3 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-muted uppercase tracking-wide">Crowd</span>
+                <Pill
+                  label={mc.agentBased.crowdBiasLabel.replace('_', ' ')}
+                  color={mc.agentBased.crowdBias > 0.3 ? 'text-green border-green/40' : mc.agentBased.crowdBias < -0.3 ? 'text-red border-red/40' : 'text-muted border-border/50'}
+                />
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-muted">Contrarian signal</span>
+                <span className={`font-mono text-xs ${mc.agentBased.contrarianSignal === 'NO_SIGNAL' ? 'text-muted' : 'text-accent'}`}>
+                  {mc.agentBased.contrarianSignal.replace('_', ' ')}
+                </span>
+              </div>
+              <p className="text-[10px] text-muted/60 truncate">{mc.agentBased.sentimentSource}</p>
+            </div>
+          )}
+
+          {/* Scenarios */}
+          {mc.scenarios && (
+            <div className="rounded-lg border border-border/60 bg-surface2 p-3 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-muted uppercase tracking-wide">Scenarios</span>
+                {mc.scenarios.avoidTrading
+                  ? <Pill label="AVOID" color="text-red border-red/40" />
+                  : <Pill label={mc.scenarios.currentRegime.replace('_', ' ')} />
+                }
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-muted">Worst case</span>
+                <span className={`font-mono ${mc.scenarios.worstCase.recommended === 'HOLD' ? 'text-yellow' : mc.scenarios.worstCase.recommended === 'LONG' ? 'text-green' : 'text-red'}`}>
+                  {mc.scenarios.worstCase.recommended}
+                </span>
+              </div>
+              {mc.scenarios.avoidReason && (
+                <p className="text-[10px] text-red/70 leading-tight">{mc.scenarios.avoidReason.slice(0, 80)}</p>
+              )}
+            </div>
+          )}
+
+          {/* Bayesian */}
+          {mc.bayesian && (
+            <div className="rounded-lg border border-border/60 bg-surface2 p-3 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-muted uppercase tracking-wide">Bayesian</span>
+                <Pill label={mc.bayesian.confidence} color={
+                  mc.bayesian.confidence === 'VERY_HIGH' ? 'text-green border-green/40' :
+                  mc.bayesian.confidence === 'HIGH'      ? 'text-accent border-accent/40' :
+                  mc.bayesian.confidence === 'MEDIUM'    ? 'text-yellow border-yellow/40' :
+                  'text-muted border-border/50'
+                } />
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-muted">Posterior win rate</span>
+                <span className={`font-mono ${mc.bayesian.posteriorMean >= 0.5 ? 'text-green' : 'text-red'}`}>
+                  {(mc.bayesian.posteriorMean * 100).toFixed(1)}%
+                </span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-muted">95% CI</span>
+                <span className="font-mono text-muted">
+                  [{(mc.bayesian.credibleIntervalLow * 100).toFixed(0)}%–{(mc.bayesian.credibleIntervalHigh * 100).toFixed(0)}%]
+                </span>
+              </div>
+              {mc.bayesian.regimeShiftDetected && (
+                <p className="text-[10px] text-orange/80">⚠ Regime shift detected</p>
+              )}
+            </div>
+          )}
+
+          {/* Significance */}
+          {mc.significance && (
+            <div className="rounded-lg border border-border/60 bg-surface2 p-3 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-muted uppercase tracking-wide">Edge</span>
+                <Pill label={mc.significance.edgeLabel.replace('_', ' ')} color={
+                  mc.significance.edgeLabel === 'CONFIRMED'        ? 'text-green border-green/40' :
+                  mc.significance.edgeLabel === 'LIKELY'           ? 'text-accent border-accent/40' :
+                  mc.significance.edgeLabel === 'UNCONFIRMED'      ? 'text-yellow border-yellow/40' :
+                  'text-muted border-border/50'
+                } />
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-muted">Observed win rate</span>
+                <span className="font-mono text-text">{(mc.significance.observedWinRate * 100).toFixed(1)}%</span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-muted">p-value</span>
+                <span className={`font-mono ${mc.significance.pValue < 0.05 ? 'text-green' : 'text-yellow'}`}>
+                  {mc.significance.pValue.toFixed(3)}
+                </span>
+              </div>
+              {mc.significance.tradesNeeded > 0 && (
+                <p className="text-[10px] text-muted/60">{mc.significance.tradesNeeded} more trades needed for 95% CI</p>
+              )}
+            </div>
+          )}
+
+          {/* Kelly */}
+          {mc.kelly && (
+            <div className="rounded-lg border border-border/60 bg-surface2 p-3 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-muted uppercase tracking-wide">Kelly</span>
+                <Pill label={mc.kelly.riskAssessment.replace('_', ' ')} color={
+                  mc.kelly.riskAssessment === 'OPTIMAL'      ? 'text-green border-green/40' :
+                  mc.kelly.riskAssessment === 'OVER_BETTING' ? 'text-red border-red/40' :
+                  mc.kelly.riskAssessment === 'NO_EDGE'      ? 'text-muted border-border/50' :
+                  'text-yellow border-yellow/40'
+                } />
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-muted">Recommended fraction</span>
+                <span className="font-mono text-accent">{mc.kelly.recommendedFraction}</span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-muted">Optimal risk</span>
+                <span className="font-mono text-text">{mc.kelly.recommendedKellyPct.toFixed(1)}%</span>
+              </div>
+              {mc.kelly.configuredRiskPct != null && (
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted">Configured</span>
+                  <span className={`font-mono ${mc.kelly.riskAssessment === 'OVER_BETTING' ? 'text-red' : mc.kelly.riskAssessment === 'UNDER_BETTING' ? 'text-yellow' : 'text-green'}`}>
+                    {mc.kelly.configuredRiskPct}%
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="flex items-center justify-between text-xs text-muted border-t border-border pt-3">
+        <span>Edge delta vs HOLD: <span className={`font-mono font-semibold ml-1 ${mc.edgeDelta >= 0 ? 'text-green' : 'text-red'}`}>{fmt(mc.edgeDelta)}</span></span>
+        <span>{mc.recommended === 'HOLD' ? '⚠ Both directions have negative EV' : `Signal strength: ${pct(Math.abs(mc.long.winRate - mc.short.winRate))} separation`}</span>
+      </div>
+    </div>
+  )
+}
+
 // ── Main Component ─────────────────────────────────────────────────────────────
 export function AgentDetail() {
   const { market, symbol, accountId, agentKey: encodedKey } = useParams<{
@@ -201,20 +503,25 @@ export function AgentDetail() {
   const [showMarket, setShowMarket] = useState(false)
   const [tab, setTab] = useState<Tab>('overview')
   const [stats, setStats] = useState<AgentStats | null>(null)
+  const [mc, setMC]       = useState<{ data: MCResultData; time: string } | null>(null)
   const [customPrompt, setCustomPrompt] = useState('')
   const [promptTemplate, setPromptTemplate] = useState<string | undefined>(undefined)
   const [selectedCycleId, setSelectedCycleId] = useState<number | null>(null)
   const [intelligenceKey, setIntelligenceKey] = useState(0) // bump to force reload
+  const [showTriggerModal, setShowTriggerModal] = useState(false)
+  const [triggerInstructions, setTriggerInstructions] = useState('')
   const toast = useToast()
 
   const load = useCallback(async () => {
     try {
-      const [all, agentCycles, agentStats] = await Promise.all([
+      const [all, agentCycles, agentStats, mcRes] = await Promise.all([
         getAgents(),
         getAgentCycles(agentKey, 100).catch(() => []),
         getAgentStats(agentKey).catch(() => null),
+        getLatestMC(agentKey).catch(() => null),
       ])
       setStats(agentStats)
+      if (mcRes?.ok && mcRes.mc && mcRes.time) setMC({ data: mcRes.mc, time: mcRes.time })
       const found = all.find(a => a.agentKey === agentKey) ?? null
       setAgent(found)
       setCycles(agentCycles)
@@ -235,6 +542,10 @@ export function AgentDetail() {
       try {
         const updated = JSON.parse(e.data)
         setAgent(prev => prev ? { ...prev, ...updated } : updated)
+        // Refresh MC after each tick so the card stays live
+        getLatestMC(agentKey)
+          .then(res => { if (res?.ok && res.mc && res.time) setMC({ data: res.mc, time: res.time }) })
+          .catch(() => {})
       } catch { /* ignore */ }
     })
     return () => es.close()
@@ -324,14 +635,25 @@ export function AgentDetail() {
             {/* Divider */}
             <div className="w-px h-4 bg-border mx-1" />
 
-            <button
-              disabled={loading !== null}
-              onClick={() => act(() => triggerAgent(agentKey), 'trigger')}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-blue/30 text-blue rounded-md hover:bg-blue/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-            >
-              <span className="text-[10px]">⚡</span>
-              {loading === 'trigger' ? 'Running…' : 'Trigger'}
-            </button>
+            <div className="inline-flex rounded-md overflow-hidden border border-blue/30">
+              <button
+                disabled={loading !== null}
+                onClick={() => act(() => triggerAgent(agentKey), 'trigger')}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue hover:bg-blue/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+              >
+                <span className="text-[10px]">⚡</span>
+                {loading === 'trigger' ? 'Running…' : 'Trigger'}
+              </button>
+              <div className="w-px bg-blue/20" />
+              <button
+                disabled={loading !== null}
+                onClick={() => setShowTriggerModal(true)}
+                title="Trigger with one-time instructions"
+                className="px-2 py-1.5 text-xs text-blue hover:bg-blue/10 disabled:opacity-30 transition-all"
+              >
+                +
+              </button>
+            </div>
             <button
               onClick={() => setShowMarket(true)}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border text-muted rounded-md hover:border-muted2 hover:text-text transition-all"
@@ -363,21 +685,24 @@ export function AgentDetail() {
 
         {/* Tab bar */}
         <div className="flex gap-0">
-          {(['overview', 'logs', 'history', 'performance', 'intelligence'] as Tab[]).map(t => (
+          {(['overview', 'logs', 'history', 'performance', 'intelligence', 'strategy', 'prompt-analysis', 'backtest'] as Tab[]).map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              className={`px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px whitespace-nowrap ${
                 tab === t
                   ? 'border-green text-text'
                   : 'border-transparent text-muted hover:text-text'
               }`}
             >
-              {t === 'overview' ? 'Overview'
-                : t === 'logs' ? 'Logs'
-                : t === 'history' ? 'History'
-                : t === 'performance' ? 'Performance'
-                : 'Intelligence'}
+              {t === 'overview'         ? 'Overview'
+                : t === 'logs'         ? 'Logs'
+                : t === 'history'      ? 'History'
+                : t === 'performance'  ? 'Performance'
+                : t === 'intelligence' ? 'Intelligence'
+                : t === 'strategy'     ? 'Strategy'
+                : t === 'prompt-analysis' ? 'Prompt Flow & AI Analysis'
+                : 'Backtesting'}
             </button>
           ))}
         </div>
@@ -433,9 +758,6 @@ export function AgentDetail() {
                       <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
                         <div className="text-muted">Ticks <span className="text-text font-semibold ml-2">{agent.cycleCount}</span></div>
                         <div className="text-muted">Mode <span className="text-text font-semibold ml-2">{agent.config.fetchMode}</span></div>
-                        {agent.config.fetchMode !== 'manual' && (
-                          <div className="text-muted">Interval <span className="text-text font-semibold ml-2">{iLabel(agent.config.scheduleIntervalSeconds)}</span></div>
-                        )}
                         {agent.startedAt && (
                           <div className="text-muted">Started <span className="text-text font-semibold ml-2">{rel(agent.startedAt)}</span></div>
                         )}
@@ -478,6 +800,9 @@ export function AgentDetail() {
                 )}
               </div>
             </div>
+
+            {/* Monte Carlo */}
+            {mc && <MCCard mc={mc.data} time={mc.time} compact />}
 
             {/* Config editor */}
             <div className="bg-surface border border-border rounded-lg p-4">
@@ -561,6 +886,7 @@ export function AgentDetail() {
         {/* PERFORMANCE TAB */}
         {tab === 'performance' && (
           <div className="flex flex-col gap-5 max-w-4xl mx-auto w-full">
+            {mc && <MCCard mc={mc.data} time={mc.time} />}
             {!stats || stats.totalTrades === 0 ? (
               <div className="text-muted text-sm text-center py-16">No closed trades yet — performance data will appear here once trades are closed.</div>
             ) : (
@@ -630,6 +956,23 @@ export function AgentDetail() {
         {tab === 'intelligence' && (
           <IntelligencePanel key={intelligenceKey} agentKey={agentKey} />
         )}
+
+        {/* STRATEGY TAB */}
+        {tab === 'strategy' && (
+          <div className="max-w-4xl mx-auto">
+            <StrategyEditor agentKey={agentKey} disabled={agent.status === 'running'} />
+          </div>
+        )}
+
+        {/* PROMPT ANALYSIS TAB */}
+        {tab === 'prompt-analysis' && (
+          <PromptAnalysisPanel agent={agent} agentKey={agentKey} />
+        )}
+
+        {/* BACKTEST TAB */}
+        {tab === 'backtest' && (
+          <BacktestPanel agentKey={agentKey} config={agent.config} />
+        )}
       </div>
 
       {/* Modals */}
@@ -646,6 +989,48 @@ export function AgentDetail() {
           cycleId={selectedCycleId}
           onClose={() => setSelectedCycleId(null)}
         />
+      )}
+
+      {/* Trigger with instructions modal */}
+      {showTriggerModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-lg">
+            <div className="px-5 py-4 border-b border-border">
+              <h2 className="text-sm font-semibold text-primary">Trigger with instructions</h2>
+              <p className="text-xs text-muted mt-0.5">One-time instructions injected into this tick only. Does not modify the agent config.</p>
+            </div>
+            <div className="p-5">
+              <textarea
+                autoFocus
+                rows={6}
+                value={triggerInstructions}
+                onChange={e => setTriggerInstructions(e.target.value)}
+                placeholder={'e.g.\n- Focus only on short setups this tick\n- Avoid opening new positions — just monitor\n- Consider closing any open position if spread is high'}
+                className="w-full bg-input border border-border rounded px-3 py-2 text-sm text-primary resize-none focus:outline-none focus:border-accent font-mono"
+              />
+            </div>
+            <div className="px-5 pb-4 flex items-center justify-end gap-3">
+              <button
+                onClick={() => { setShowTriggerModal(false); setTriggerInstructions('') }}
+                className="px-4 py-2 text-sm text-muted hover:text-text transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                disabled={loading !== null || !triggerInstructions.trim()}
+                onClick={() => {
+                  const instr = triggerInstructions.trim()
+                  setShowTriggerModal(false)
+                  setTriggerInstructions('')
+                  act(() => triggerAgent(agentKey, instr), 'trigger')
+                }}
+                className="px-4 py-2 text-sm bg-accent text-white rounded-lg hover:bg-accent/90 disabled:opacity-40 transition-colors"
+              >
+                {loading === 'trigger' ? 'Running…' : 'Trigger now'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

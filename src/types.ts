@@ -1,5 +1,7 @@
 // Wolf-Fin — shared domain types (zero internal imports)
 
+import type { MCEnhancements } from './adapters/mc-types.js'
+
 export type AgentStatus = 'idle' | 'running' | 'paused'
 
 export interface GuardrailsConfig {
@@ -8,12 +10,35 @@ export interface GuardrailsConfig {
   stopPipsRequired: boolean   // MT5 orders must include stopPips field
 }
 
+export interface IndicatorConfig {
+  rsiPeriod?: number             // RSI period (default 14)
+  emaFast?: number               // Fast EMA period (default 20)
+  emaSlow?: number               // Slow EMA period (default 50)
+  atrPeriod?: number             // ATR period (default 14)
+  bbPeriod?: number              // Bollinger Bands period (default 20)
+  bbStdDev?: number              // Bollinger Bands std deviation multiplier (default 2)
+  vwapEnabled?: boolean          // Include VWAP (default true)
+  mtfEnabled?: boolean           // Enable multi-timeframe indicators (default true)
+}
+
+export interface CandleConfig {
+  timeframes?: Array<'m1' | 'm5' | 'm15' | 'm30' | 'h1' | 'h4'>  // which timeframes to fetch (default all)
+  limit?: number                 // candles per timeframe (default 100)
+}
+
+export interface ContextConfig {
+  fearGreed?: boolean            // crypto: Fear & Greed index (default true)
+  news?: boolean                 // crypto: CryptoPanic headlines (default true)
+  cryptoMarket?: boolean         // crypto: BTC dominance / total market cap (default true)
+  economicCalendar?: boolean     // both: upcoming high-impact events (default true)
+  forexNews?: boolean            // mt5: Finnhub forex news with sentiment (default true)
+}
+
 export interface AgentConfig {
   name?: string                  // Agent display name — used to support multiple agents per symbol
   symbol: string
   market: 'crypto' | 'mt5'
   fetchMode: 'manual' | 'scheduled' | 'autonomous'
-  scheduleIntervalSeconds: number
   leverage?: number              // Account leverage — used in agent context for position sizing
   customPrompt?: string
   promptTemplate?: string        // full system prompt with {{pill}} tokens; if empty uses default
@@ -27,6 +52,10 @@ export interface AgentConfig {
   maxDrawdownPercent?: number    // Auto-pause agent when equity drops X% below session peak (e.g. 5 = 5%)
   scheduledStartUtc?: string     // HH:MM UTC — loop only runs inside this window
   scheduledEndUtc?: string       // HH:MM UTC — loop only runs inside this window
+  indicatorConfig?: IndicatorConfig    // Technical indicator parameters
+  candleConfig?: CandleConfig          // Candle fetch configuration
+  contextConfig?: ContextConfig        // Market enrichment context toggles
+  mcEnhancements?: MCEnhancements      // Enhanced Monte Carlo layer toggles
 }
 
 export interface AgentState {

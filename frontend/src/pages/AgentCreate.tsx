@@ -1,19 +1,13 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { addAgent, getMt5Accounts, getOpenRouterModels, getOllamaModels, searchSymbols } from '../api/client.ts'
-import type { AgentConfig, GuardrailsConfig, Mt5AccountInfo, OpenRouterModel, OllamaModel } from '../types/index.ts'
+import type { AgentConfig, GuardrailsConfig, IndicatorConfig, CandleConfig, ContextConfig, Mt5AccountInfo, OpenRouterModel, OllamaModel } from '../types/index.ts'
 import { useToast } from '../components/Toast.tsx'
 import { PromptEditor } from '../components/PromptEditor.tsx'
 import { GuardrailsEditor } from '../components/GuardrailsEditor.tsx'
+import { IndicatorConfigEditor, CandleConfigEditor, ContextConfigEditor } from '../components/DataConfigEditors.tsx'
 import { useAccount } from '../contexts/AccountContext.tsx'
 
-// ── Interval helpers ───────────────────────────────────────────────────────────
-const INTERVALS = [2, 5, 10, 15, 20, 30, 60, 300, 900, 1800, 3600, 14400]
-function intervalLabel(s: number): string {
-  if (s < 60) return `${s}s`
-  if (s < 3600) return `${s / 60} min`
-  return `${s / 3600}h`
-}
 
 // ── Section wrapper ────────────────────────────────────────────────────────────
 function Section({ title, children, hint }: { title: string; children: React.ReactNode; hint?: string }) {
@@ -142,7 +136,6 @@ export function AgentCreate() {
 
   // Schedule
   const [fetchMode, setFetchMode] = useState<'manual' | 'scheduled' | 'autonomous'>('scheduled')
-  const [intervalSec, setIntervalSec] = useState(60)
 
   // LLM
   const [leverage, setLeverage] = useState<number | ''>('')
@@ -158,6 +151,11 @@ export function AgentCreate() {
 
   // Guardrails
   const [guardrails, setGuardrails] = useState<Partial<GuardrailsConfig>>({})
+
+  // Data configuration
+  const [indicatorConfig, setIndicatorConfig] = useState<IndicatorConfig>({})
+  const [candleConfig, setCandleConfig] = useState<CandleConfig>({})
+  const [contextConfig, setContextConfig] = useState<ContextConfig>({})
 
   // UI state
   const [mt5Accounts, setMt5Accounts] = useState<Mt5AccountInfo[]>([])
@@ -211,7 +209,6 @@ export function AgentCreate() {
         symbol: symbol.toUpperCase().trim(),
         market,
         fetchMode,
-        scheduleIntervalSeconds: intervalSec,
         leverage: leverage !== '' ? Number(leverage) : undefined,
         dailyTargetUsd: dailyTargetUsd !== '' ? Number(dailyTargetUsd) : undefined,
         maxRiskPercent: maxRiskPercent !== '' ? Number(maxRiskPercent) : undefined,
@@ -222,6 +219,9 @@ export function AgentCreate() {
         llmProvider,
         llmModel: llmModel || undefined,
         mt5AccountId,
+        indicatorConfig: Object.keys(indicatorConfig).length > 0 ? indicatorConfig : undefined,
+        candleConfig: Object.keys(candleConfig).length > 0 ? candleConfig : undefined,
+        contextConfig: Object.keys(contextConfig).length > 0 ? contextConfig : undefined,
       }
       const res = await addAgent(config)
       if (!res.ok) { setErr('Failed to create agent'); return }
@@ -346,13 +346,6 @@ export function AgentCreate() {
               </select>
             </Field>
 
-            {fetchMode !== 'manual' && (
-              <Field label="Cycle Interval">
-                <select value={intervalSec} onChange={e => setIntervalSec(Number(e.target.value))} className="w-full">
-                  {INTERVALS.map(s => <option key={s} value={s}>{intervalLabel(s)}</option>)}
-                </select>
-              </Field>
-            )}
           </div>
         </Section>
 
@@ -524,6 +517,21 @@ export function AgentCreate() {
             onChange={setGuardrails}
             market={market}
           />
+        </Section>
+
+        {/* ── 6. Indicators ─────────────────────────────────────────────────── */}
+        <Section title="6 · Indicators" hint="Customize the technical indicators computed each tick. Leave at defaults unless you have a specific strategy requirement.">
+          <IndicatorConfigEditor value={indicatorConfig} onChange={setIndicatorConfig} />
+        </Section>
+
+        {/* ── 7. Candles ────────────────────────────────────────────────────── */}
+        <Section title="7 · Candle Data" hint="Select which timeframes to fetch and how many bars per timeframe. Fewer timeframes reduce latency; more bars provide deeper history.">
+          <CandleConfigEditor value={candleConfig} onChange={setCandleConfig} />
+        </Section>
+
+        {/* ── 8. Market Context ─────────────────────────────────────────────── */}
+        <Section title="8 · Market Context" hint="Toggle enrichment data sources injected into each tick. Disable sources you don't need to reduce noise or API usage.">
+          <ContextConfigEditor value={contextConfig} onChange={setContextConfig} market={market} />
         </Section>
 
         {/* ── Submit ───────────────────────────────────────────────────────── */}

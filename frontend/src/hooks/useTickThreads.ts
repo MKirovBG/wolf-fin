@@ -9,7 +9,8 @@ export interface TickThread {
   status: 'running' | 'complete' | 'error' | 'skipped' | 'session_event'
   tickNumber: number
   iterationCount: number
-  decision?: string
+  decision?: string      // canonical label: BUY / SELL / HOLD / CLOSE / CANCEL / ...
+  decisionRaw?: string   // full original message for the Decision & Reason section
   reason?: string
   logs: LogEntry[]
   thinkingLogs: LogEntry[]
@@ -19,12 +20,37 @@ export interface TickThread {
   mcLogs: LogEntry[]   // Monte Carlo result entries
 }
 
-function parseDecisionLog(message: string): { decision?: string; reason?: string } {
+/** Map any LLM decision message to a canonical uppercase label.
+ *  Scans the full message for known keywords rather than only the first word,
+ *  so phrases like "Both setups fail..." still resolve to HOLD. */
+function canonicaliseDecision(raw: string): string {
+  const u = raw.toUpperCase()
+  // Check for known action keywords anywhere near the start (first 40 chars)
+  const head = u.slice(0, 40)
+  if (head.includes('BUY'))            return 'BUY'
+  if (head.includes('SELL'))           return 'SELL'
+  if (head.includes('CLOSE'))          return 'CLOSE'
+  if (head.includes('CANCEL'))         return 'CANCEL'
+  if (head.includes('EMERGENCY'))      return 'EMERGENCY'
+  if (head.includes('EXTERNAL_CLOSE')) return 'EXTERNAL_CLOSE'
+  if (head.includes('HOLD'))           return 'HOLD'
+  if (head.includes('WAIT'))           return 'HOLD'
+  // Full message scan as last resort
+  if (u.includes('BUY'))    return 'BUY'
+  if (u.includes('SELL'))   return 'SELL'
+  if (u.includes('CLOSE'))  return 'CLOSE'
+  if (u.includes('CANCEL')) return 'CANCEL'
+  // Default — agent decided not to trade
+  return 'HOLD'
+}
+
+function parseDecisionLog(message: string): { decision?: string; decisionRaw?: string; reason?: string } {
   const body = message.replace(/^DECISION:\s*/i, '').trim()
   if (!body) return {}
-  const decision = body.match(/^([A-Z_]+)/)?.[1]
-  const reason   = body.match(/[—–]\s*(.+)$/s)?.[1]?.trim()
-  return { decision, reason }
+  const decision    = canonicaliseDecision(body)
+  const decisionRaw = message   // keep the full original for display
+  const reason      = body.match(/[—–]\s*(.+)$/s)?.[1]?.trim()
+  return { decision, decisionRaw, reason }
 }
 
 function extractTickNumber(message: string): number {
@@ -114,6 +140,7 @@ export function useTickThreads(logs: LogEntry[], agentKey?: string, agentKeys?: 
             tickNumber: extractTickNumber(startLog!.message),
             iterationCount: countToolIterations(threadLogs),
             decision: parsed.decision,
+            decisionRaw: parsed.decisionRaw,
             reason: parsed.reason,
             logs: threadLogs,
             thinkingLogs, toolLogs, decisionLogs, errorLogs, mcLogs,
@@ -144,6 +171,7 @@ export function useTickThreads(logs: LogEntry[], agentKey?: string, agentKeys?: 
         tickNumber: extractTickNumber(startLog.message),
         iterationCount: countToolIterations(current),
         decision: parsed.decision,
+        decisionRaw: parsed.decisionRaw,
         reason: parsed.reason,
         logs: current,
         thinkingLogs, toolLogs, decisionLogs, errorLogs, mcLogs,

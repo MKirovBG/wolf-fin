@@ -1,4 +1,4 @@
-import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, CycleDetail, LogEntry, PositionEntry, FillEntry, AccountEntry, Mt5AccountInfo, OpenRouterModel, OllamaModel, StrategyDoc, AgentMemory, AgentPlan, AgentStats, SelectedAccount } from '../types/index.ts'
+import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, CycleDetail, LogEntry, PositionEntry, FillEntry, AccountEntry, Mt5AccountInfo, OpenRouterModel, OllamaModel, StrategyDoc, AgentMemory, AgentPlan, AgentStats, SelectedAccount, PlatformLLMConfig, AnthropicModel, AgentAnalysisResult, MCResultData } from '../types/index.ts'
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, options)
@@ -40,15 +40,134 @@ export const pauseAgent = (key: string) =>
 export const stopAgent = (key: string) =>
   api<{ ok: boolean }>(`/api/agents/${encodeURIComponent(key)}/stop`, { method: 'POST' })
 
-export const triggerAgent = (key: string) =>
-  api<{ ok: boolean }>(`/api/agents/${encodeURIComponent(key)}/trigger`, { method: 'POST' })
+export const triggerAgent = (key: string, instructions?: string) =>
+  api<{ ok: boolean }>(`/api/agents/${encodeURIComponent(key)}/trigger`, {
+    method: 'POST',
+    ...json({ instructions }),
+  })
 
 export const resetAgentData = (key: string) =>
   api<{ ok: boolean; deleted: Record<string, number> }>(`/api/agents/${encodeURIComponent(key)}/reset`, { method: 'POST' })
 
+export const getLatestMC = (key: string) =>
+  api<{ ok: boolean; mc: MCResultData | null; time?: string }>(`/api/agent-mc?key=${encodeURIComponent(key)}`)
+
+export const getPromptAnalysis = (key: string) =>
+  api<{ ok: boolean; analysis: AgentAnalysisResult['analysis'] | null; meta?: AgentAnalysisResult['meta']; createdAt?: string }>(
+    `/api/agent-analyze?key=${encodeURIComponent(key)}`
+  )
+
+export const analyzeAgent = (key: string) =>
+  api<AgentAnalysisResult>('/api/agent-analyze', { method: 'POST', ...json({ key }) })
+
+export interface BacktestParams {
+  key:               string
+  timeframe?:        'M1' | 'M5' | 'M15' | 'M30' | 'H1' | 'H4' | 'D1'
+  bars?:             number
+  slMult?:           number
+  tpMult?:           number
+  maxHoldBars?:      number
+  rsiOversold?:      number
+  rsiOverbought?:    number
+  requireEmaConfirm?: boolean
+  rsiPeriod?:        number
+  emaFast?:          number
+  emaSlow?:          number
+  atrPeriod?:        number
+  startingEquityUsd?: number
+  maxRiskPercent?:   number
+}
+
+export interface BacktestTradeResult {
+  barIndex:   number
+  openTime:   string
+  closeTime:  string
+  direction:  'LONG' | 'SHORT'
+  entry:      number
+  exit:       number
+  sl:         number
+  tp:         number
+  exitReason: 'TP' | 'SL' | 'MAX_HOLD'
+  pnlUsd:     number
+  lots:       number
+  rsiAtEntry: number
+  atrAtEntry: number
+  barsHeld:   number
+}
+
+export interface BacktestStats {
+  totalTrades:      number
+  wins:             number
+  losses:           number
+  winRate:          number | null
+  totalPnl:         number
+  maxDrawdown:      number
+  maxDrawdownPct:   number
+  sharpe:           number | null
+  profitFactor:     number | null
+  avgWin:           number | null
+  avgLoss:          number | null
+  riskReward:       number | null
+  maxConsecWins:    number
+  maxConsecLosses:  number
+  avgBarsHeld:      number
+  expectancy:       number
+}
+
+export interface BacktestResponse {
+  ok:            boolean
+  timeframe:     string
+  barsRequested: number
+  result: {
+    trades:      BacktestTradeResult[]
+    equityCurve: Array<{ time: string; equity: number; cumPnl: number }>
+    stats:       BacktestStats
+    barsTotal:   number
+    warmupBars:  number
+    ranAt:       number
+    config:      Record<string, unknown>
+  }
+}
+
+export const runBacktest = (params: BacktestParams) =>
+  api<BacktestResponse>('/api/agent-backtest', { method: 'POST', ...json(params) })
+
+// ── Backtest AI Report ────────────────────────────────────────────────────────
+
+export interface BacktestReport {
+  verdict: {
+    rating:  'STRONG' | 'VIABLE' | 'MARGINAL' | 'AVOID'
+    summary: string
+  }
+  performance:   { headline: string; detail: string }
+  risk:          { headline: string; detail: string }
+  signals:       { headline: string; detail: string }
+  tradePatterns: { headline: string; detail: string }
+  optimizations: string[]
+}
+
+export interface BacktestReportResponse {
+  ok:       boolean
+  report:   BacktestReport
+  model:    string
+  provider: string
+}
+
+export const generateBacktestReport = (payload: {
+  key:           string
+  timeframe:     string
+  barsRequested: number
+  result:        BacktestResponse['result']
+}) => api<BacktestReportResponse>('/api/agent-backtest-report', { method: 'POST', ...json(payload) })
+
 // ── Market Data (read-only) ───────────────────────────────────────────────────
 export const getMarketData = (market: string, symbol: string) =>
   api<MarketSnapshot>(`/api/market/${market}/${encodeURIComponent(symbol)}`)
+
+// ── Platform LLM ─────────────────────────────────────────────────────────────
+export const getPlatformLLM = () => api<PlatformLLMConfig>('/api/platform-llm')
+export const setPlatformLLM = (config: PlatformLLMConfig) =>
+  api<{ ok: boolean }>('/api/platform-llm', { method: 'POST', ...json(config) })
 
 // ── Keys ─────────────────────────────────────────────────────────────────────
 export const getKeys = () => api<KeysResponse>('/api/keys')
@@ -96,6 +215,7 @@ export const setSelectedAccount = (account: SelectedAccount | null) =>
 // ── Accounts ─────────────────────────────────────────────────────────────────
 export const getAccounts = () => api<AccountEntry[]>('/api/accounts')
 export const getMt5Accounts = () => api<Mt5AccountInfo[]>('/api/mt5-accounts')
+export const getAnthropicModels = () => api<AnthropicModel[]>('/api/anthropic/models')
 export const getOpenRouterModels = () => api<OpenRouterModel[]>('/api/openrouter/models')
 export const getOllamaModels = () => api<OllamaModel[]>('/api/ollama/models')
 export const searchSymbols = (market: string, search: string, accountId?: number) => {

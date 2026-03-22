@@ -7,7 +7,7 @@ import { dirname, join } from 'path'
 import { existsSync, appendFileSync, readFileSync, writeFileSync } from 'fs'
 import pino from 'pino'
 import { getState, getAgent, upsertAgent, removeAgent, setAgentStatus, getLogs, subscribeToLogs, subscribeToAgentStatus } from './state.js'
-import { dbGetCycleResults, dbGetCycleResultsForAgent, dbGetCycleById, dbGetLogsForCycle, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor, makeAgentKey, dbGetStrategy, dbSaveStrategy, dbDeleteStrategy, dbGetMemories, dbClearMemories, dbDeleteMemory, dbGetActivePlan, dbGetAllPlans, dbResetAgentData, dbGetSelectedAccount, dbSetSelectedAccount } from '../db/index.js'
+import { dbGetCycleResults, dbGetCycleResultsForAgent, dbGetCycleById, dbGetLogsForCycle, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor, makeAgentKey, dbGetStrategy, dbSaveStrategy, dbDeleteStrategy, dbGetMemories, dbClearMemories, dbDeleteMemory, dbGetActivePlan, dbGetAllPlans, dbResetAgentData, dbGetSelectedAccount, dbSetSelectedAccount, dbSavePromptAnalysis, dbGetPromptAnalysis, dbGetLatestMCResult, dbSaveBacktestResult, dbUpdateBacktestReport, dbGetBacktestResult } from '../db/index.js'
 import type { SelectedAccount } from '../db/index.js'
 import { getRiskState } from '../guardrails/riskState.js'
 import { getRiskStateFor } from '../guardrails/riskStateStore.js'
@@ -15,6 +15,10 @@ import { startAgentSchedule, pauseAgentSchedule, stopAgentSchedule } from '../sc
 import { runAgentTick } from '../agent/index.js'
 import { getAdapter } from '../adapters/registry.js'
 import { binanceAdapter } from '../adapters/binance.js'
+import { mt5Adapter, MT5Adapter } from '../adapters/mt5.js'
+import { runBacktest } from '../adapters/backtest.js'
+import type { BacktestConfig } from '../adapters/backtest.js'
+import { BACKTEST_DEFAULTS } from '../adapters/backtest.js'
 import type { AgentConfig, AgentState } from '../types.js'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
@@ -29,6 +33,7 @@ const ENV_KEYS = [
   'BINANCE_API_KEY', 'BINANCE_API_SECRET',
   'FINNHUB_KEY', 'TWELVE_DATA_KEY', 'COINGECKO_KEY',
   'OLLAMA_URL',
+  'PLATFORM_LLM_PROVIDER', 'PLATFORM_LLM_MODEL',
 ] as const
 
 function envPresent(key: string): boolean {
@@ -252,7 +257,8 @@ export async function startServer(): Promise<void> {
     const { key } = req.params as { key: string }
     const agent = getAgent(key)
     if (!agent) return { ok: false, message: 'Agent not found' }
-    runAgentTick(agent.config).catch(err => log.error({ err, key }, 'manual trigger error'))
+    const { instructions } = (req.body ?? {}) as { instructions?: string }
+    runAgentTick(agent.config, 'trading', instructions).catch(err => log.error({ err, key }, 'manual trigger error'))
     return { ok: true }
   })
 
@@ -372,6 +378,23 @@ export async function startServer(): Promise<void> {
   app.post('/api/keys/test/:service', async (req) => {
     const { service } = req.params as { service: string }
     return testConnection(service)
+  })
+
+  // ── Platform LLM config ─────────────────────────────────────────────────────
+  app.get('/api/platform-llm', async () => {
+    return {
+      provider: (process.env.PLATFORM_LLM_PROVIDER || 'anthropic') as 'anthropic' | 'openrouter' | 'ollama',
+      model: process.env.PLATFORM_LLM_MODEL || '',
+    }
+  })
+
+  app.post('/api/platform-llm', async (req) => {
+    const { provider, model } = req.body as { provider: string; model: string }
+    const validProviders = ['anthropic', 'openrouter', 'ollama']
+    if (!validProviders.includes(provider)) return { ok: false, message: 'Invalid provider' }
+    persistEnvKey('PLATFORM_LLM_PROVIDER', provider)
+    persistEnvKey('PLATFORM_LLM_MODEL', model ?? '')
+    return { ok: true }
   })
 
   // ── Reports ─────────────────────────────────────────────────────────────────
@@ -558,6 +581,21 @@ export async function startServer(): Promise<void> {
     }
 
     return reply.send([])
+  })
+
+  // ── Anthropic models ──────────────────────────────────────────────────────
+  app.get('/api/anthropic/models', async (_req, reply) => {
+    const key = process.env.ANTHROPIC_API_KEY
+    if (!key) return reply.status(400).send({ error: 'ANTHROPIC_API_KEY not set' })
+    const res = await fetch('https://api.anthropic.com/v1/models', {
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+    })
+    if (!res.ok) return reply.status(502).send({ error: `Anthropic HTTP ${res.status}` })
+    const data = await res.json() as { data: Array<{ id: string; display_name: string }> }
+    const models = data.data
+      .map(m => ({ id: m.id, name: m.display_name || m.id }))
+      .sort((a, b) => b.id.localeCompare(a.id))
+    return reply.send(models)
   })
 
   // ── OpenRouter models ─────────────────────────────────────────────────────
@@ -798,6 +836,368 @@ export async function startServer(): Promise<void> {
     // Agent is idle — run immediately
     runAgentTick(agent.config, 'planning').catch(err => log.error({ err, key }, 'planning cycle error'))
     return reply.send({ ok: true, message: 'Planning cycle triggered' })
+  })
+
+  // ── Agent Monte Carlo (latest tick result) ───────────────────────────────────
+  // Key is in query param to avoid %2F-in-path routing issues.
+  app.get('/api/agent-mc', async (req, reply) => {
+    const { key } = req.query as { key?: string }
+    if (!key) return reply.status(400).send({ error: 'key required' })
+    const result = dbGetLatestMCResult(key)
+    if (!result) return reply.send({ ok: false, mc: null })
+    return reply.send({ ok: true, mc: result.mc, time: result.time })
+  })
+
+  // ── Agent Prompt Analysis (Platform LLM) ─────────────────────────────────────
+  // Key is in the body/query, not the URL path, to avoid %2F routing issues
+  // with agent keys that contain slashes (e.g. "crypto:BTC/USDT").
+
+  app.get('/api/agent-analyze', async (req, reply) => {
+    const { key } = req.query as { key?: string }
+    if (!key) return reply.status(400).send({ error: 'key required' })
+    const saved = dbGetPromptAnalysis(key)
+    if (!saved) return reply.send({ ok: false, analysis: null })
+    return reply.send({ ok: true, ...saved })
+  })
+
+  app.post('/api/agent-analyze', async (req, reply) => {
+    const { key } = req.body as { key: string }
+    const agent = getAgent(key)
+    if (!agent) return reply.status(404).send({ error: 'Agent not found' })
+
+    try {
+      const { getPlatformLLMProvider, getPlatformLLMModel } = await import('../llm/index.js')
+      const { buildSystemPrompt } = await import('../agent/index.js')
+
+      const provider = getPlatformLLMProvider()
+      const model = getPlatformLLMModel()
+      const systemPrompt = buildSystemPrompt(agent.config, key)
+
+      const strategy = dbGetStrategy(key)
+      const memories = dbGetMemories(key, undefined, 20)
+      const plan = dbGetActivePlan(key)
+
+      const configSummary = [
+        `Symbol: ${agent.config.symbol} (${agent.config.market.toUpperCase()})`,
+        `Fetch Mode: ${agent.config.fetchMode}`,
+        agent.config.leverage ? `Leverage: ${agent.config.leverage}x` : null,
+        agent.config.dailyTargetUsd ? `Daily Target: $${agent.config.dailyTargetUsd}` : null,
+        agent.config.maxRiskPercent ? `Max Risk/Trade: ${agent.config.maxRiskPercent}%` : null,
+        agent.config.maxDailyLossUsd ? `Max Daily Loss: $${agent.config.maxDailyLossUsd}` : null,
+        agent.config.maxDrawdownPercent ? `Max Drawdown: ${agent.config.maxDrawdownPercent}%` : null,
+        agent.config.llmProvider ? `Agent LLM: ${agent.config.llmProvider}` : null,
+      ].filter(Boolean).join('\n')
+
+      const memorySummary = memories.length > 0
+        ? memories.map(m => `[${m.category}] ${m.content}`).join('\n')
+        : 'No memories yet'
+
+      const analysisPrompt = `You are analyzing a Wolf-Fin AI trading agent. Provide a thorough, plain-English analysis that helps the user understand exactly how this agent will behave — what it trades, how it decides, what protects it, and what to expect.
+
+AGENT CONFIGURATION:
+${configSummary}
+
+COMPILED SYSTEM PROMPT:
+${systemPrompt.slice(0, 6000)}
+
+STRATEGY DOCUMENT:
+${strategy?.content?.slice(0, 2000) ?? 'Not configured'}
+
+PERSISTENT MEMORIES (${memories.length}):
+${memorySummary}
+
+ACTIVE PLAN:
+${plan?.content?.slice(0, 1000) ?? 'No active plan'}
+
+Return ONLY valid JSON in exactly this shape — no markdown, no explanation:
+{
+  "headline": "One clear sentence describing what this agent does and its goal",
+  "sections": [
+    {
+      "title": "Trading Objective",
+      "icon": "🎯",
+      "content": "2-4 sentences. What market, what the agent is trying to achieve, its style (scalping/swing/trend etc)"
+    },
+    {
+      "title": "How Decisions Are Made",
+      "icon": "🧠",
+      "content": "2-4 sentences. How the AI reads the market, what signals it looks for, how it decides LONG/SHORT/HOLD/CLOSE"
+    },
+    {
+      "title": "Risk Controls",
+      "icon": "🛡️",
+      "content": "2-4 sentences. Stop loss strategy, take profit, position sizing, daily loss limits, drawdown protection"
+    },
+    {
+      "title": "Market Context & Signals",
+      "icon": "📡",
+      "content": "2-4 sentences. What data feeds, indicators, news, or macro context the agent uses"
+    },
+    {
+      "title": "Memory & Adaptation",
+      "icon": "💾",
+      "content": "2-4 sentences. How the agent learns from past decisions, uses persistent memory and session plans"
+    },
+    {
+      "title": "Trade Execution",
+      "icon": "⚡",
+      "content": "2-4 sentences. How orders are placed, what tools are used, how positions are managed after entry"
+    }
+  ]
+}`
+
+      const response = await provider.createMessage({
+        model,
+        max_tokens: 2048,
+        system: 'You are a trading system analyst. Return only valid JSON.',
+        tools: [],
+        messages: [{ role: 'user', content: analysisPrompt }],
+      })
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const text = (response.content as any[])
+        .filter((b: any) => b.type === 'text')
+        .map((b: any) => b.text as string).join('')
+
+      // Strip markdown fences if present
+      const clean = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim()
+      const analysis = JSON.parse(clean)
+
+      const meta = { provider: process.env.PLATFORM_LLM_PROVIDER || 'anthropic', model }
+      dbSavePromptAnalysis(key, analysis, meta)
+
+      return reply.send({ ok: true, analysis, meta })
+    } catch (err) {
+      log.error({ err, key }, 'agent analyze error')
+      return reply.status(500).send({ error: String(err) })
+    }
+  })
+
+  // ── Backtesting (MT5 only) ────────────────────────────────────────────────────
+  // Key in query param (GET) or body (POST) to avoid %2F path-segment issues.
+
+  // Load the last saved backtest result + AI report for an agent.
+  app.get('/api/agent-backtest-result', async (req, reply) => {
+    const { key } = req.query as { key?: string }
+    if (!key) return reply.status(400).send({ error: 'key required' })
+    const saved = dbGetBacktestResult(key)
+    if (!saved) return reply.send({ ok: false, saved: null })
+    return reply.send({ ok: true, saved })
+  })
+
+  app.post('/api/agent-backtest', async (req, reply) => {
+    const {
+      key,
+      timeframe = 'H1',
+      bars      = 2000,
+      slMult, tpMult, maxHoldBars,
+      rsiOversold, rsiOverbought,
+      requireEmaConfirm,
+      rsiPeriod, emaFast, emaSlow, atrPeriod,
+      startingEquityUsd, maxRiskPercent,
+    } = req.body as {
+      key: string
+      timeframe?: string
+      bars?: number
+      slMult?: number
+      tpMult?: number
+      maxHoldBars?: number
+      rsiOversold?: number
+      rsiOverbought?: number
+      requireEmaConfirm?: boolean
+      rsiPeriod?: number
+      emaFast?: number
+      emaSlow?: number
+      atrPeriod?: number
+      startingEquityUsd?: number
+      maxRiskPercent?: number
+    }
+
+    if (!key) return reply.status(400).send({ error: 'key required' })
+
+    const agent = getAgent(key)
+    if (!agent) return reply.status(404).send({ error: 'Agent not found' })
+    if (agent.config.market !== 'mt5') {
+      return reply.status(400).send({ error: 'Backtesting is only available for MT5 agents.' })
+    }
+
+    try {
+      // Fetch historical candles from MT5 bridge — use the agent's account if configured
+      const tf = (timeframe as string).toUpperCase() as 'M1' | 'M5' | 'M15' | 'M30' | 'H1' | 'H4' | 'D1'
+      const candleCount = Math.min(Math.max(bars ?? 2000, 100), 10_000)
+      const adapter = new MT5Adapter(agent.config.mt5AccountId)
+      const [candles, symbolInfo] = await Promise.all([
+        adapter.getHistoricalCandles(agent.config.symbol, tf, candleCount),
+        adapter.getSymbolInfo(agent.config.symbol).catch(() => ({ pipSize: 1, pipValue: 1, point: 0.00001 })),
+      ])
+
+      if (candles.length < 60) {
+        return reply.status(422).send({ error: `Not enough historical data — only ${candles.length} bars returned. Try a higher timeframe.` })
+      }
+
+      const cfg: BacktestConfig = {
+        ...BACKTEST_DEFAULTS,
+        slMult:            slMult            ?? BACKTEST_DEFAULTS.slMult,
+        tpMult:            tpMult            ?? BACKTEST_DEFAULTS.tpMult,
+        maxHoldBars:       maxHoldBars       ?? BACKTEST_DEFAULTS.maxHoldBars,
+        rsiOversold:       rsiOversold       ?? BACKTEST_DEFAULTS.rsiOversold,
+        rsiOverbought:     rsiOverbought     ?? BACKTEST_DEFAULTS.rsiOverbought,
+        requireEmaConfirm: requireEmaConfirm ?? BACKTEST_DEFAULTS.requireEmaConfirm,
+        rsiPeriod:         rsiPeriod         ?? BACKTEST_DEFAULTS.rsiPeriod,
+        emaFast:           emaFast           ?? BACKTEST_DEFAULTS.emaFast,
+        emaSlow:           emaSlow           ?? BACKTEST_DEFAULTS.emaSlow,
+        atrPeriod:         atrPeriod         ?? BACKTEST_DEFAULTS.atrPeriod,
+        startingEquityUsd: startingEquityUsd ?? BACKTEST_DEFAULTS.startingEquityUsd,
+        maxRiskPercent:    maxRiskPercent    ?? (agent.config.maxRiskPercent ?? BACKTEST_DEFAULTS.maxRiskPercent),
+        pipSize:           symbolInfo.pipSize,
+        pipValue:          symbolInfo.pipValue,
+      }
+
+      const result = runBacktest(candles, cfg)
+
+      // Persist — report is saved separately once the LLM finishes
+      dbSaveBacktestResult(key, { result, timeframe: tf, barsRequested: candleCount })
+
+      return reply.send({ ok: true, result, timeframe: tf, barsRequested: candleCount })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      log.error({ err: msg }, 'backtest failed')
+      return reply.status(500).send({ error: `Backtest failed: ${msg}` })
+    }
+  })
+
+  // ── Backtest AI Report (Platform LLM) ────────────────────────────────────────
+  // Generates a detailed LLM-written analysis of a completed backtest run.
+  // The full BacktestResult + config is sent as context; LLM returns JSON.
+  app.post('/api/agent-backtest-report', async (req, reply) => {
+    const { key, timeframe, barsRequested, result } = req.body as {
+      key: string
+      timeframe: string
+      barsRequested: number
+      result: import('../adapters/backtest.js').BacktestResult
+    }
+    if (!key || !result) return reply.status(400).send({ error: 'key and result required' })
+
+    const agent = getAgent(key)
+    if (!agent) return reply.status(404).send({ error: 'Agent not found' })
+
+    try {
+      const { getPlatformLLMProvider, getPlatformLLMModel } = await import('../llm/index.js')
+      const provider = getPlatformLLMProvider()
+      const model    = getPlatformLLMModel()
+
+      const { stats, config, trades, barsTotal, warmupBars } = result
+      const activeTrades = barsTotal - warmupBars
+      const coveragePct  = barsTotal > 0 ? ((activeTrades / barsTotal) * 100).toFixed(1) : '—'
+      const tradingPeriodBars = `${barsTotal} bars (${warmupBars} warmup, ${activeTrades} active)`
+
+      // Sample a few best/worst trades for context
+      const sorted    = [...trades].sort((a, b) => b.pnlUsd - a.pnlUsd)
+      const bestTrades  = sorted.slice(0, 3).map(t => `${t.direction} ${t.openTime.slice(0,10)} → ${t.exitReason} P&L $${t.pnlUsd.toFixed(2)} (held ${t.barsHeld} bars)`)
+      const worstTrades = sorted.slice(-3).reverse().map(t => `${t.direction} ${t.openTime.slice(0,10)} → ${t.exitReason} P&L $${t.pnlUsd.toFixed(2)} (held ${t.barsHeld} bars)`)
+
+      const reportPrompt = `You are an expert quantitative trading analyst. Analyse the following backtesting results for a rule-based trading agent and return a detailed report.
+
+AGENT: ${key}
+SYMBOL: ${agent.config.symbol} (${agent.config.market.toUpperCase()})
+TIMEFRAME: ${timeframe}   BARS REQUESTED: ${barsRequested}   BARS PROCESSED: ${tradingPeriodBars}
+
+─── BACKTEST CONFIGURATION ───────────────────────────────────────────────────
+SL Multiplier (× ATR14): ${config.slMult}
+TP Multiplier (× ATR14): ${config.tpMult}
+Max Hold (bars):         ${config.maxHoldBars}
+RSI Oversold threshold:  ${config.rsiOversold}   (long entries below this)
+RSI Overbought threshold:${config.rsiOverbought}  (short entries above this)
+EMA20 > EMA50 required:  ${config.requireEmaConfirm}
+Starting Equity:         $${config.startingEquityUsd}
+Max Risk per Trade:       ${config.maxRiskPercent}%
+
+─── PERFORMANCE STATISTICS ───────────────────────────────────────────────────
+Total Trades:      ${stats.totalTrades}
+Win Rate:          ${stats.winRate != null ? (stats.winRate * 100).toFixed(1) + '%' : '—'}  (${stats.wins}W / ${stats.losses}L)
+Total P&L:         $${stats.totalPnl.toFixed(2)}
+Profit Factor:     ${stats.profitFactor != null ? stats.profitFactor.toFixed(2) : '—'}
+Sharpe Ratio:      ${stats.sharpe != null ? stats.sharpe.toFixed(2) : '—'}
+Max Drawdown:      $${stats.maxDrawdown.toFixed(2)} (${stats.maxDrawdownPct.toFixed(1)}%)
+Avg Win:           ${stats.avgWin != null ? '$' + stats.avgWin.toFixed(2) : '—'}
+Avg Loss:          ${stats.avgLoss != null ? '$' + stats.avgLoss.toFixed(2) : '—'}
+Risk / Reward:     ${stats.riskReward != null ? stats.riskReward.toFixed(2) : '—'}
+Expectancy/trade:  $${stats.expectancy.toFixed(2)}
+Avg Hold (bars):   ${stats.avgBarsHeld.toFixed(1)}
+Max Consec Wins:   ${stats.maxConsecWins}
+Max Consec Losses: ${stats.maxConsecLosses}
+
+─── BEST 3 TRADES ────────────────────────────────────────────────────────────
+${bestTrades.join('\n') || 'No trades'}
+
+─── WORST 3 TRADES ───────────────────────────────────────────────────────────
+${worstTrades.join('\n') || 'No trades'}
+
+Provide a comprehensive, expert-level analysis. Be direct, specific, and quantitative — reference the exact numbers above. Do not be generic.
+
+Return ONLY valid JSON — no markdown fences, no explanation outside the JSON — in this exact shape:
+{
+  "verdict": {
+    "rating": "STRONG" | "VIABLE" | "MARGINAL" | "AVOID",
+    "summary": "2-3 sentence overall verdict on whether this strategy is deployable."
+  },
+  "performance": {
+    "headline": "One sentence framing the performance results.",
+    "detail": "3-5 sentences analysing win rate, profit factor, Sharpe, P&L and expectancy. Explain what they mean in practice."
+  },
+  "risk": {
+    "headline": "One sentence framing the risk profile.",
+    "detail": "3-5 sentences on max drawdown, consecutive losses, risk/reward geometry, and position sizing suitability."
+  },
+  "signals": {
+    "headline": "One sentence on signal quality.",
+    "detail": "3-5 sentences on how well the RSI + EMA thresholds are working, trade frequency, avg hold time, and whether EMA confirmation is helping or over-filtering."
+  },
+  "optimizations": [
+    "Specific, actionable suggestion 1 (e.g. 'Raise RSI oversold from 35 to 28 — current threshold triggers too early in trending moves')",
+    "Specific, actionable suggestion 2",
+    "Specific, actionable suggestion 3",
+    "Specific, actionable suggestion 4"
+  ],
+  "tradePatterns": {
+    "headline": "One sentence on observed trade patterns.",
+    "detail": "2-4 sentences on best/worst trades, exit reason distribution, any directional bias (long vs short), and hold-time observations."
+  }
+}`
+
+      const response = await provider.createMessage({
+        model,
+        max_tokens: 8192,
+        system: 'You are an expert quantitative trading analyst. Return only valid JSON.',
+        tools: [],
+        messages: [{ role: 'user', content: reportPrompt }],
+      })
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const raw = (response.content as any[])
+        .filter((b: any) => b.type === 'text')
+        .map((b: any) => b.text as string).join('')
+
+      // Strip markdown fences then extract the outermost {...} block — guards
+      // against the LLM prefixing/suffixing prose or truncating mid-JSON.
+      const stripped = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim()
+      const start    = stripped.indexOf('{')
+      const end      = stripped.lastIndexOf('}')
+      if (start === -1 || end === -1 || end <= start) {
+        log.error({ raw: stripped.slice(0, 300) }, 'backtest report: no JSON object found in LLM response')
+        throw new Error('LLM did not return a valid JSON object. Try again.')
+      }
+      const report = JSON.parse(stripped.slice(start, end + 1))
+
+      // Persist the report alongside the backtest result
+      dbUpdateBacktestReport(key, report, model)
+
+      return reply.send({ ok: true, report, model, provider: process.env.PLATFORM_LLM_PROVIDER || 'anthropic' })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      log.error({ err: msg }, 'backtest report failed')
+      return reply.status(500).send({ error: `Report generation failed: ${msg}` })
+    }
   })
 
   // ── Serve React frontend ─────────────────────────────────────────────────────

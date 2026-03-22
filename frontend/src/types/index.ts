@@ -1,3 +1,127 @@
+// ── Monte Carlo Enhancement toggles (mirrored from mc-types.ts) ──────────────
+
+export interface MCEnhancements {
+  markov:     boolean  // Markov chain regime state machine
+  agentBased: boolean  // Crowd positioning, stop clusters, liquidity zones
+  scenarios:  boolean  // Stress-test under volatility regimes
+  bayesian:   boolean  // Strategy confidence from trade history
+  kelly:      boolean  // Optimal position sizing via Kelly Criterion
+}
+
+export const MC_ENHANCEMENT_DEFAULTS: MCEnhancements = {
+  markov:     false,
+  agentBased: false,
+  scenarios:  false,
+  bayesian:   false,
+  kelly:      false,
+}
+
+export const MC_ENHANCEMENT_LABELS: Record<keyof MCEnhancements, { label: string; description: string }> = {
+  markov:     { label: 'Markov Regime',      description: 'Detects market state (trending/ranging/volatile) and adjusts path probabilities accordingly.' },
+  agentBased: { label: 'Crowd Positioning',  description: 'Estimates where retail stops are clustered and which direction the crowd is leaning.' },
+  scenarios:  { label: 'Scenario Analysis',  description: 'Stress-tests the strategy under high volatility, low volatility, and pre-news conditions.' },
+  bayesian:   { label: 'Bayesian Confidence', description: 'Updates strategy confidence after every trade using a statistical learning model.' },
+  kelly:      { label: 'Kelly Criterion',     description: 'Computes the mathematically optimal position size given your historical edge.' },
+}
+
+export interface MCActionResult {
+  winRate: number
+  ev: number
+  p10: number
+  p50: number
+  p90: number
+  slHitPct: number
+  medianBarsToClose: number
+}
+
+export interface MCResultData {
+  long: MCActionResult
+  short: MCActionResult
+  recommended: 'LONG' | 'SHORT' | 'HOLD'
+  edgeDelta: number
+  pathCount: number
+  barsForward: number
+  generatedAt?: number
+
+  // Enhanced MC fields (present when layers are enabled)
+  consensus?: {
+    signal:     'STRONG_LONG' | 'LEAN_LONG' | 'NEUTRAL' | 'LEAN_SHORT' | 'STRONG_SHORT' | 'AVOID'
+    confidence: 'LOW' | 'MEDIUM' | 'HIGH' | 'VERY_HIGH'
+    summary:    string
+  }
+  markov?: {
+    currentState:     'TRENDING_UP' | 'TRENDING_DOWN' | 'RANGING' | 'VOLATILE'
+    regimeBias:       number
+    volatilityScalar: number
+    nextStateProbs:   { TRENDING_UP: number; TRENDING_DOWN: number; RANGING: number; VOLATILE: number }
+  }
+  agentBased?: {
+    crowdBias:        number
+    crowdBiasLabel:   string
+    contrarianSignal: 'FADE_LONGS' | 'FADE_SHORTS' | 'NO_SIGNAL'
+    sentimentSource:  string
+  }
+  scenarios?: {
+    currentRegime: string
+    avoidTrading:  boolean
+    avoidReason:   string | null
+    worstCase:     { label: string; recommended: string; longEv: number; shortEv: number }
+  }
+  bayesian?: {
+    posteriorMean:        number
+    credibleIntervalLow:  number
+    credibleIntervalHigh: number
+    confidence:           'LOW' | 'MEDIUM' | 'HIGH' | 'VERY_HIGH'
+    regimeShiftDetected:  boolean
+    regimeShiftReason:    string | null
+    totalTrades:          number
+  }
+  significance?: {
+    observedWinRate: number
+    wilsonLow:       number
+    wilsonHigh:      number
+    edgeLabel:       'CONFIRMED' | 'LIKELY' | 'UNCONFIRMED' | 'INSUFFICIENT_DATA'
+    pValue:          number
+    tradesNeeded:    number
+    sampleSize:      number
+  }
+  kelly?: {
+    recommendedKellyPct:  number
+    recommendedFraction:  string
+    riskAssessment:       'UNDER_BETTING' | 'OPTIMAL' | 'OVER_BETTING' | 'NO_EDGE'
+    riskAssessmentReason: string
+    configuredRiskPct:    number | null
+  }
+}
+
+export interface AnalysisSection {
+  title: string
+  icon: string
+  content: string
+}
+
+export interface AgentAnalysis {
+  headline: string
+  sections: AnalysisSection[]
+}
+
+export interface AgentAnalysisResult {
+  ok: boolean
+  analysis: AgentAnalysis
+  meta: { provider: string; model: string }
+  createdAt?: string
+}
+
+export interface AnthropicModel {
+  id: string
+  name: string
+}
+
+export interface PlatformLLMConfig {
+  provider: 'anthropic' | 'openrouter' | 'ollama'
+  model: string
+}
+
 export interface SelectedAccount {
   market: 'mt5' | 'crypto'
   accountId: string   // MT5 login as string, or 'binance' for crypto
@@ -12,12 +136,35 @@ export interface GuardrailsConfig {
   stopPipsRequired: boolean
 }
 
+export interface IndicatorConfig {
+  rsiPeriod?: number
+  emaFast?: number
+  emaSlow?: number
+  atrPeriod?: number
+  bbPeriod?: number
+  bbStdDev?: number
+  vwapEnabled?: boolean
+  mtfEnabled?: boolean
+}
+
+export interface CandleConfig {
+  timeframes?: Array<'m1' | 'm5' | 'm15' | 'm30' | 'h1' | 'h4'>
+  limit?: number
+}
+
+export interface ContextConfig {
+  fearGreed?: boolean
+  news?: boolean
+  cryptoMarket?: boolean
+  economicCalendar?: boolean
+  forexNews?: boolean
+}
+
 export interface AgentConfig {
   name?: string
   symbol: string
   market: 'crypto' | 'mt5'
   fetchMode: 'manual' | 'scheduled' | 'autonomous'
-  scheduleIntervalSeconds: number
   leverage?: number
   customPrompt?: string
   promptTemplate?: string
@@ -31,6 +178,10 @@ export interface AgentConfig {
   maxDrawdownPercent?: number
   scheduledStartUtc?: string
   scheduledEndUtc?: string
+  indicatorConfig?: IndicatorConfig
+  candleConfig?: CandleConfig
+  contextConfig?: ContextConfig
+  mcEnhancements?: MCEnhancements
 }
 
 export interface AgentStats {
@@ -182,6 +333,7 @@ export type LogEvent =
   | 'auto_execute' | 'auto_execute_error'
   | 'memory_write' | 'plan_created'
   | 'pnl_record'
+  | 'mc_result'
 
 export interface LogEntry {
   id: number

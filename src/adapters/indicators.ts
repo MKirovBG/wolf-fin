@@ -111,15 +111,23 @@ export function bbWidth(candles: Candle[], period = 20, stdDevMultiplier = 2): n
 // ── Bundle: compute all indicators from 1h candles (primary timeframe) ────────
 
 import type { Indicators, KeyLevel, TFIndicators, MTFIndicators } from './types.js'
+import type { IndicatorConfig } from '../types.js'
 
-export function computeIndicators(h1Candles: Candle[]): Indicators {
+export function computeIndicators(h1Candles: Candle[], cfg: IndicatorConfig = {}): Indicators {
+  const rsiPeriod = cfg.rsiPeriod ?? 14
+  const emaFast   = cfg.emaFast   ?? 20
+  const emaSlow   = cfg.emaSlow   ?? 50
+  const atrPeriod = cfg.atrPeriod ?? 14
+  const bbPeriod  = cfg.bbPeriod  ?? 20
+  const bbStd     = cfg.bbStdDev  ?? 2
+  const includeVwap = cfg.vwapEnabled !== false
   return {
-    rsi14: rsi(h1Candles, 14),
-    ema20: ema(h1Candles, 20),
-    ema50: ema(h1Candles, 50),
-    atr14: atr(h1Candles, 14),
-    vwap: vwap(h1Candles),
-    bbWidth: bbWidth(h1Candles, 20),
+    rsi14:   rsi(h1Candles, rsiPeriod),
+    ema20:   ema(h1Candles, emaFast),
+    ema50:   ema(h1Candles, emaSlow),
+    atr14:   atr(h1Candles, atrPeriod),
+    vwap:    includeVwap ? vwap(h1Candles) : 0,
+    bbWidth: bbWidth(h1Candles, bbPeriod, bbStd),
   }
 }
 
@@ -144,17 +152,20 @@ export function computeMultiTFIndicators(
   m15Candles: Candle[],
   h1Candles: Candle[],
   h4Candles: Candle[],
+  cfg: IndicatorConfig = {},
 ): MTFIndicators {
+  const emaFast = cfg.emaFast ?? 20
+  const emaSlow = cfg.emaSlow ?? 50
   const m15 = tfIndicators(m15Candles)
   const h4  = tfIndicators(h4Candles, true)
-  const h1Ema20 = ema(h1Candles, 20)
-  const h1Ema50 = ema(h1Candles, 50)
+  const h1Ema20 = ema(h1Candles, emaFast)
+  const h1Ema50 = ema(h1Candles, emaSlow)
 
   // Confluence: each timeframe contributes +1 (bullish) or -1 (bearish)
   let confluence = 0
 
-  // H1: EMA20 > EMA50 → bullish
-  if (h1Candles.length >= 50) {
+  // H1: EMA fast > EMA slow → bullish
+  if (h1Candles.length >= emaSlow) {
     confluence += h1Ema20 > h1Ema50 ? 1 : -1
   }
 

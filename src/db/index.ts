@@ -115,6 +115,18 @@ export function initDb(): void {
     );
   `)
 
+  // Migration: prompt analyses table
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS prompt_analyses (
+        agent_key  TEXT PRIMARY KEY,
+        analysis   TEXT NOT NULL,
+        meta       TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `)
+  } catch { /* already exists */ }
+
   // Migration: add pnl_usd column to existing databases
   try { db.exec('ALTER TABLE cycle_results ADD COLUMN pnl_usd REAL') } catch { /* column already exists */ }
 
@@ -136,6 +148,19 @@ export function initDb(): void {
         created_at   TEXT NOT NULL,
         updated_at   TEXT NOT NULL,
         PRIMARY KEY (agent_key, session_date)
+      )
+    `)
+  } catch { /* already exists */ }
+
+  // Backtest results — one saved run per agent, replaced on each new run
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_backtests (
+        agent_key   TEXT PRIMARY KEY,
+        result_json TEXT NOT NULL,
+        report_json TEXT,
+        model       TEXT,
+        ran_at      TEXT NOT NULL
       )
     `)
   } catch { /* already exists */ }
@@ -354,6 +379,21 @@ export function dbGetCycleResults(market?: string, limit = 500): Array<CycleResu
 export function dbGetCycleResultsForAgent(agentKey: string, limit = 100): Array<CycleResult & { id: number; agentKey: string }> {
   const rows = db.prepare('SELECT * FROM cycle_results WHERE agent_key = ? ORDER BY id DESC LIMIT ?').all(agentKey, limit) as CycleRow[]
   return rows.map(rowToCycle)
+}
+
+/** Returns closed trades for the given agent as TradeRecord[], for Bayesian + Kelly layers */
+export function dbGetTradeRecords(agentKey: string, limit = 200): Array<{ wonTrade: boolean; pnlUsd: number; closedAt: string }> {
+  const rows = db.prepare(
+    `SELECT pnl_usd, time FROM cycle_results
+     WHERE agent_key = ? AND pnl_usd IS NOT NULL
+     ORDER BY id DESC LIMIT ?`
+  ).all(agentKey, limit) as Array<{ pnl_usd: number; time: string }>
+
+  return rows.map(r => ({
+    wonTrade: r.pnl_usd > 0,
+    pnlUsd:   r.pnl_usd,
+    closedAt: r.time,
+  }))
 }
 
 export function dbGetCycleById(id: number): (CycleResult & { id: number; agentKey: string }) | null {
@@ -697,6 +737,37 @@ export function dbDeleteSession(agentKey: string, sessionDate: string): void {
   db.prepare('DELETE FROM agent_sessions WHERE agent_key = ? AND session_date = ?').run(agentKey, sessionDate)
 }
 
+// ── Monte Carlo (latest result per agent) ─────────────────────────────────────
+
+export function dbGetLatestMCResult(agentKey: string): { mc: Record<string, unknown>; time: string } | null {
+  const row = db.prepare(
+    `SELECT data, time FROM log_entries WHERE agent_key = ? AND event = 'mc_result' ORDER BY id DESC LIMIT 1`
+  ).get(agentKey) as { data: string | null; time: string } | undefined
+  if (!row?.data) return null
+  try {
+    return { mc: JSON.parse(row.data) as Record<string, unknown>, time: row.time }
+  } catch {
+    return null
+  }
+}
+
+// ── Prompt Analyses ───────────────────────────────────────────────────────────
+
+export function dbSavePromptAnalysis(agentKey: string, analysis: unknown, meta: unknown): void {
+  db.prepare(`
+    INSERT INTO prompt_analyses (agent_key, analysis, meta, created_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(agent_key) DO UPDATE SET analysis = excluded.analysis, meta = excluded.meta, created_at = excluded.created_at
+  `).run(agentKey, JSON.stringify(analysis), JSON.stringify(meta), new Date().toISOString())
+}
+
+export function dbGetPromptAnalysis(agentKey: string): { analysis: unknown; meta: unknown; createdAt: string } | null {
+  const row = db.prepare('SELECT analysis, meta, created_at FROM prompt_analyses WHERE agent_key = ?').get(agentKey) as
+    { analysis: string; meta: string; created_at: string } | undefined
+  if (!row) return null
+  return { analysis: JSON.parse(row.analysis), meta: JSON.parse(row.meta), createdAt: row.created_at }
+}
+
 /** Returns the most recent completed session before today — used for cross-session memory. */
 export function dbGetPreviousSession(agentKey: string): AgentSessionData | null {
   const today = new Date().toISOString().slice(0, 10)
@@ -715,5 +786,48 @@ export function dbGetPreviousSession(agentKey: string): AgentSessionData | null 
     summary: row.summary,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  }
+}
+
+// ── Backtest results ─────────────────────────────────────────────────────────
+
+/** Saves (or replaces) the latest backtest run for an agent. Clears any previous report. */
+export function dbSaveBacktestResult(agentKey: string, result: unknown): void {
+  db.prepare(`
+    INSERT INTO agent_backtests (agent_key, result_json, report_json, model, ran_at)
+    VALUES (?, ?, NULL, NULL, ?)
+    ON CONFLICT(agent_key) DO UPDATE SET
+      result_json = excluded.result_json,
+      report_json = NULL,
+      model       = NULL,
+      ran_at      = excluded.ran_at
+  `).run(agentKey, JSON.stringify(result), new Date().toISOString())
+}
+
+/** Attaches (or updates) the AI report on the agent's saved backtest row. */
+export function dbUpdateBacktestReport(agentKey: string, report: unknown, model: string): void {
+  db.prepare(
+    'UPDATE agent_backtests SET report_json = ?, model = ? WHERE agent_key = ?'
+  ).run(JSON.stringify(report), model, agentKey)
+}
+
+/** Returns the agent's saved backtest result + report, or null if none exists. */
+export function dbGetBacktestResult(agentKey: string): {
+  result: unknown
+  report: unknown | null
+  model: string | null
+  ranAt: string
+} | null {
+  const row = db.prepare(
+    'SELECT result_json, report_json, model, ran_at FROM agent_backtests WHERE agent_key = ?'
+  ).get(agentKey) as {
+    result_json: string; report_json: string | null; model: string | null; ran_at: string
+  } | undefined
+  if (!row) return null
+  return {
+    result: JSON.parse(row.result_json),
+    report: row.report_json ? JSON.parse(row.report_json) : null,
+    model:  row.model,
+    ranAt:  row.ran_at,
   }
 }

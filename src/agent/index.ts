@@ -17,8 +17,11 @@ import { buildMarketContext } from './context.js'
 import { sessionLabel, minutesUntilSessionClose } from '../adapters/session.js'
 import { fetchForexNews } from '../adapters/finnhubNews.js'
 import type { ForexNewsItem } from '../adapters/finnhubNews.js'
-import { runMonteCarlo, formatMCBlock } from '../adapters/montecarlo.js'
+import { formatMCBlock } from '../adapters/montecarlo.js'
 import type { MCResult } from '../adapters/montecarlo.js'
+import { runEnhancedMonteCarlo, formatEnhancedMCBlock } from '../adapters/mc-orchestrator.js'
+import type { EnhancedMCResult } from '../adapters/mc-types.js'
+import { MC_ENHANCEMENT_DEFAULTS } from '../adapters/mc-types.js'
 import { getTools } from '../tools/definitions.js'
 import { recordCycle, logEvent, tryAcquireCycleLock, releaseCycleLock, getAgent, setAgentStatus, setAgentPaused, consumePlanRequest } from '../server/state.js'
 import {
@@ -26,6 +29,7 @@ import {
   dbSaveMemory, dbGetMemories, dbDeleteMemory,
   dbSavePlan, dbGetActivePlan, dbGetStrategy,
   dbGetTodaySession, dbSaveSession, dbGetPreviousSession,
+  dbGetTradeRecords,
 } from '../db/index.js'
 import type { AgentConfig } from '../types.js'
 import type { OrderParams, RiskState } from '../adapters/types.js'
@@ -200,7 +204,7 @@ function candleTrendLine(candles: Candle[], count: number, dp: number): string {
   return bars.map(c => `${c.close.toFixed(dp)}${c.close >= c.open ? '▲' : '▼'}`).join(' ')
 }
 
-function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string, config?: AgentConfig, mc?: MCResult): string {
+function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string, config?: AgentConfig, mc?: MCResult | EnhancedMCResult): string {
   const price = snap.price as { bid?: number; ask?: number; last?: number } | undefined
   const indicators = snap.indicators as { rsi14?: number; ema20?: number; ema50?: number; atr14?: number; vwap?: number; bbWidth?: number; mtf?: { m15?: { rsi14: number; ema20: number; atr14: number }; h4?: { rsi14: number; ema20: number; ema50?: number; atr14: number }; confluence: number } } | undefined
   const forex = snap.forex as { spread?: number; sessionOpen?: boolean; pipValue?: number; point?: number; pipSize?: number; swapLong?: number; swapShort?: number } | undefined
@@ -472,7 +476,13 @@ function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string,
 
   // ── Monte Carlo probability table ──────────────────────────────────────────
   if (mc) {
-    lines.push(formatMCBlock(mc, forex?.pipSize ?? 1, dp))
+    // EnhancedMCResult has a `core` property; plain MCResult does not
+    const pipSz = forex?.pipSize ?? 1
+    if ('core' in mc) {
+      lines.push(formatEnhancedMCBlock(mc as EnhancedMCResult, pipSz, dp))
+    } else {
+      lines.push(formatMCBlock(mc as MCResult, pipSz, dp))
+    }
   }
 
   return lines.join('\n')
@@ -917,6 +927,7 @@ async function dispatchTool(
   defaultMarket: 'crypto' | 'mt5',
   mt5AccountId?: number,
   agentKey = '',
+  agentConfig?: AgentConfig,
 ): Promise<unknown> {
   // Reject tool calls with malformed JSON from Ollama/local models
   if (input._parse_error) {
@@ -929,8 +940,8 @@ async function dispatchTool(
   switch (name) {
     case 'get_snapshot': {
       const riskState = market === 'mt5' ? getRiskStateFor('mt5') : getRiskState()
-      const snap = await adapter.getSnapshot(input.symbol as string, riskState)
-      snap.context = await buildMarketContext(input.symbol as string, market)
+      const snap = await adapter.getSnapshot(input.symbol as string, riskState, agentConfig?.indicatorConfig, agentConfig?.candleConfig)
+      snap.context = await buildMarketContext(input.symbol as string, market, agentConfig?.contextConfig)
       const openNotional = snap.account.openOrders.reduce(
         (sum, o) => sum + o.price * o.origQty, 0,
       )
@@ -1069,7 +1080,7 @@ async function dispatchTool(
 
 // ── Agent Tick (main entry point) ─────────────────────────────────────────────
 
-export async function runAgentTick(config: AgentConfig, requestedTickType: 'trading' | 'planning' = 'trading'): Promise<void> {
+export async function runAgentTick(config: AgentConfig, requestedTickType: 'trading' | 'planning' = 'trading', ephemeralInstructions?: string): Promise<void> {
   const agentKey = makeAgentKey(config.market, config.symbol, config.mt5AccountId, config.name)
 
   if (!tryAcquireCycleLock(agentKey)) {
@@ -1118,7 +1129,7 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
       const snap = await dispatchTool(
         'get_snapshot',
         { symbol: config.symbol, market: config.market },
-        config.market, config.mt5AccountId, agentKey,
+        config.market, config.mt5AccountId, agentKey, config,
       ) as Record<string, unknown>
 
       let externalCloseNote = ''
@@ -1179,21 +1190,21 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
         }
       }
 
-      // ── Monte Carlo simulation ─────────────────────────────────────────────
-      // Pure math — runs synchronously in <50ms. Zero LLM involvement.
-      let mcResult: MCResult | undefined
+      // ── Monte Carlo simulation (enhanced orchestrator) ─────────────────────
+      // Pure math — runs in <100ms. Zero LLM involvement.
+      let mcResult: MCResult | EnhancedMCResult | undefined
       try {
         const snapCandles = snap.candles as { m1?: Candle[]; m5?: Candle[]; m15?: Candle[]; m30?: Candle[]; h1?: Candle[]; h4?: Candle[] } | undefined
         const snapInds    = snap.indicators as { ema20?: number; ema50?: number; atr14?: number } | undefined
         const snapFx      = snap.forex as { pipSize?: number; pipValue?: number } | undefined
         const snapAcct    = snap.accountInfo as { equity?: number } | undefined
         const snapPrice   = snap.price as { last?: number } | undefined
+        const snapCtx     = snap.context as { fearGreedValue?: number } | undefined
 
-        // Derive suggested lot size from the sizing block (already computed in formatSnapshotSummary)
-        const equity    = snapAcct?.equity ?? 0
-        const pipSz     = snapFx?.pipSize ?? 1
-        const pipVal    = snapFx?.pipValue ?? 0
-        const atr14     = snapInds?.atr14 ?? 0
+        const equity     = snapAcct?.equity ?? 0
+        const pipSz      = snapFx?.pipSize ?? 1
+        const pipVal     = snapFx?.pipValue ?? 0
+        const atr14      = snapInds?.atr14 ?? 0
         const maxRiskPct = config?.maxRiskPercent ?? 10
         const maxRiskUsd = equity * (maxRiskPct / 100)
         const slPips     = atr14 > 0 && pipSz > 0 ? (atr14 / pipSz) * 1.0 : 0
@@ -1205,28 +1216,44 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         type AnyCandle = any
         if (snapCandles?.m1 && snapInds && snapPrice?.last && suggestedLots > 0) {
-          const mc = runMonteCarlo({
+          const enhancements = config?.mcEnhancements ?? MC_ENHANCEMENT_DEFAULTS
+          const tradeRecords  = dbGetTradeRecords(agentKey, 200)
+
+          const mc = await runEnhancedMonteCarlo({
             m1:  (snapCandles.m1  ?? []) as AnyCandle[],
             m5:  (snapCandles.m5  ?? []) as AnyCandle[],
             m15: (snapCandles.m15 ?? []) as AnyCandle[],
             m30: (snapCandles.m30 ?? []) as AnyCandle[],
             h1:  (snapCandles.h1  ?? []) as AnyCandle[],
             h4:  (snapCandles.h4  ?? []) as AnyCandle[],
-            currentPrice: snapPrice.last,
-            pipSize:      pipSz,
-            pipValue:     pipVal,
-            lotSize:      suggestedLots,
+            currentPrice:   snapPrice.last,
+            pipSize:        pipSz,
+            pipValue:       pipVal,
+            lotSize:        suggestedLots,
             atr14,
-            ema20: snapInds.ema20 ?? 0,
-            ema50: snapInds.ema50 ?? 0,
+            ema20:          snapInds.ema20 ?? 0,
+            ema50:          snapInds.ema50 ?? 0,
+            enhancements,
+            tradeRecords,
+            configuredRisk: config?.maxRiskPercent ?? null,
+            fearGreedValue: snapCtx?.fearGreedValue,
           })
 
           if (mc) {
             mcResult = mc
+            const core = mc.core
             // Log MC result so it appears in the Logs panel per tick
             logEvent(agentKey, 'info', 'mc_result',
-              `MC: LONG win=${mc.long.winRate.toFixed(1)}% EV=${mc.long.ev >= 0 ? '+' : ''}$${mc.long.ev.toFixed(0)} | SHORT win=${mc.short.winRate.toFixed(1)}% EV=${mc.short.ev >= 0 ? '+' : ''}$${mc.short.ev.toFixed(0)} | Recommended: ${mc.recommended}`,
-              { long: mc.long, short: mc.short, recommended: mc.recommended, edgeDelta: mc.edgeDelta, pathCount: mc.pathCount, barsForward: mc.barsForward }
+              `MC: LONG win=${core.long.winRate.toFixed(1)}% EV=${core.long.ev >= 0 ? '+' : ''}$${core.long.ev.toFixed(0)} | SHORT win=${core.short.winRate.toFixed(1)}% EV=${core.short.ev >= 0 ? '+' : ''}$${core.short.ev.toFixed(0)} | Recommended: ${core.recommended} | Consensus: ${mc.consensus.signal}`,
+              {
+                long: core.long, short: core.short,
+                recommended: core.recommended, edgeDelta: core.edgeDelta,
+                pathCount: core.pathCount, barsForward: core.barsForward,
+                consensus: mc.consensus,
+                markov: mc.markov, agentBased: mc.agentBased,
+                scenarios: mc.scenarios, bayesian: mc.bayesian,
+                significance: mc.significance, kelly: mc.kelly,
+              }
             )
           }
         }
@@ -1245,6 +1272,12 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
       const msg = prefetchErr instanceof Error ? prefetchErr.message : String(prefetchErr)
       log.warn({ err: msg }, 'snapshot pre-fetch failed — LLM will call get_snapshot manually')
       tickUserMessage = buildTickMessage(config, agentKey, tickNumber, isFirstTick, tickType)
+    }
+
+    // Append ephemeral instructions (one-off override from the trigger UI)
+    if (ephemeralInstructions?.trim()) {
+      tickUserMessage += `\n\n⚠️ ONE-TIME INSTRUCTION FOR THIS TICK ONLY:\n${ephemeralInstructions.trim()}`
+      logEvent(agentKey, 'info', 'tick_start', `Ephemeral instructions injected: ${ephemeralInstructions.trim()}`)
     }
 
     // Append the tick message to the session conversation

@@ -33,6 +33,7 @@ const EVENT_COLOR: Record<LogEvent, string> = {
   memory_write:       'text-blue',
   plan_created:       'text-green',
   pnl_record:         'text-green',
+  mc_result:          'text-cyan-400',
 }
 
 const EVENT_PREFIX: Record<LogEvent, string> = {
@@ -59,6 +60,7 @@ const EVENT_PREFIX: Record<LogEvent, string> = {
   memory_write:       '🧠 MEM',
   plan_created:       '📅 PLAN',
   pnl_record:         '$ P&L',
+  mc_result:          '🎲 MC',
 }
 
 function timeStr(iso: string) {

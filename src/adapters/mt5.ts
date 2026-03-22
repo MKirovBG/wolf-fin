@@ -14,6 +14,7 @@ import type {
 } from './types.js'
 import type { IMarketAdapter } from './interface.js'
 import { computeIndicators, computeMultiTFIndicators, computeKeyLevels } from './indicators.js'
+import type { IndicatorConfig, CandleConfig } from '../types.js'
 
 // ── Bridge HTTP helpers ──────────────────────────────────────────────────────
 // MT5_BRIDGE_URL takes precedence (full URL for remote bridge).
@@ -243,7 +244,7 @@ export class MT5Adapter implements IMarketAdapter {
     return `${path}${sep}accountId=${this.accountId}`
   }
 
-  async getSnapshot(symbol: string, riskState: RiskState): Promise<MarketSnapshot> {
+  async getSnapshot(symbol: string, riskState: RiskState, indicatorCfg?: IndicatorConfig, _candleCfg?: CandleConfig): Promise<MarketSnapshot> {
     const snap = await mt5Get<BridgeSnapshot>(this.buildUrl(`/snapshot/${toMt5Symbol(symbol)}`))
 
     const mapCandles = (arr: BridgeCandle[]): Candle[] =>
@@ -355,8 +356,8 @@ export class MT5Adapter implements IMarketAdapter {
       },
       candles: { m1, m5, m15, m30, h1, h4 },
       indicators: {
-        ...computeIndicators(h1),
-        mtf: computeMultiTFIndicators(m15, h1, h4),
+        ...computeIndicators(h1, indicatorCfg),
+        ...(indicatorCfg?.mtfEnabled !== false ? { mtf: computeMultiTFIndicators(m15, h1, h4, indicatorCfg) } : {}),
       },
       account: { balances, openOrders },
       positions,       // rich MT5 position detail (sl, tp, profit, priceCurrent, swap)
@@ -628,6 +629,38 @@ export class MT5Adapter implements IMarketAdapter {
     // trade_mode: 0 = SYMBOL_TRADE_MODE_DISABLED, others = various trade modes
     // In practice, trade_mode > 0 means trading is allowed
     return info.trade_mode > 0
+  }
+
+  /** Fetch large historical candle dataset for backtesting (up to 10,000 bars). */
+  async getHistoricalCandles(
+    symbol:    string,
+    timeframe: 'M1' | 'M5' | 'M15' | 'M30' | 'H1' | 'H4' | 'D1',
+    count:     number,
+  ): Promise<Candle[]> {
+    const capped = Math.min(Math.max(count, 1), 10_000)
+    const url    = this.buildUrl(
+      `/candles/${toMt5Symbol(symbol)}?timeframe=${timeframe}&count=${capped}`,
+    )
+    const res = await mt5Get<{ candles: Array<{ openTime: number; open: number; high: number; low: number; close: number; volume: number; closeTime: number }> }>(url)
+    return res.candles.map(c => ({
+      openTime:  c.openTime,
+      open:      c.open,
+      high:      c.high,
+      low:       c.low,
+      close:     c.close,
+      volume:    c.volume,
+      closeTime: c.closeTime,
+    }))
+  }
+
+  /** Fetch current pip size and pip value for a symbol — used by the backtester. */
+  async getSymbolInfo(symbol: string): Promise<{ pipSize: number; pipValue: number; point: number }> {
+    const info = await mt5Get<{ point: number; trade_tick_value?: number }>(
+      this.buildUrl(`/symbol-info/${toMt5Symbol(symbol)}`),
+    )
+    const pipSz  = pipSizeHeuristic(symbol, info.point)
+    const pipVal = info.trade_tick_value ?? 1
+    return { pipSize: pipSz, pipValue: pipVal, point: info.point }
   }
 }
 

@@ -10,6 +10,7 @@ export function initDb() {
     mkdirSync(join(__dirname, '../../data'), { recursive: true });
     db = new Database(DB_PATH);
     db.pragma('journal_mode = WAL');
+    db.pragma('busy_timeout = 5000'); // retry writes for up to 5s before SQLITE_BUSY
     db.exec(`
     CREATE TABLE IF NOT EXISTS agents (
       key         TEXT PRIMARY KEY,
@@ -309,7 +310,13 @@ export function dbGetLogsForCycle(agentKey, cycleEndTime) {
 // ── Settings ─────────────────────────────────────────────────────────────────
 export function dbGetLogClearFloor() {
     const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('log_clear_floor');
-    return row ? parseInt(row.value, 10) : 0;
+    if (!row)
+        return 0;
+    const floor = parseInt(row.value, 10);
+    // If the floor exceeds the actual max log ID (e.g. after a DB reset), treat as 0
+    // to avoid hiding all logs permanently.
+    const maxId = dbGetMaxLogId();
+    return floor > maxId ? 0 : floor;
 }
 export function dbSetLogClearFloor(id) {
     db.prepare(`
@@ -317,16 +324,73 @@ export function dbSetLogClearFloor(id) {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `).run(String(id));
 }
+export function dbGetSelectedAccount() {
+    const row = db.prepare("SELECT value FROM settings WHERE key = 'selected_account'").get();
+    if (!row)
+        return null;
+    try {
+        return JSON.parse(row.value);
+    }
+    catch {
+        return null;
+    }
+}
+export function dbSetSelectedAccount(account) {
+    if (account === null) {
+        db.prepare("DELETE FROM settings WHERE key = 'selected_account'").run();
+    }
+    else {
+        db.prepare(`
+      INSERT INTO settings (key, value) VALUES ('selected_account', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(JSON.stringify(account));
+    }
+}
 // ── Log entries ──────────────────────────────────────────────────────────────
 export function dbGetMaxLogId() {
     const row = db.prepare('SELECT MAX(id) as maxId FROM log_entries').get();
     return row?.maxId ?? 0;
 }
-export function dbLogEvent(entry) {
-    db.prepare(`
+// ── Log batching: buffer writes and flush in a single transaction ────────────
+const logBuffer = [];
+let logFlushTimer = null;
+const LOG_FLUSH_INTERVAL_MS = 2000;
+function flushLogBuffer() {
+    if (logBuffer.length === 0)
+        return;
+    const batch = logBuffer.splice(0);
+    const insertStmt = db.prepare(`
     INSERT INTO log_entries (id, time, agent_key, level, event, message, data)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(entry.id, entry.time, entry.agentKey, entry.level, entry.event, entry.message, entry.data ? JSON.stringify(entry.data) : null);
+  `);
+    const insertMany = db.transaction((entries) => {
+        for (const e of entries) {
+            insertStmt.run(e.id, e.time, e.agentKey, e.level, e.event, e.message, e.data ? JSON.stringify(e.data) : null);
+        }
+    });
+    try {
+        insertMany(batch);
+    }
+    catch (err) {
+        console.error('[db] log flush failed:', err);
+    }
+}
+export function dbLogEvent(entry) {
+    logBuffer.push(entry);
+    if (!logFlushTimer) {
+        logFlushTimer = setTimeout(() => {
+            logFlushTimer = null;
+            flushLogBuffer();
+        }, LOG_FLUSH_INTERVAL_MS);
+    }
+}
+/** Force-flush pending log entries (call before process exit) */
+export function dbFlushLogs() {
+    if (logFlushTimer) {
+        clearTimeout(logFlushTimer);
+        logFlushTimer = null;
+    }
+    flushLogBuffer();
 }
 export function dbGetLogs(sinceId, agentKey, limit = 200) {
     let sql;
@@ -395,7 +459,8 @@ export function dbClearMemories(agentKey) {
  *  Config and the agent entry itself are NOT touched. */
 export function dbResetAgentData(agentKey) {
     const del = (table, col = 'agent_key') => (db.prepare(`DELETE FROM ${table} WHERE ${col} = ?`).run(agentKey)).changes;
-    const deleted = {
+    // Wrap all deletes in a single transaction to avoid write contention
+    const resetTx = db.transaction(() => ({
         memories: del('agent_memories'),
         strategy: del('agent_strategies'),
         plans: del('agent_plans'),
@@ -403,8 +468,8 @@ export function dbResetAgentData(agentKey) {
         sessions: del('agent_sessions'),
         cycles: del('cycle_results'),
         logs: del('log_entries'),
-    };
-    return { deleted };
+    }));
+    return { deleted: resetTx() };
 }
 export function dbSaveStrategy(s) {
     const now = new Date().toISOString();

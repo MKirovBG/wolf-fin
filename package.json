@@ -12,14 +12,14 @@
     "build": "tsc",
     "build:frontend": "cd frontend && pnpm install && pnpm build",
     "start": "node dist/main.js",
-    "test": "vitest"
+    "test": "vitest",
+    "backtest": "tsx src/backtest/cli.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.32.1",
   "dependencies": {
-    "@alpacahq/alpaca-trade-api": "^3.1.3",
     "@anthropic-ai/sdk": "^0.78.0",
     "@fastify/static": "^8.3.0",
     "better-sqlite3": "^12.8.0",

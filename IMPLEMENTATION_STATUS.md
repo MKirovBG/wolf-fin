@@ -11,11 +11,11 @@ Last updated: 2026-03-16
 ## Core Architecture
 
 ### Adapters (`src/adapters/`)
-- `interface.ts` — `IMarketAdapter` contract with optional forex methods
-- `registry.ts` — `getAdapter('crypto' | 'forex')` lookup
+- `interface.ts` — `IMarketAdapter` contract
+- `registry.ts` — `getAdapter('crypto' | 'mt5')` lookup
 - `binance.ts` — `BinanceAdapter` class (crypto) + backward-compat exports
-- `alpaca.ts` — `AlpacaAdapter` class (forex) with bracket stop-loss orders
-- `session.ts` — Forex session open/close logic (Sydney/Tokyo/London/NewYork)
+- `mt5.ts` — `MT5Adapter` class (forex via MetaTrader 5 bridge)
+- `session.ts` — Forex session open/close logic (Sydney/Tokyo/London/NewYork) — used by MT5 agent
 - `types.ts` — `MarketSnapshot`, `OrderParams` (with `stopPips`, `stopPrice`), `MarketContext`
 
 ### Enrichment Adapters
@@ -23,7 +23,7 @@ Last updated: 2026-03-16
 - `coingecko.ts` — BTC dominance + total market cap
 - `cryptopanic.ts` — CryptoPanic headlines
 - `calendar.ts` — Finnhub economic calendar + `isHighImpactEventSoon()`
-- `twelvedata.ts` — Twelve Data candle fallback for forex
+- `twelvedata.ts` — Twelve Data candle data (optional enrichment)
 
 ### Agent (`src/agent/`)
 - `index.ts` — `runAgentCycle()` agentic loop with Claude tool-use
@@ -35,7 +35,7 @@ Last updated: 2026-03-16
 
 ### Guardrails (`src/guardrails/`)
 - `validate.ts` — `validateOrder()` for crypto
-- `forex.ts` — `validateForexOrder()` with pip sizing, spread check, session guard
+- `mt5.ts` — `validateMt5Order()` with pip sizing, spread check, session guard
 - `riskStateStore.ts` — Per-market risk state, DB hydration on startup
 - `riskState.ts` — Re-exports from riskStateStore
 
@@ -48,21 +48,20 @@ Last updated: 2026-03-16
 ### Server (`src/server/`)
 - Fastify 5.8 serving REST API + React SPA
 - Endpoints: `/api/agents`, `/api/cycle`, `/api/accounts`, `/api/logs`, `/api/settings`
-- `/api/accounts` — fetches Alpaca (paper+live) and Binance account data
+- `/api/accounts` — fetches Binance and MT5 account data
 - State: cycle lock (`tryAcquireCycleLock` / `releaseCycleLock`)
 
 ### Frontend (`frontend/src/`)
 - React 18 + Vite + Tailwind CSS (dark terminal theme) + Recharts
 - Pages: Dashboard, Agents, AgentDetail, Positions, Logs, Settings, Account
 - Components: Layout (nav), LiveLog (real-time streaming)
-- Account page: Alpaca cards (paper/live) + Binance card with positions, fills, balances
+- Account page: Binance card (holdings, open orders) + MT5 card
 
 ---
 
 ## Key Design Decisions
 
-- **Alpaca for forex** — sole forex broker; OANDA fully removed
-- **Bracket orders** — forex stop-loss sent as `order_class: 'bracket'` with computed `stopPrice`
+- **MT5 for forex** — sole forex broker via Python bridge on localhost:8000
 - **Enrichment failures are silent** — broken enrichment never blocks a trade cycle
 - **Performance context** — last N decisions shown in system prompt; HOLD streak warning at 5+
 - **Risk persistence** — `pnl_usd` stored in `cycle_results`; hydrated from DB on startup
@@ -74,7 +73,7 @@ Last updated: 2026-03-16
 ## Remaining Work
 
 - [ ] Alerting (Telegram/email on daily limit hit, large fill, error)
-- [ ] Live trading cutover (Binance live, Alpaca live)
+- [ ] Live trading cutover (Binance live)
 - [ ] Drawdown auto-pause
 - [ ] Multi-symbol per agent
 - [ ] Performance analytics (win rate, Sharpe, R:R)

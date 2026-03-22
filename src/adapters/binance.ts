@@ -16,7 +16,7 @@ import type {
   RiskState,
 } from './types.js'
 import type { IMarketAdapter } from './interface.js'
-import { computeIndicators } from './indicators.js'
+import { computeIndicators, computeMultiTFIndicators } from './indicators.js'
 
 // ── Client factory ────────────────────────────────────────────────────────────
 
@@ -132,7 +132,10 @@ export class BinanceAdapter implements IMarketAdapter {
         low: num(ticker.lowPrice),
       },
       candles: { m1, m5: [], m15, m30: [], h1, h4 },
-      indicators: computeIndicators(h1),
+      indicators: {
+        ...computeIndicators(h1),
+        mtf: computeMultiTFIndicators(m15, h1, h4),
+      },
       account: { balances, openOrders: orders },
       risk: riskState,
     }

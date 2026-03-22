@@ -73,6 +73,24 @@ export interface Indicators {
   atr14: number
   vwap: number
   bbWidth: number
+  /** Multi-timeframe indicator data — optional, present when MTF candles are available */
+  mtf?: MTFIndicators
+}
+
+/** Per-timeframe indicator subset */
+export interface TFIndicators {
+  rsi14: number
+  ema20: number
+  ema50?: number  // only computed for H4 (needs 50+ candles)
+  atr14: number
+}
+
+/** Multi-timeframe indicator bundle */
+export interface MTFIndicators {
+  m15?: TFIndicators
+  h4?: TFIndicators
+  /** Confluence score: -3 (all bearish) to +3 (all bullish). Each TF contributes ±1. */
+  confluence: number
 }
 
 export interface RiskState {
@@ -110,7 +128,7 @@ export interface MarketContext {
 export interface MarketSnapshot {
   symbol: string
   timestamp: number
-  market: 'crypto' | 'forex' | 'mt5'
+  market: 'crypto' | 'mt5'
   price: {
     bid: number
     ask: number
@@ -138,7 +156,7 @@ export interface MarketSnapshot {
   risk: RiskState
   /** Enrichment signals assembled by context.ts */
   context?: MarketContext
-  /** Forex-specific fields — only present when market === 'forex' or 'mt5' */
+  /** Forex-specific fields — only present when market === 'mt5' */
   forex?: {
     spread: number       // ask - bid in pips
     pipValue: number     // USD per pip per standard lot

@@ -64,6 +64,24 @@ function logReturns(candles: Candle[]): number[] {
   return returns
 }
 
+// ── Helper: extract wick ratio distributions from M1 candles ─────────────────
+// wickUp  = (high - close) / close   — how far price spiked above the close
+// wickDown = (close - low) / close   — how far price dipped below the close
+// These are sampled per simulated bar to model intra-bar SL/TP piercing.
+
+interface WickDistribution { up: number[]; down: number[] }
+
+function wickDistribution(candles: Candle[]): WickDistribution {
+  const up: number[] = []
+  const down: number[] = []
+  for (const c of candles) {
+    if (c.close <= 0) continue
+    up.push((c.high - c.close) / c.close)
+    down.push((c.close - c.low) / c.close)
+  }
+  return { up, down }
+}
+
 // ── Helper: percentile from sorted array ─────────────────────────────────────
 
 function percentile(sorted: number[], p: number): number {
@@ -79,19 +97,50 @@ function median(arr: number[]): number {
   return percentile(sorted, 50)
 }
 
-// ── Regime bias: weight the return distribution using higher TF trend ─────────
-// If EMA20 > EMA50 (bullish), shift long-path returns slightly positive;
-// If EMA20 < EMA50 (bearish), shift short-path returns slightly positive.
-// Magnitude is capped at 0.5× the return std-dev to avoid over-fitting.
+// ── Regime bias: weight the return distribution using multi-TF trend ──────────
+// Combines H1 EMA cross with H1 and H4 log-return trends for confluence.
+// When M1, H1, and H4 trends align, bias magnitude increases.
+// When they diverge, bias is reduced. Capped at 0.5× M1 std-dev.
 
-function regimeBias(returns: number[], ema20: number, ema50: number): number {
-  if (returns.length === 0) return 0
+function returnStats(returns: number[]): { mean: number; stdDev: number } {
+  if (returns.length === 0) return { mean: 0, stdDev: 0 }
   const mean = returns.reduce((s, r) => s + r, 0) / returns.length
   const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / returns.length
-  const stdDev = Math.sqrt(variance)
+  return { mean, stdDev: Math.sqrt(variance) }
+}
+
+function multiTFRegimeBias(
+  m1Returns: number[],
+  h1Candles: Candle[],
+  h4Candles: Candle[],
+  ema20: number,
+  ema50: number,
+): number {
+  const { stdDev: m1Std } = returnStats(m1Returns)
+  if (m1Std === 0) return 0
+
+  // H1 EMA cross direction (primary signal)
+  const h1Signal = ema20 > ema50 ? 1 : -1
+
+  // H1 log-return trend direction
+  const h1Returns = logReturns(h1Candles)
+  const { mean: h1Mean } = returnStats(h1Returns)
+  const h1ReturnSignal = h1Mean > 0 ? 1 : h1Mean < 0 ? -1 : 0
+
+  // H4 log-return trend direction
+  const h4Returns = logReturns(h4Candles)
+  const { mean: h4Mean } = returnStats(h4Returns)
+  const h4ReturnSignal = h4Mean > 0 ? 1 : h4Mean < 0 ? -1 : 0
+
+  // Confluence: sum of signals (-3 to +3)
+  const confluence = h1Signal + h1ReturnSignal + h4ReturnSignal
+
+  // Scale bias by confluence strength (0 = divergent, ±3 = fully aligned)
   const trendStrength = Math.abs(ema20 - ema50) / ((ema20 + ema50) / 2)
-  const biasMagnitude = Math.min(stdDev * 0.5, trendStrength * stdDev)
-  return ema20 > ema50 ? biasMagnitude : -biasMagnitude
+  const alignmentFactor = Math.abs(confluence) / 3  // 0..1
+  const biasMagnitude = Math.min(m1Std * 0.5, trendStrength * m1Std * (0.5 + 0.5 * alignmentFactor))
+
+  return confluence > 0 ? biasMagnitude : confluence < 0 ? -biasMagnitude : 0
 }
 
 // ── Core simulation: one action direction ─────────────────────────────────────
@@ -106,6 +155,7 @@ function simulateAction(
   pipValue: number,
   lotSize: number,
   bias: number,      // regime bias applied per bar
+  wicks: WickDistribution,  // intra-bar wick ratios for SL/TP piercing
 ): MCActionResult {
   const slPrice = direction === 'LONG'
     ? startPrice - slDist
@@ -127,6 +177,9 @@ function simulateAction(
   const barsToClose: number[]  = []
 
   const n = returns.length
+  const nWickUp   = wicks.up.length
+  const nWickDown = wicks.down.length
+  const hasWicks  = nWickUp > 0 && nWickDown > 0
 
   for (let sim = 0; sim < PATH_COUNT; sim++) {
     let price = startPrice
@@ -137,9 +190,38 @@ function simulateAction(
       const r = returns[Math.floor(Math.random() * n)] + bias
       price = price * Math.exp(r)
 
-      const hitSL = direction === 'LONG' ? price <= slPrice : price >= slPrice
-      const hitTP = direction === 'LONG' ? price >= tpPrice : price <= tpPrice
+      // Intra-bar wick modeling: derive simulated high/low from wick distributions
+      let simHigh = price
+      let simLow  = price
+      if (hasWicks) {
+        const wickUp   = wicks.up[Math.floor(Math.random() * nWickUp)]
+        const wickDown = wicks.down[Math.floor(Math.random() * nWickDown)]
+        simHigh = price * (1 + wickUp)
+        simLow  = price * (1 - wickDown)
+      }
 
+      const hitSL = direction === 'LONG' ? simLow <= slPrice : simHigh >= slPrice
+      const hitTP = direction === 'LONG' ? simHigh >= tpPrice : simLow <= tpPrice
+
+      if (hitSL && hitTP) {
+        // Both pierced in same bar — resolve by proximity to close
+        const slProx = direction === 'LONG'
+          ? Math.abs(simLow - slPrice)
+          : Math.abs(simHigh - slPrice)
+        const tpProx = direction === 'LONG'
+          ? Math.abs(simHigh - tpPrice)
+          : Math.abs(simLow - tpPrice)
+        if (slProx <= tpProx) {
+          slHits++
+          pnlResults.push(-lossTotal)
+        } else {
+          tpHits++
+          pnlResults.push(profitTotal)
+        }
+        barsToClose.push(bar + 1)
+        closed = true
+        break
+      }
       if (hitTP) {
         tpHits++
         pnlResults.push(profitTotal)
@@ -192,12 +274,13 @@ export function runMonteCarlo(inputs: MCInputs): MCResult | null {
   const returns = logReturns(m1)
   if (returns.length < MIN_CANDLES) return null
 
-  const bias   = regimeBias(returns, ema20, ema50)
+  const bias   = multiTFRegimeBias(returns, inputs.h1, inputs.h4, ema20, ema50)
+  const wicks  = wickDistribution(m1)
   const slDist = atr14 * SL_ATR_MULT
   const tpDist = atr14 * TP_ATR_MULT
 
-  const long  = simulateAction('LONG',  returns, currentPrice, slDist, tpDist, pipSize, pipValue, lotSize, bias)
-  const short = simulateAction('SHORT', returns, currentPrice, slDist, tpDist, pipSize, pipValue, lotSize, -bias)
+  const long  = simulateAction('LONG',  returns, currentPrice, slDist, tpDist, pipSize, pipValue, lotSize, bias, wicks)
+  const short = simulateAction('SHORT', returns, currentPrice, slDist, tpDist, pipSize, pipValue, lotSize, -bias, wicks)
 
   // Recommend the action with higher positive EV; HOLD if both are negative
   let recommended: 'LONG' | 'SHORT' | 'HOLD'

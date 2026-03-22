@@ -1,7 +1,7 @@
 // Wolf-Fin Binance Adapter — REST wrapper + MarketSnapshot assembly
 import { MainClient } from 'binance';
 import { createHmac } from 'crypto';
-import { computeIndicators } from './indicators.js';
+import { computeIndicators, computeMultiTFIndicators } from './indicators.js';
 // ── Client factory ────────────────────────────────────────────────────────────
 function createClient() {
     const key = process.env.BINANCE_API_KEY ?? '';
@@ -99,8 +99,11 @@ export class BinanceAdapter {
                 high: num(ticker.highPrice),
                 low: num(ticker.lowPrice),
             },
-            candles: { m1, m15, h1, h4 },
-            indicators: computeIndicators(h1),
+            candles: { m1, m5: [], m15, m30: [], h1, h4 },
+            indicators: {
+                ...computeIndicators(h1),
+                mtf: computeMultiTFIndicators(m15, h1, h4),
+            },
             account: { balances, openOrders: orders },
             risk: riskState,
         };

@@ -97,6 +97,43 @@ export function computeIndicators(h1Candles) {
         bbWidth: bbWidth(h1Candles, 20),
     };
 }
+// ── Multi-Timeframe Indicators ───────────────────────────────────────────────
+// Computes indicators across M15, H1, and H4. Returns a confluence score
+// from -3 (all bearish) to +3 (all bullish) based on EMA cross alignment.
+function tfIndicators(candles, includeEma50 = false) {
+    if (candles.length < 15)
+        return undefined; // not enough data
+    const result = {
+        rsi14: rsi(candles, 14),
+        ema20: ema(candles, 20),
+        atr14: atr(candles, 14),
+    };
+    if (includeEma50 && candles.length >= 50) {
+        result.ema50 = ema(candles, 50);
+    }
+    return result;
+}
+export function computeMultiTFIndicators(m15Candles, h1Candles, h4Candles) {
+    const m15 = tfIndicators(m15Candles);
+    const h4 = tfIndicators(h4Candles, true);
+    const h1Ema20 = ema(h1Candles, 20);
+    const h1Ema50 = ema(h1Candles, 50);
+    // Confluence: each timeframe contributes +1 (bullish) or -1 (bearish)
+    let confluence = 0;
+    // H1: EMA20 > EMA50 → bullish
+    if (h1Candles.length >= 50) {
+        confluence += h1Ema20 > h1Ema50 ? 1 : -1;
+    }
+    // M15: RSI > 50 → bullish momentum
+    if (m15?.rsi14 != null) {
+        confluence += m15.rsi14 > 50 ? 1 : -1;
+    }
+    // H4: EMA20 > EMA50 → bullish higher-TF trend
+    if (h4?.ema20 != null && h4?.ema50 != null) {
+        confluence += h4.ema20 > h4.ema50 ? 1 : -1;
+    }
+    return { m15, h4, confluence };
+}
 // ── Key Levels (Support / Resistance / Pivots) ────────────────────────────────
 // Computes key price levels from H4 and H1 candle history.
 // Returns levels sorted by proximity to current price.

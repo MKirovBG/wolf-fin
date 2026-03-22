@@ -27,14 +27,13 @@
 
 ## Phase 3 — Forex Integration ✅ complete
 
-- [x] Alpaca adapter — `src/adapters/alpaca.ts` (REST wrapper matching IMarketAdapter)
+- [x] MT5 adapter — `src/adapters/mt5.ts` (HTTP wrapper to Python bridge matching IMarketAdapter)
 - [x] Forex-specific types — pip value, lot size, spread, margin, swap rate
 - [x] Market hours guard — block orders when session is closed or spread too wide
 - [x] Pip-based risk sizing — position size calc from account risk% and pip distance
-- [x] Multi-asset tool routing — `get_snapshot("EUR_USD", "forex")` vs `"BTCUSDT", "crypto"`
+- [x] Multi-asset tool routing — `get_snapshot("XAUUSD", "mt5")` vs `"BTCUSDT", "crypto"`
 - [x] Cross-asset guardrails — separate daily budgets per market, combined notional cap
 - [x] Session awareness prompt — London/NY/Tokyo overlap logic injected into Claude context
-- [x] Bracket stop-loss orders — Alpaca `order_class: 'bracket'` with computed stopPrice
 
 ## Phase 4 — Operations ✅ mostly complete
 
@@ -50,7 +49,7 @@
 ## Phase 5 — Live Trading
 
 - [ ] Crypto: switch to live Binance, end-to-end integration test
-- [ ] Forex: switch `ALPACA_PAPER=false`, verify pip values and margin on live account
+- [ ] Forex: verify MT5 live account pip values and margin calculations
 - [ ] Drawdown monitoring — auto-pause if max drawdown threshold crossed
 - [ ] Multi-symbol support — generalize single-symbol loop to a symbol list
 - [ ] Performance analytics — win rate, avg R:R, Sharpe ratio per market

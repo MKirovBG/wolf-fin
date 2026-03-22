@@ -1,26 +1,52 @@
 // Wolf-Fin MT5 Adapter — calls the Python mt5-bridge over localhost HTTP
-import { computeIndicators, computeKeyLevels } from './indicators.js';
+import { computeIndicators, computeMultiTFIndicators, computeKeyLevels } from './indicators.js';
 // ── Bridge HTTP helpers ──────────────────────────────────────────────────────
-const BASE = () => `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`;
-async function mt5Get(path) {
-    const res = await fetch(`${BASE()}${path}`);
-    if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        throw new Error(`MT5 bridge ${res.status}: ${body}`);
+// MT5_BRIDGE_URL takes precedence (full URL for remote bridge).
+// Falls back to localhost with MT5_BRIDGE_PORT for backward compat.
+const BASE = () => process.env.MT5_BRIDGE_URL?.replace(/\/+$/, '') ??
+    `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`;
+const BRIDGE_KEY = () => process.env.MT5_BRIDGE_KEY ?? '';
+function bridgeHeaders() {
+    const h = { 'Content-Type': 'application/json' };
+    const key = BRIDGE_KEY();
+    if (key)
+        h['X-Bridge-Key'] = key;
+    return h;
+}
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 1000;
+async function mt5Fetch(url, init) {
+    let lastErr = null;
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        try {
+            const res = await fetch(url, init);
+            if (!res.ok) {
+                const body = await res.text().catch(() => '');
+                throw new Error(`MT5 bridge ${res.status}: ${body}`);
+            }
+            return res.json();
+        }
+        catch (err) {
+            lastErr = err;
+            // Only retry on network errors (ECONNREFUSED, ETIMEDOUT), not HTTP errors
+            if (err.message.includes('MT5 bridge'))
+                throw err;
+            if (attempt < MAX_RETRIES - 1) {
+                await new Promise(r => setTimeout(r, RETRY_DELAY_MS * (attempt + 1)));
+            }
+        }
     }
-    return res.json();
+    throw lastErr ?? new Error('MT5 bridge unreachable');
+}
+async function mt5Get(path) {
+    return mt5Fetch(`${BASE()}${path}`, { headers: bridgeHeaders() });
 }
 async function mt5Post(path, body) {
-    const res = await fetch(`${BASE()}${path}`, {
+    return mt5Fetch(`${BASE()}${path}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: bridgeHeaders(),
         body: JSON.stringify(body),
     });
-    if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`MT5 bridge ${res.status}: ${text}`);
-    }
-    return res.json();
 }
 // ── Symbol conversion ────────────────────────────────────────────────────────
 //
@@ -37,10 +63,11 @@ function isCommodity(symbol) {
     return s.startsWith('XAU') || s.startsWith('XAG') || s.startsWith('XPT') || s.startsWith('XPD') ||
         s.includes('OIL') || s.includes('GAS') || s.includes('GOLD') || s.includes('SILVER');
 }
-function pipSizeHeuristic(symbol, point) {
-    // Commodities: pip == point (e.g., XAUUSD point=0.01, 1 point IS 1 pip in gold terms)
+function pipSizeHeuristic(symbol, _point) {
+    // Commodities: 1 pip = $1 price move (e.g., XAUUSD 3040→3041 = 1 pip).
+    // This keeps ATR/SL/TP numbers intuitive for the LLM (~40 pips instead of ~4000).
     if (isCommodity(symbol))
-        return point ?? 0.01;
+        return 1.0;
     if (symbol.toUpperCase().includes('JPY'))
         return 0.01;
     return 0.0001;
@@ -70,9 +97,16 @@ export class MT5Adapter {
             closeTime: c.closeTime,
         }));
         const m1 = mapCandles(snap.candles.m1);
+        const m5 = mapCandles(snap.candles.m5 ?? []);
         const m15 = mapCandles(snap.candles.m15);
+        const m30 = mapCandles(snap.candles.m30 ?? []);
         const h1 = mapCandles(snap.candles.h1);
         const h4 = mapCandles(snap.candles.h4);
+        // Warn when M5/M30 are missing — bridge may need updating
+        if (m5.length === 0)
+            console.warn(`[mt5] M5 candles empty for ${symbol} — bridge may not support this timeframe`);
+        if (m30.length === 0)
+            console.warn(`[mt5] M30 candles empty for ${symbol} — bridge may not support this timeframe`);
         const { bid, ask, last } = snap.price;
         const mid = last || (bid + ask) / 2;
         // 24h stats from H1 candles
@@ -131,10 +165,12 @@ export class MT5Adapter {
             tp: o.tp > 0 ? o.tp : null,
             comment: o.comment,
         }));
-        // Pip value: for standard forex, point * contract_size
-        // For 6-char forex pairs: pipValue = point * contractSize (e.g. 0.0001 * 100000 = 10 USD per lot)
+        // Pip value: $ per pip per 1 standard lot.
+        // pipSize defines what "1 pip" means (0.0001 for forex, 1.0 for gold).
+        // For EURUSD: 0.0001 * 100000 = $10/pip/lot.  For XAUUSD: 1.0 * 100 = $100/pip/lot.
         const contractSize = info.trade_contract_size || 100_000;
-        const pipValue = point * contractSize;
+        const pipSize = pipSizeHeuristic(symbol, point);
+        const pipValue = pipSize * contractSize;
         const keyLevels = computeKeyLevels(h4, h1, mid);
         return {
             symbol: snap.symbol || symbol,
@@ -147,8 +183,11 @@ export class MT5Adapter {
                 high: high24h,
                 low: low24h === Infinity ? 0 : low24h,
             },
-            candles: { m1, m15, h1, h4 },
-            indicators: computeIndicators(h1),
+            candles: { m1, m5, m15, m30, h1, h4 },
+            indicators: {
+                ...computeIndicators(h1),
+                mtf: computeMultiTFIndicators(m15, h1, h4),
+            },
             account: { balances, openOrders },
             positions, // rich MT5 position detail (sl, tp, profit, priceCurrent, swap)
             pendingOrders, // pending limit/stop orders not yet filled
@@ -161,9 +200,10 @@ export class MT5Adapter {
                 leverage: snap.account.leverage,
             },
             forex: {
-                spread: info.spread * point / pipSizeHeuristic(symbol, point),
+                spread: info.spread * point / pipSize,
                 pipValue,
                 point,
+                pipSize,
                 sessionOpen: info.session_open,
                 swapLong: info.swap_long,
                 swapShort: info.swap_short,

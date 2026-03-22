@@ -4,6 +4,19 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import type { LLMResponse } from './types.js'
 
+// ── JSON repair for malformed LLM tool-call arguments ────────────────────────
+
+function repairJSON(raw: string): string {
+  let s = raw.trim()
+  // Replace single quotes with double quotes (but not inside already-quoted strings)
+  s = s.replace(/'/g, '"')
+  // Remove trailing commas before } or ]
+  s = s.replace(/,\s*([}\]])/g, '$1')
+  // Wrap unquoted keys: { key: "value" } → { "key": "value" }
+  s = s.replace(/([{,]\s*)([a-zA-Z_]\w*)\s*:/g, '$1"$2":')
+  return s
+}
+
 // ── OpenAI-compatible wire types ──────────────────────────────────────────────
 
 export interface OAITool {
@@ -104,8 +117,25 @@ export function fromOAIResponse(res: OAIResponse): LLMResponse {
 
   for (const tc of msg.tool_calls ?? []) {
     let input: Record<string, unknown>
-    try { input = JSON.parse(tc.function.arguments) as Record<string, unknown> }
-    catch { input = {} }
+    try {
+      input = JSON.parse(tc.function.arguments) as Record<string, unknown>
+    } catch {
+      // Attempt lightweight repair: trailing commas, single quotes, unquoted keys
+      const repaired = repairJSON(tc.function.arguments)
+      try {
+        input = JSON.parse(repaired) as Record<string, unknown>
+        console.warn(`[llm] Repaired malformed JSON for tool "${tc.function.name}": ${tc.function.arguments.slice(0, 200)}`)
+      } catch {
+        console.warn(`[llm] Unparseable tool call JSON for "${tc.function.name}": ${tc.function.arguments.slice(0, 200)}`)
+        const TRADE_TOOLS = ['place_order', 'close_position', 'modify_position', 'cancel_order']
+        if (TRADE_TOOLS.includes(tc.function.name)) {
+          // For trade actions, mark as parse error so agent loop can reject safely
+          input = { _parse_error: true, _raw: tc.function.arguments.slice(0, 300) }
+        } else {
+          input = {}
+        }
+      }
+    }
     content.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input } as Anthropic.ToolUseBlock)
   }
 

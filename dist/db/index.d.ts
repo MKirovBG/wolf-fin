@@ -6,7 +6,7 @@ export declare function dbUpsertAgent(agent: AgentState): void;
 export declare function dbRemoveAgent(key: string): void;
 export declare function dbUpdateAgentStatus(key: string, status: AgentStatus, startedAt: string | null): void;
 export declare function dbRecordCycle(key: string, result: CycleResult): void;
-export declare function dbGetTodayRealizedPnl(market: 'crypto' | 'forex' | 'mt5', dateStr: string): number;
+export declare function dbGetTodayRealizedPnl(market: 'crypto' | 'mt5', dateStr: string): number;
 export interface AgentPerformanceSummary {
     totalCycles: number;
     buys: number;
@@ -51,8 +51,17 @@ export declare function dbGetCycleById(id: number): (CycleResult & {
 export declare function dbGetLogsForCycle(agentKey: string, cycleEndTime: string): LogEntry[];
 export declare function dbGetLogClearFloor(): number;
 export declare function dbSetLogClearFloor(id: number): void;
+export interface SelectedAccount {
+    market: 'mt5' | 'crypto';
+    accountId: string;
+    label?: string;
+}
+export declare function dbGetSelectedAccount(): SelectedAccount | null;
+export declare function dbSetSelectedAccount(account: SelectedAccount | null): void;
 export declare function dbGetMaxLogId(): number;
 export declare function dbLogEvent(entry: LogEntry): void;
+/** Force-flush pending log entries (call before process exit) */
+export declare function dbFlushLogs(): void;
 export declare function dbGetLogs(sinceId?: number, agentKey?: string, limit?: number): LogEntry[];
 export declare function dbSaveMemory(agentKey: string, category: string, key: string, value: string, confidence: number, ttlHours?: number): void;
 export declare function dbGetMemories(agentKey: string, category?: string, limit?: number): Array<{

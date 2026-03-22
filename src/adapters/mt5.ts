@@ -13,32 +13,60 @@ import type {
   RiskState,
 } from './types.js'
 import type { IMarketAdapter } from './interface.js'
-import { computeIndicators, computeKeyLevels } from './indicators.js'
+import { computeIndicators, computeMultiTFIndicators, computeKeyLevels } from './indicators.js'
 
 // ── Bridge HTTP helpers ──────────────────────────────────────────────────────
+// MT5_BRIDGE_URL takes precedence (full URL for remote bridge).
+// Falls back to localhost with MT5_BRIDGE_PORT for backward compat.
 
-const BASE = () => `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`
+const BASE = () =>
+  process.env.MT5_BRIDGE_URL?.replace(/\/+$/, '') ??
+  `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`
+
+const BRIDGE_KEY = () => process.env.MT5_BRIDGE_KEY ?? ''
+
+function bridgeHeaders(): Record<string, string> {
+  const h: Record<string, string> = { 'Content-Type': 'application/json' }
+  const key = BRIDGE_KEY()
+  if (key) h['X-Bridge-Key'] = key
+  return h
+}
+
+const MAX_RETRIES = 3
+const RETRY_DELAY_MS = 1000
+
+async function mt5Fetch<T>(url: string, init?: RequestInit): Promise<T> {
+  let lastErr: Error | null = null
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(url, init)
+      if (!res.ok) {
+        const body = await res.text().catch(() => '')
+        throw new Error(`MT5 bridge ${res.status}: ${body}`)
+      }
+      return res.json() as Promise<T>
+    } catch (err) {
+      lastErr = err as Error
+      // Only retry on network errors (ECONNREFUSED, ETIMEDOUT), not HTTP errors
+      if ((err as Error).message.includes('MT5 bridge')) throw err
+      if (attempt < MAX_RETRIES - 1) {
+        await new Promise(r => setTimeout(r, RETRY_DELAY_MS * (attempt + 1)))
+      }
+    }
+  }
+  throw lastErr ?? new Error('MT5 bridge unreachable')
+}
 
 async function mt5Get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE()}${path}`)
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`MT5 bridge ${res.status}: ${body}`)
-  }
-  return res.json() as Promise<T>
+  return mt5Fetch<T>(`${BASE()}${path}`, { headers: bridgeHeaders() })
 }
 
 async function mt5Post<T>(path: string, body: Record<string, unknown>): Promise<T> {
-  const res = await fetch(`${BASE()}${path}`, {
+  return mt5Fetch<T>(`${BASE()}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: bridgeHeaders(),
     body: JSON.stringify(body),
   })
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`MT5 bridge ${res.status}: ${text}`)
-  }
-  return res.json() as Promise<T>
 }
 
 // ── Symbol conversion ────────────────────────────────────────────────────────
@@ -236,6 +264,10 @@ export class MT5Adapter implements IMarketAdapter {
     const h1  = mapCandles(snap.candles.h1)
     const h4  = mapCandles(snap.candles.h4)
 
+    // Warn when M5/M30 are missing — bridge may need updating
+    if (m5.length === 0)  console.warn(`[mt5] M5 candles empty for ${symbol} — bridge may not support this timeframe`)
+    if (m30.length === 0) console.warn(`[mt5] M30 candles empty for ${symbol} — bridge may not support this timeframe`)
+
     const { bid, ask, last } = snap.price
     const mid = last || (bid + ask) / 2
 
@@ -322,7 +354,10 @@ export class MT5Adapter implements IMarketAdapter {
         low: low24h === Infinity ? 0 : low24h,
       },
       candles: { m1, m5, m15, m30, h1, h4 },
-      indicators: computeIndicators(h1),
+      indicators: {
+        ...computeIndicators(h1),
+        mtf: computeMultiTFIndicators(m15, h1, h4),
+      },
       account: { balances, openOrders },
       positions,       // rich MT5 position detail (sl, tp, profit, priceCurrent, swap)
       pendingOrders,   // pending limit/stop orders not yet filled

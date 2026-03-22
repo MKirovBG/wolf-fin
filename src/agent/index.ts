@@ -202,7 +202,7 @@ function candleTrendLine(candles: Candle[], count: number, dp: number): string {
 
 function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string, config?: AgentConfig, mc?: MCResult): string {
   const price = snap.price as { bid?: number; ask?: number; last?: number } | undefined
-  const indicators = snap.indicators as { rsi14?: number; ema20?: number; ema50?: number; atr14?: number; vwap?: number; bbWidth?: number } | undefined
+  const indicators = snap.indicators as { rsi14?: number; ema20?: number; ema50?: number; atr14?: number; vwap?: number; bbWidth?: number; mtf?: { m15?: { rsi14: number; ema20: number; atr14: number }; h4?: { rsi14: number; ema20: number; ema50?: number; atr14: number }; confluence: number } } | undefined
   const forex = snap.forex as { spread?: number; sessionOpen?: boolean; pipValue?: number; point?: number; pipSize?: number; swapLong?: number; swapShort?: number } | undefined
   const candles = snap.candles as { m1?: Candle[]; m5?: Candle[]; m15?: Candle[]; m30?: Candle[]; h1?: Candle[]; h4?: Candle[] } | undefined
   const positions = snap.positions as Array<{
@@ -308,6 +308,23 @@ function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string,
       parts.push(`VWAP: ${indicators.vwap.toFixed(dp)}${vwapRel}`)
     }
     if (parts.length > 0) lines.push(parts.join(' | '))
+  }
+
+  // ── Multi-timeframe indicator summary ──────────────────────────────────────
+  const mtf = indicators?.mtf
+  if (mtf) {
+    const mtfParts: string[] = []
+    if (mtf.m15) {
+      const m15Bias = mtf.m15.rsi14 > 50 ? 'bullish' : 'bearish'
+      mtfParts.push(`M15: RSI ${mtf.m15.rsi14.toFixed(1)} (${m15Bias})`)
+    }
+    if (mtf.h4) {
+      const h4Trend = (mtf.h4.ema50 != null && mtf.h4.ema20 > mtf.h4.ema50) ? '▲ bullish' : (mtf.h4.ema50 != null ? '▼ bearish' : '?')
+      mtfParts.push(`H4: RSI ${mtf.h4.rsi14.toFixed(1)} | EMA trend ${h4Trend}`)
+    }
+    const confLabel = mtf.confluence >= 2 ? 'STRONG BULLISH' : mtf.confluence <= -2 ? 'STRONG BEARISH' : mtf.confluence > 0 ? 'lean bullish' : mtf.confluence < 0 ? 'lean bearish' : 'neutral'
+    mtfParts.push(`Confluence: ${mtf.confluence > 0 ? '+' : ''}${mtf.confluence}/3 → ${confLabel}`)
+    lines.push(`MTF: ${mtfParts.join(' | ')}`)
   }
 
   // ── Multi-timeframe candle trend ────────────────────────────────────────────
@@ -463,7 +480,7 @@ function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string,
 
 // ── Session compression ───────────────────────────────────────────────────────
 
-const KEEP_MESSAGES = 20
+const KEEP_MESSAGES = 30
 
 /**
  * Find the index at which to cut the messages array for compression.
@@ -495,7 +512,31 @@ function compressToSummary(messages: Anthropic.MessageParam[]): string {
         const decMatch    = block.text.match(/DECISION:\s*(.+?)(?:\n|$)/i)
         const reasonMatch = block.text.match(/REASON:\s*(.+?)(?:\n|$)/i)
         if (decMatch) {
-          lines.push(`• ${decMatch[1].trim()}${reasonMatch ? ` — ${reasonMatch[1].trim()}` : ''}`)
+          const parts: string[] = [`• ${decMatch[1].trim()}`]
+          if (reasonMatch) parts[0] += ` — ${reasonMatch[1].trim()}`
+
+          // Extract indicator state at decision time
+          const rsiMatch = block.text.match(/RSI\s*(?:14)?\s*[:=]?\s*([\d.]+)/i)
+          const emaMatch = block.text.match(/EMA20\s*[<>]\s*EMA50|(?:bullish|bearish)\s+trend/i)
+          if (rsiMatch || emaMatch) {
+            const indicators: string[] = []
+            if (rsiMatch) indicators.push(`RSI=${rsiMatch[1]}`)
+            if (emaMatch) indicators.push(emaMatch[0].toLowerCase().includes('bullish') ? 'trend=bullish' : 'trend=bearish')
+            parts.push(`  [${indicators.join(', ')}]`)
+          }
+
+          // Extract key price levels mentioned
+          const levelMatches = block.text.match(/(?:support|resistance|level)\s+(?:at\s+)?(\d+\.?\d*)/gi)
+          if (levelMatches && levelMatches.length > 0) {
+            const levels = levelMatches.slice(0, 3).map(m => {
+              const numMatch = m.match(/(\d+\.?\d*)/)
+              const type = m.toLowerCase().includes('support') ? 'S' : m.toLowerCase().includes('resistance') ? 'R' : 'L'
+              return numMatch ? `${type}:${numMatch[1]}` : null
+            }).filter(Boolean)
+            if (levels.length > 0) parts.push(`  levels: ${levels.join(', ')}`)
+          }
+
+          lines.push(parts.join('\n'))
         }
       }
       if (block.type === 'tool_use' && ['place_order', 'close_position', 'cancel_order', 'modify_position'].includes(block.name ?? '')) {
@@ -877,6 +918,11 @@ async function dispatchTool(
   mt5AccountId?: number,
   agentKey = '',
 ): Promise<unknown> {
+  // Reject tool calls with malformed JSON from Ollama/local models
+  if (input._parse_error) {
+    return { error: `Tool call "${name}" had unparseable JSON arguments. Please re-emit this tool call with valid JSON. Raw: ${(input._raw as string) ?? '(unknown)'}` }
+  }
+
   const market = (input.market as 'crypto' | 'mt5' | undefined) ?? defaultMarket
   const adapter = getAdapter(market, mt5AccountId)
 

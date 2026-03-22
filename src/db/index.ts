@@ -15,6 +15,7 @@ export function initDb(): void {
   mkdirSync(join(__dirname, '../../data'), { recursive: true })
   db = new Database(DB_PATH)
   db.pragma('journal_mode = WAL')
+  db.pragma('busy_timeout = 5000')  // retry writes for up to 5s before SQLITE_BUSY
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS agents (
@@ -218,7 +219,7 @@ export function dbRecordCycle(key: string, result: CycleResult): void {
   )
 }
 
-export function dbGetTodayRealizedPnl(market: 'crypto' | 'forex' | 'mt5', dateStr: string): number {
+export function dbGetTodayRealizedPnl(market: 'crypto' | 'mt5', dateStr: string): number {
   const row = db.prepare(`
     SELECT COALESCE(SUM(pnl_usd), 0) AS total
     FROM cycle_results
@@ -437,19 +438,40 @@ export function dbGetMaxLogId(): number {
   return row?.maxId ?? 0
 }
 
-export function dbLogEvent(entry: LogEntry): void {
-  db.prepare(`
+// ── Log batching: buffer writes and flush in a single transaction ────────────
+const logBuffer: LogEntry[] = []
+let logFlushTimer: ReturnType<typeof setTimeout> | null = null
+const LOG_FLUSH_INTERVAL_MS = 2000
+
+function flushLogBuffer(): void {
+  if (logBuffer.length === 0) return
+  const batch = logBuffer.splice(0)
+  const insertStmt = db.prepare(`
     INSERT INTO log_entries (id, time, agent_key, level, event, message, data)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    entry.id,
-    entry.time,
-    entry.agentKey,
-    entry.level,
-    entry.event,
-    entry.message,
-    entry.data ? JSON.stringify(entry.data) : null,
-  )
+  `)
+  const insertMany = db.transaction((entries: LogEntry[]) => {
+    for (const e of entries) {
+      insertStmt.run(e.id, e.time, e.agentKey, e.level, e.event, e.message, e.data ? JSON.stringify(e.data) : null)
+    }
+  })
+  try { insertMany(batch) } catch (err) { console.error('[db] log flush failed:', err) }
+}
+
+export function dbLogEvent(entry: LogEntry): void {
+  logBuffer.push(entry)
+  if (!logFlushTimer) {
+    logFlushTimer = setTimeout(() => {
+      logFlushTimer = null
+      flushLogBuffer()
+    }, LOG_FLUSH_INTERVAL_MS)
+  }
+}
+
+/** Force-flush pending log entries (call before process exit) */
+export function dbFlushLogs(): void {
+  if (logFlushTimer) { clearTimeout(logFlushTimer); logFlushTimer = null }
+  flushLogBuffer()
 }
 
 export function dbGetLogs(sinceId?: number, agentKey?: string, limit = 200): LogEntry[] {
@@ -532,7 +554,8 @@ export function dbClearMemories(agentKey: string): void {
 export function dbResetAgentData(agentKey: string): { deleted: Record<string, number> } {
   const del = (table: string, col = 'agent_key') =>
     (db.prepare(`DELETE FROM ${table} WHERE ${col} = ?`).run(agentKey)).changes
-  const deleted = {
+  // Wrap all deletes in a single transaction to avoid write contention
+  const resetTx = db.transaction(() => ({
     memories:  del('agent_memories'),
     strategy:  del('agent_strategies'),
     plans:     del('agent_plans'),
@@ -540,8 +563,8 @@ export function dbResetAgentData(agentKey: string): { deleted: Record<string, nu
     sessions:  del('agent_sessions'),
     cycles:    del('cycle_results'),
     logs:      del('log_entries'),
-  }
-  return { deleted }
+  }))
+  return { deleted: resetTx() }
 }
 
 // ── Strategy ─────────────────────────────────────────────────────────────────

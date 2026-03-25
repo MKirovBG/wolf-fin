@@ -55,7 +55,8 @@ export async function refreshOpenAIToken(refreshToken: string): Promise<{
 type ResponsesAPIInputItem =
   | { role: 'user';      content: string }
   | { role: 'assistant'; content: string }
-  | { type: 'function_call'; id: string; name: string; arguments: string }
+  // The Responses API requires call_id on function_call items (used to link outputs)
+  | { type: 'function_call'; id: string; call_id: string; name: string; arguments: string }
   | { type: 'function_call_output'; call_id: string; output: string }
 
 function toResponsesAPIInput(messages: Anthropic.MessageParam[]): ResponsesAPIInputItem[] {
@@ -72,10 +73,14 @@ function toResponsesAPIInput(messages: Anthropic.MessageParam[]): ResponsesAPIIn
       const textBlocks  = blocks.filter(b => b.type === 'text') as Anthropic.TextBlockParam[]
 
       for (const tr of toolResults) {
+        // tool_use_id can be undefined at runtime despite the type saying string;
+        // JSON.stringify silently drops undefined values → API 400 missing call_id
+        const callId = tr.tool_use_id ?? ''
+        if (!callId) continue   // skip malformed tool results with no id
         const output = Array.isArray(tr.content)
           ? (tr.content as Anthropic.TextBlockParam[]).map(b => b.text ?? '').join('\n')
           : (tr.content as string | undefined) ?? ''
-        result.push({ type: 'function_call_output', call_id: tr.tool_use_id, output })
+        result.push({ type: 'function_call_output', call_id: callId, output })
       }
       if (textBlocks.length > 0) {
         result.push({ role: 'user', content: textBlocks.map(b => b.text).join('\n') })
@@ -93,7 +98,8 @@ function toResponsesAPIInput(messages: Anthropic.MessageParam[]): ResponsesAPIIn
         } else if (block.type === 'tool_use') {
           result.push({
             type:      'function_call',
-            id:        block.id,
+            id:        `fc_${block.id}`,  // Responses API requires id to start with 'fc'
+            call_id:   block.id,          // actual tool id — matched by function_call_output.call_id
             name:      block.name,
             arguments: JSON.stringify(block.input),
           })
@@ -131,8 +137,9 @@ interface ResponsesOutputItem {
   type:    'message' | 'function_call'
   role?:   string
   content?: Array<{ type: string; text?: string }>
-  // function_call fields
+  // function_call fields — API returns both id (item id) and call_id (linking id)
   id?:        string
+  call_id?:   string
   name?:      string
   arguments?: string
 }
@@ -196,6 +203,10 @@ async function consumeSSE(res: Response): Promise<ResponsesDoneEvent['response']
 function fromResponsesAPIResponse(
   response: ResponsesDoneEvent['response']
 ): LLMResponse {
+  if (response.status === 'failed' || response.status === 'incomplete') {
+    throw new Error(`Codex API response status: ${response.status}`)
+  }
+
   const content: Array<Anthropic.TextBlock | Anthropic.ToolUseBlock> = []
   let hasToolUse = false
 
@@ -212,7 +223,8 @@ function fromResponsesAPIResponse(
       try { input = JSON.parse(item.arguments ?? '{}') } catch { /* ignore */ }
       content.push({
         type:  'tool_use',
-        id:    item.id ?? `call_${Date.now()}`,
+        // Use call_id (the linking ID) as our tool_use id so function_call_output.call_id matches
+        id:    item.call_id ?? item.id ?? `call_${Date.now()}`,
         name:  item.name,
         input,
       } as Anthropic.ToolUseBlock)
@@ -261,13 +273,16 @@ export class OpenAISubscriptionProvider implements LLMProvider {
     if (params.tools.length > 0) {
       body.tools        = toResponsesAPITools(params.tools)
       body.tool_choice  = 'auto'
-      body.parallel_tool_calls = true
+      // parallel_tool_calls disabled: prevents two order/close calls firing before
+      // guardrails can inspect the first result (safer for live trading)
+      body.parallel_tool_calls = false
     }
 
     const res = await fetch(CODEX_URL, {
       method:  'POST',
       headers,
       body:    JSON.stringify(body),
+      signal:  AbortSignal.timeout(90_000),   // 90 s — prevents hung tick loops
     })
 
     if (!res.ok) {

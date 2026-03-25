@@ -27,9 +27,10 @@ export function getLLMProvider(config: AgentConfig): LLMProvider {
     return new OllamaProvider(url)
   }
   if (config.llmProvider === 'openai-subscription') {
-    const token = getOpenAIAccessToken()
-    if (!token) throw new Error('OpenAI account not connected — authorize on the Integrations page')
-    return new OpenAISubscriptionProvider(token)
+    const status = getOpenAITokenStatus()
+    if (status === 'expired') throw new Error('OpenAI token expired — click Refresh on the Integrations page')
+    if (status === 'missing') throw new Error('OpenAI account not connected — authorize on the Integrations page')
+    return new OpenAISubscriptionProvider(getOpenAIAccessToken()!)
   }
   return new AnthropicProvider()
 }
@@ -51,9 +52,10 @@ export function getPlatformLLMProvider(): LLMProvider {
     return new OllamaProvider(url)
   }
   if (provider === 'openai-subscription') {
-    const token = getOpenAIAccessToken()
-    if (!token) throw new Error('OpenAI account not connected — authorize on the Integrations page')
-    return new OpenAISubscriptionProvider(token)
+    const status = getOpenAITokenStatus()
+    if (status === 'expired') throw new Error('OpenAI token expired — click Refresh on the Integrations page')
+    if (status === 'missing') throw new Error('OpenAI account not connected — authorize on the Integrations page')
+    return new OpenAISubscriptionProvider(getOpenAIAccessToken()!)
   }
   return new AnthropicProvider()
 }
@@ -64,8 +66,16 @@ export function getOpenAIAccessToken(): string | null {
   const token   = process.env.OPENAI_ACCESS_TOKEN
   const expires = process.env.OPENAI_TOKEN_EXPIRES ? parseInt(process.env.OPENAI_TOKEN_EXPIRES) : 0
   if (!token) return null
-  if (expires > 0 && Date.now() > expires) return null  // expired — caller must refresh
+  if (expires > 0 && Date.now() > expires) return null  // expired
   return token
+}
+
+export function getOpenAITokenStatus(): 'missing' | 'expired' | 'valid' {
+  const token   = process.env.OPENAI_ACCESS_TOKEN
+  const expires = process.env.OPENAI_TOKEN_EXPIRES ? parseInt(process.env.OPENAI_TOKEN_EXPIRES) : 0
+  if (!token) return 'missing'
+  if (expires > 0 && Date.now() > expires) return 'expired'
+  return 'valid'
 }
 
 export function getPlatformLLMModel(): string {

@@ -1,5 +1,5 @@
 // Wolf-Fin Guardrails — pre-execution order validation
-import { MAX_POSITION_USD, getRiskState } from './riskState.js';
+import { MAX_POSITION_USD, getRiskStateFor } from './riskStateStore.js';
 // Binance spot minimum order sizes — configurable via .env or per-symbol in future
 // Defaults match Binance BTCUSDT minimums; adjust for other pairs via environment.
 const MIN_NOTIONAL_USD = parseFloat(process.env.MIN_ORDER_NOTIONAL_USD ?? '10');
@@ -30,7 +30,7 @@ export function validateOrder(params, currentPrice) {
         };
     }
     // 3. Maximum position size
-    const risk = getRiskState();
+    const risk = getRiskStateFor('crypto');
     const projectedNotional = params.side === 'BUY'
         ? risk.positionNotionalUsd + notional
         : risk.positionNotionalUsd - notional;

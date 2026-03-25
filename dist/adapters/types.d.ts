@@ -66,6 +66,23 @@ export interface Indicators {
     bbWidth: number;
     /** Multi-timeframe indicator data — optional, present when MTF candles are available */
     mtf?: MTFIndicators;
+    /** MACD 12/26/9 — optional, present when macdEnabled */
+    macd?: {
+        macd: number;
+        signal: number;
+        histogram: number;
+    };
+    /** ADX 14 — optional, present when adxEnabled */
+    adx?: {
+        adx: number;
+        plusDI: number;
+        minusDI: number;
+    };
+    /** Stochastic 14/3 — optional, present when stochEnabled */
+    stoch?: {
+        k: number;
+        d: number;
+    };
 }
 /** Per-timeframe indicator subset */
 export interface TFIndicators {

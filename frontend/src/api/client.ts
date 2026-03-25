@@ -1,4 +1,4 @@
-import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, CycleDetail, LogEntry, PositionEntry, FillEntry, AccountEntry, Mt5AccountInfo, OpenRouterModel, OllamaModel, StrategyDoc, AgentMemory, AgentPlan, AgentStats, SelectedAccount, PlatformLLMConfig, AnthropicModel, AgentAnalysisResult, MCResultData } from '../types/index.ts'
+import type { StatusResponse, KeysResponse, ReportSummary, AgentConfig, AgentState, MarketSnapshot, CycleResult, CycleDetail, LogEntry, PositionEntry, FillEntry, AccountEntry, Mt5AccountInfo, OpenRouterModel, OllamaModel, StrategyDoc, AgentMemory, AgentPlan, AgentStats, SelectedAccount, PlatformLLMConfig, AnthropicModel, AgentAnalysisResult, MCResultData, EconomicEvent, AgentAnalyticsData, PortfolioData, SweepResponse } from '../types/index.ts'
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, options)
@@ -178,6 +178,25 @@ export const setKey = (key: string, value: string) =>
 export const testKey = (service: string) =>
   api<{ ok: boolean; message: string }>(`/api/keys/test/${service}`, { method: 'POST' })
 
+export const importClaudeFromCli = () =>
+  api<{ ok: boolean; subscriptionType?: string }>('/api/auth/claude/import-from-cli', { method: 'POST' })
+
+export const getClaudeAuthUrl = () =>
+  api<{ url: string; state: string }>('/api/auth/claude/start')
+
+export const exchangeClaudeCode = (code: string, state: string) =>
+  api<{ ok: boolean }>('/api/auth/claude/exchange', { method: 'POST', ...{ headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, state }) } })
+
+// ── OpenAI OAuth ──────────────────────────────────────────────────────────────
+export const getOpenAIAuthUrl = () =>
+  api<{ url: string; state: string }>('/api/auth/openai/start')
+
+export const exchangeOpenAICode = (code: string, state: string) =>
+  api<{ ok: boolean }>('/api/auth/openai/exchange', { method: 'POST', ...json({ code, state }) })
+
+export const refreshOpenAIToken = () =>
+  api<{ ok: boolean }>('/api/auth/openai/refresh', { method: 'POST' })
+
 // ── System Prompt ─────────────────────────────────────────────────────────────
 export const getSystemPrompt = (key: string) =>
   api<{ prompt: string }>(`/api/system-prompt/${encodeURIComponent(key)}`)
@@ -247,3 +266,31 @@ export const getAgentPlan = (key: string) => api<AgentPlan>(`/api/agents/${key}/
 export const getAgentPlans = (key: string) => api<AgentPlan[]>(`/api/agents/${key}/plans`)
 export const triggerPlanningCycle = (key: string) =>
   api<{ ok: boolean }>(`/api/agents/${key}/plan`, { method: 'POST' })
+
+// ── Portfolio ─────────────────────────────────────────────────────────────────
+export const getPortfolio = () => api<PortfolioData>('/api/portfolio')
+export const pauseAllAgents = () => api<{ ok: boolean; paused: number }>('/api/portfolio/pause-all', { method: 'POST' })
+
+// ── Backtest Sweep ─────────────────────────────────────────────────────────────
+export interface SweepParams {
+  key: string; timeframe?: string; bars?: number
+  slRange?: number[]; tpRange?: number[]
+  rsiOversold?: number; rsiOverbought?: number; requireEmaConfirm?: boolean
+  rsiPeriod?: number; emaFast?: number; emaSlow?: number; atrPeriod?: number
+  startingEquityUsd?: number; maxRiskPercent?: number
+}
+export const runBacktestSweep = (params: SweepParams) =>
+  api<SweepResponse>('/api/agent-backtest-sweep', { method: 'POST', ...json(params) })
+
+// ── Economic Calendar ─────────────────────────────────────────────────────────
+export const getEconomicCalendar = (currencies?: string, days?: number) => {
+  const p = new URLSearchParams()
+  if (currencies) p.set('currencies', currencies)
+  if (days)       p.set('days', String(days))
+  const qs = p.toString()
+  return api<{ ok: boolean; events: EconomicEvent[] }>(`/api/economic-calendar${qs ? `?${qs}` : ''}`)
+}
+
+// ── Agent Analytics ───────────────────────────────────────────────────────────
+export const getAgentAnalytics = (key: string) =>
+  api<AgentAnalyticsData>(`/api/agents/${encodeURIComponent(key)}/analytics`)

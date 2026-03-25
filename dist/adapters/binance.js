@@ -52,20 +52,27 @@ function mapKlines(raw) {
 // ── BinanceAdapter ────────────────────────────────────────────────────────────
 export class BinanceAdapter {
     market = 'crypto';
-    async getSnapshot(symbol, riskState) {
+    async getSnapshot(symbol, riskState, indicatorCfg, candleCfg) {
         const c = client();
-        const [ticker, m1raw, m15raw, h1raw, h4raw, bookTicker, account, openOrders] = await Promise.all([
+        const limit = candleCfg?.limit ?? 100;
+        const tfs = candleCfg?.timeframes ?? ['m1', 'm15', 'h1', 'h4'];
+        const fetches = [
             c.get24hrChangeStatistics({ symbol }),
-            c.getKlines({ symbol, interval: '1m', limit: 100 }),
-            c.getKlines({ symbol, interval: '15m', limit: 100 }),
-            c.getKlines({ symbol, interval: '1h', limit: 100 }),
-            c.getKlines({ symbol, interval: '4h', limit: 100 }),
+            tfs.includes('m1') ? c.getKlines({ symbol, interval: '1m', limit }) : Promise.resolve([]),
+            tfs.includes('m15') ? c.getKlines({ symbol, interval: '15m', limit }) : Promise.resolve([]),
+            tfs.includes('h1') ? c.getKlines({ symbol, interval: '1h', limit }) : Promise.resolve([]),
+            tfs.includes('h4') ? c.getKlines({ symbol, interval: '4h', limit }) : Promise.resolve([]),
             c.getOrderBook({ symbol, limit: 5 }),
             signedGet('/api/v3/account'),
             signedGet('/api/v3/openOrders', { symbol }),
-        ]);
+            tfs.includes('m5') ? c.getKlines({ symbol, interval: '5m', limit }) : Promise.resolve([]),
+            tfs.includes('m30') ? c.getKlines({ symbol, interval: '30m', limit }) : Promise.resolve([]),
+        ];
+        const [ticker, m1raw, m15raw, h1raw, h4raw, bookTicker, account, openOrders, m5raw, m30raw] = await Promise.all(fetches);
         const m1 = mapKlines(m1raw);
+        const m5 = mapKlines(m5raw);
         const m15 = mapKlines(m15raw);
+        const m30 = mapKlines(m30raw);
         const h1 = mapKlines(h1raw);
         const h4 = mapKlines(h4raw);
         const bid = num(bookTicker.bids[0]?.[0] ?? 0);
@@ -99,10 +106,10 @@ export class BinanceAdapter {
                 high: num(ticker.highPrice),
                 low: num(ticker.lowPrice),
             },
-            candles: { m1, m5: [], m15, m30: [], h1, h4 },
+            candles: { m1, m5, m15, m30, h1, h4 },
             indicators: {
-                ...computeIndicators(h1),
-                mtf: computeMultiTFIndicators(m15, h1, h4),
+                ...computeIndicators(h1, indicatorCfg),
+                ...(indicatorCfg?.mtfEnabled !== false ? { mtf: computeMultiTFIndicators(m15, h1, h4, indicatorCfg) } : {}),
             },
             account: { balances, openOrders: orders },
             risk: riskState,

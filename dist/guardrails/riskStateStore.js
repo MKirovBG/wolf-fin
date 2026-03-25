@@ -2,7 +2,7 @@
 const MAX_DAILY_LOSS_USD = parseFloat(process.env.MAX_DAILY_LOSS_USD ?? '200');
 const MAX_POSITION_USD = parseFloat(process.env.MAX_POSITION_USD ?? '1000');
 const MAX_COMBINED_NOTIONAL_USD = parseFloat(process.env.MAX_COMBINED_NOTIONAL_USD ?? '2000');
-let lastMt5Context = { spread: 0, sessionOpen: false, pipValue: 0.0001, point: 0.0001, digits: 5 };
+let lastMt5Context = { spread: 0, sessionOpen: false, pipValue: 0.0001, point: 0.0001, digits: 5, pipSize: 0.0001 };
 export function setMt5Context(ctx) {
     lastMt5Context = ctx;
 }

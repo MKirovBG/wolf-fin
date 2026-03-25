@@ -164,6 +164,20 @@ export function initDb(): void {
       )
     `)
   } catch { /* already exists */ }
+
+  // Persistent MT5 account registry — survives bridge restarts, preserves history
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS mt5_accounts (
+        login        INTEGER PRIMARY KEY,
+        name         TEXT    NOT NULL DEFAULT '',
+        server       TEXT    NOT NULL DEFAULT '',
+        mode         TEXT    NOT NULL DEFAULT 'DEMO',
+        last_seen_at TEXT    NOT NULL,
+        in_bridge    INTEGER NOT NULL DEFAULT 1
+      )
+    `)
+  } catch { /* already exists */ }
 }
 
 // ── Agents ──────────────────────────────────────────────────────────────────
@@ -469,6 +483,61 @@ export function dbSetSelectedAccount(account: SelectedAccount | null): void {
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `).run(JSON.stringify(account))
   }
+}
+
+// ── MT5 account registry ─────────────────────────────────────────────────────
+
+export interface Mt5AccountRow {
+  login: number
+  name: string
+  server: string
+  mode: 'DEMO' | 'LIVE'
+  lastSeenAt: string
+  inBridge: boolean
+}
+
+/** Upsert a batch of accounts currently reported by the bridge (marks them in_bridge=1). */
+export function dbUpsertMt5Accounts(accounts: Array<{ login: number; name: string; server: string; mode: 'DEMO' | 'LIVE' }>): void {
+  const now = new Date().toISOString()
+  const stmt = db.prepare(`
+    INSERT INTO mt5_accounts (login, name, server, mode, last_seen_at, in_bridge)
+    VALUES (?, ?, ?, ?, ?, 1)
+    ON CONFLICT(login) DO UPDATE SET
+      name         = excluded.name,
+      server       = CASE WHEN excluded.server != '' THEN excluded.server ELSE mt5_accounts.server END,
+      mode         = excluded.mode,
+      last_seen_at = excluded.last_seen_at,
+      in_bridge    = 1
+  `)
+  const upsertAll = db.transaction((rows: typeof accounts) => {
+    for (const a of rows) stmt.run(a.login, a.name, a.server, a.mode, now)
+  })
+  upsertAll(accounts)
+}
+
+/** Mark all accounts NOT in the given login list as no longer in bridge. */
+export function dbMarkMt5AccountsGone(currentLogins: number[]): void {
+  if (currentLogins.length === 0) {
+    db.prepare('UPDATE mt5_accounts SET in_bridge = 0').run()
+    return
+  }
+  const placeholders = currentLogins.map(() => '?').join(',')
+  db.prepare(`UPDATE mt5_accounts SET in_bridge = 0 WHERE login NOT IN (${placeholders})`).run(...currentLogins)
+}
+
+/** Get all known MT5 accounts (bridge-live and disconnected). */
+export function dbGetAllMt5Accounts(): Mt5AccountRow[] {
+  const rows = db.prepare('SELECT * FROM mt5_accounts ORDER BY last_seen_at DESC').all() as Array<{
+    login: number; name: string; server: string; mode: string; last_seen_at: string; in_bridge: number
+  }>
+  return rows.map(r => ({
+    login: r.login,
+    name: r.name,
+    server: r.server,
+    mode: r.mode as 'DEMO' | 'LIVE',
+    lastSeenAt: r.last_seen_at,
+    inBridge: r.in_bridge === 1,
+  }))
 }
 
 // ── Log entries ──────────────────────────────────────────────────────────────

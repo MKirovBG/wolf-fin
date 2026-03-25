@@ -9,6 +9,16 @@ import { MC_ENHANCEMENT_DEFAULTS, MC_ENHANCEMENT_LABELS } from '../types/index.t
 import { IndicatorConfigEditor, CandleConfigEditor, ContextConfigEditor } from './DataConfigEditors.tsx'
 import { useToast } from './Toast.tsx'
 
+const ANTHROPIC_MODELS = [
+  { id: 'claude-opus-4-6',           label: 'Claude Opus 4.6'   },
+  { id: 'claude-sonnet-4-6',         label: 'Claude Sonnet 4.6' },
+  { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5'  },
+  { id: 'claude-opus-4-5',           label: 'Claude Opus 4.5'   },
+  { id: 'claude-sonnet-4-5',         label: 'Claude Sonnet 4.5' },
+  { id: 'claude-haiku-3-5',          label: 'Claude Haiku 3.5'  },
+  { id: 'claude-sonnet-3-7',         label: 'Claude Sonnet 3.7' },
+]
+
 interface Props {
   agent: AgentState
   onRefresh: () => void
@@ -42,6 +52,8 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
 
   const fetchMode = watch('fetchMode')
   const llmProvider = watch('llmProvider')
+  const llmModel = watch('llmModel')
+  const agentMarket = watch('market')
   const isRunning = agent.status === 'running'
   const [saving, setSaving] = useState(false)
   const [indicatorConfig, setIndicatorConfig] = useState<IndicatorConfig>(agent.config.indicatorConfig ?? {})
@@ -212,13 +224,32 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
         <ConfigSection title="AI Model">
           <div className="space-y-4">
             <div>
-              <FieldLabel hint="Which LLM provider to use for this agent's reasoning. Anthropic is the default; OpenRouter gives access to 300+ models; Ollama runs locally.">Provider</FieldLabel>
+              <FieldLabel hint="Which LLM provider to use for this agent's reasoning. 'Platform LLM' inherits whatever is configured on the Integrations page.">Provider</FieldLabel>
               <select {...register('llmProvider')}>
-                <option value="anthropic">Anthropic (Claude)</option>
+                <option value="platform">Platform LLM (default)</option>
+                <option value="anthropic">Anthropic (API Key)</option>
+                <option value="anthropic-subscription">Anthropic (Subscription)</option>
                 <option value="openrouter">OpenRouter</option>
                 <option value="ollama">Ollama (Local)</option>
               </select>
             </div>
+
+            {(llmProvider === 'anthropic' || llmProvider === 'anthropic-subscription') && (
+              <div>
+                <FieldLabel>Claude Model</FieldLabel>
+                <select {...register('llmModel')} className="mt-2">
+                  <option value="">— Default (claude-sonnet-4-6) —</option>
+                  {ANTHROPIC_MODELS.map(m => (
+                    <option key={m.id} value={m.id}>{m.label} · {m.id}</option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-muted mt-1">
+                  {llmProvider === 'anthropic-subscription'
+                    ? 'Requires CLAUDE_SESSION_TOKEN — connect on the Integrations page.'
+                    : 'Requires ANTHROPIC_API_KEY to be set on the server.'}
+                </p>
+              </div>
+            )}
 
             {llmProvider === 'openrouter' && (
               <div>
@@ -293,6 +324,12 @@ export function SettingsPanel({ agent, agentKey, onSave, onDelete }: {
                 )}
               </div>
             )}
+          {/* Haiku warning for live MT5 trading */}
+          {agentMarket === 'mt5' && (llmModel ?? '').toLowerCase().includes('haiku') && (
+            <div className="mt-3 px-3 py-2.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs leading-relaxed">
+              <span className="font-semibold">Warning:</span> Haiku models frequently fail to call trading tools under complex prompts and will write text decisions instead of placing orders. Use <span className="font-mono">{llmProvider === 'openrouter' ? 'anthropic/claude-sonnet-4-6' : 'claude-sonnet-4-6'}</span> or better for live MT5 trading.
+            </div>
+          )}
           </div>
         </ConfigSection>
 
@@ -445,7 +482,11 @@ export function AgentCard({ agent }: Props) {
         {agent.startedAt && (
           <div className="text-muted">Started <span className="text-text font-medium ml-1">{rel(agent.startedAt)}</span></div>
         )}
-        <div className="text-muted">LLM <span className="text-text font-medium ml-1">{agent.config.llmProvider ?? 'anthropic'}</span></div>
+        <div className="text-muted">LLM <span className="text-text font-medium ml-1">{
+          !agent.config.llmProvider || agent.config.llmProvider === 'platform' ? 'platform'
+          : agent.config.llmProvider === 'anthropic-subscription' ? 'subscription'
+          : agent.config.llmProvider
+        }</span></div>
       </div>
 
       {/* Last decision */}

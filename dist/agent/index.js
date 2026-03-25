@@ -6,18 +6,18 @@ import pino from 'pino';
 import { getLLMProvider, getModelForConfig } from '../llm/index.js';
 import { RateLimitError } from '../llm/openrouter.js';
 import { getAdapter } from '../adapters/registry.js';
-import { getRiskState } from '../guardrails/riskState.js';
-import { updatePositionNotionalFor, setMt5Context, getRiskStateFor } from '../guardrails/riskStateStore.js';
-import { validateOrder } from '../guardrails/validate.js';
-import { validateMt5Order } from '../guardrails/mt5.js';
 import { getMt5Context } from '../guardrails/riskStateStore.js';
-import { buildMarketContext } from './context.js';
 import { sessionLabel, minutesUntilSessionClose } from '../adapters/session.js';
+import { handleMarketData } from './tools/marketData.js';
+import { handleExecution } from './tools/execution.js';
+import { handleIntelligence } from './tools/intelligence.js';
 import { fetchForexNews } from '../adapters/finnhubNews.js';
-import { runMonteCarlo, formatMCBlock } from '../adapters/montecarlo.js';
+import { formatMCBlock } from '../adapters/montecarlo.js';
+import { runEnhancedMonteCarlo, formatEnhancedMCBlock } from '../adapters/mc-orchestrator.js';
+import { MC_ENHANCEMENT_DEFAULTS } from '../adapters/mc-types.js';
 import { getTools } from '../tools/definitions.js';
-import { recordCycle, logEvent, tryAcquireCycleLock, releaseCycleLock, getAgent, setAgentStatus, setAgentPaused, consumePlanRequest } from '../server/state.js';
-import { dbGetAgentPerformance, makeAgentKey, dbSaveMemory, dbGetMemories, dbDeleteMemory, dbSavePlan, dbGetActivePlan, dbGetStrategy, dbGetTodaySession, dbSaveSession, dbGetPreviousSession, } from '../db/index.js';
+import { recordCycle, logEvent, tryAcquireCycleLock, releaseCycleLock, setAgentStatus, setAgentPaused, consumePlanRequest } from '../server/state.js';
+import { dbGetAgentPerformance, makeAgentKey, dbSaveMemory, dbGetMemories, dbGetActivePlan, dbGetStrategy, dbGetTodaySession, dbSaveSession, dbGetPreviousSession, dbGetTradeRecords, } from '../db/index.js';
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 const activeSessions = new Map();
 function todayDate() {
@@ -115,17 +115,10 @@ async function detectExternalCloses(agentKey, config, currentPositions, agentClo
     }
     return notes.join('\n');
 }
-/** Pip size for stop-price calculation — commodity-aware */
-function pipSize(symbol, point) {
-    const s = symbol.toUpperCase();
-    if (s.startsWith('XAU') || s.startsWith('XAG') || s.startsWith('XPT') || s.startsWith('XPD') ||
-        s.includes('OIL') || s.includes('GAS') || s.includes('GOLD') || s.includes('SILVER')) {
-        return point ?? 0.01;
-    }
-    if (s.includes('JPY'))
-        return 0.01;
-    return 0.0001;
-}
+/** Pip size from broker point — no symbol-name mapping needed.
+ *  point >= 0.01 → index/commodity/crypto: 1 pip = 1 full price unit
+ *  point <  0.01 → forex: 1 pip = point × 10 (standard 10-point pip)
+ *  No point available → minimal fallback only */
 // ── Snapshot summary formatter (for subsequent tick messages) ─────────────────
 // Detect appropriate decimal places from the magnitude of price.
 // forex (EURUSD ~1.15) → 5dp | JPY-pairs (~150) → 3dp | metals/crypto (~4900) → 2dp
@@ -243,6 +236,19 @@ function formatSnapshotSummary(snap, agentKey, config, mc) {
         }
         if (parts.length > 0)
             lines.push(parts.join(' | '));
+        // Optional: MACD, ADX, Stochastic
+        if (indicators.macd) {
+            const h = indicators.macd.histogram;
+            lines.push(`MACD: ${indicators.macd.macd.toFixed(dp)} | Signal: ${indicators.macd.signal.toFixed(dp)} | Hist: ${h >= 0 ? '+' : ''}${h.toFixed(dp)} ${h > 0 ? '(bullish momentum)' : '(bearish momentum)'}`);
+        }
+        if (indicators.adx) {
+            const trend = indicators.adx.adx >= 25 ? 'TRENDING' : 'RANGING';
+            lines.push(`ADX(14): ${indicators.adx.adx.toFixed(1)} (${trend}) | +DI: ${indicators.adx.plusDI.toFixed(1)} | -DI: ${indicators.adx.minusDI.toFixed(1)}`);
+        }
+        if (indicators.stoch) {
+            const label = indicators.stoch.k >= 80 ? '(overbought)' : indicators.stoch.k <= 20 ? '(oversold)' : '';
+            lines.push(`Stoch(14,3): K=${indicators.stoch.k.toFixed(1)} D=${indicators.stoch.d.toFixed(1)} ${label}`);
+        }
     }
     // ── Multi-timeframe indicator summary ──────────────────────────────────────
     const mtf = indicators?.mtf;
@@ -302,14 +308,19 @@ function formatSnapshotSummary(snap, agentKey, config, mc) {
         const marginPerLot = currentPrice > 0 ? (contractSize * currentPrice) / leverage : 0;
         const lotsByMargin = marginPerLot > 0 ? (freeMargin * 0.5) / marginPerLot : 0.01;
         // Final: minimum of all three, floored at 0.01
-        const suggestedLots = Math.max(0.01, Math.floor(Math.min(lotsByTarget, lotsByRisk, lotsByMargin) * 100) / 100);
-        // Store for guardrail clamp
+        const baseLots = Math.max(0.01, Math.floor(Math.min(lotsByTarget, lotsByRisk, lotsByMargin) * 100) / 100);
+        // Apply VOLATILE regime multiplier (MC Markov state)
+        const isVolatile = mc != null && 'markov' in mc && mc.markov?.currentState === 'VOLATILE';
+        const regimeMultiplier = isVolatile ? 0.5 : 1.0;
+        const suggestedLots = Math.max(0.01, Math.floor(baseLots * regimeMultiplier * 100) / 100);
+        const regimeNote = isVolatile ? ` ⚠ VOLATILE regime — size halved from ${baseLots.toFixed(2)}` : '';
+        // Store for guardrail hard cap
         if (agentKey)
             suggestedLotsByAgent.set(agentKey, suggestedLots);
         const riskUsd = suggestedLots * riskPerLot;
         const rewardUsd = suggestedLots * rewardPerLot;
         const marginNeeded = suggestedLots * marginPerLot;
-        lines.push(`POSITION SIZING (use this):`, `  Daily target: $${dailyTarget} | Max risk: ${maxRiskPct}% ($${maxRiskUsd.toFixed(0)}) | Leverage: 1:${leverage}`, `  ATR-based SL: ~${slPips.toFixed(1)} pips ($${riskPerLot.toFixed(0)}/lot) | TP at R:R ${rrRatio}: ~${(slPips * rrRatio).toFixed(1)} pips ($${rewardPerLot.toFixed(0)}/lot)`, `  ► SUGGESTED SIZE: ${suggestedLots.toFixed(2)} lots — risk $${riskUsd.toFixed(0)}, reward $${rewardUsd.toFixed(0)}, margin $${marginNeeded.toFixed(0)}`, `  (System will reject orders above ${Math.max(0.01, Math.round(suggestedLots * 2 * 100) / 100)} lots)`);
+        lines.push(`POSITION SIZING (use this):`, `  Daily target: $${dailyTarget} | Max risk: ${maxRiskPct}% ($${maxRiskUsd.toFixed(0)}) | Leverage: 1:${leverage}`, `  ATR-based SL: ~${slPips.toFixed(1)} pips ($${riskPerLot.toFixed(0)}/lot) | TP at R:R ${rrRatio}: ~${(slPips * rrRatio).toFixed(1)} pips ($${rewardPerLot.toFixed(0)}/lot)`, `  ► SUGGESTED SIZE: ${suggestedLots.toFixed(2)} lots — risk $${riskUsd.toFixed(0)}, reward $${rewardUsd.toFixed(0)}, margin $${marginNeeded.toFixed(0)}`, `  (System enforces ${suggestedLots.toFixed(2)} lots hard cap — orders above this are silently reduced)${regimeNote}`);
     }
     if (positions && positions.length > 0) {
         const totalFloat = positions.reduce((s, p) => s + p.profit, 0);
@@ -387,9 +398,65 @@ function formatSnapshotSummary(snap, agentKey, config, mc) {
     }
     // ── Monte Carlo probability table ──────────────────────────────────────────
     if (mc) {
-        lines.push(formatMCBlock(mc, forex?.pipSize ?? 1, dp));
+        // EnhancedMCResult has a `core` property; plain MCResult does not
+        const pipSz = forex?.pipSize ?? 1;
+        if ('core' in mc) {
+            lines.push(formatEnhancedMCBlock(mc, pipSz, dp));
+        }
+        else {
+            lines.push(formatMCBlock(mc, pipSz, dp));
+        }
+        // ── System advisories derived from MC signals ─────────────────────────
+        if ('core' in mc) {
+            const emc = mc;
+            const warnings = [];
+            if (emc.markov?.currentState === 'VOLATILE') {
+                const storedLots = agentKey ? (suggestedLotsByAgent.get(agentKey) ?? 0.01) : 0.01;
+                warnings.push(`⚠ VOLATILE REGIME: position size capped at 50% (${storedLots.toFixed(2)} lots hard cap).`);
+            }
+            if (emc.bayesian?.posteriorMean != null && emc.bayesian.posteriorMean < 0.4) {
+                warnings.push(`⚠ LOW STATISTICAL EDGE: Bayesian win rate ${(emc.bayesian.posteriorMean * 100).toFixed(1)}% < 40% threshold.`);
+            }
+            if (emc.kelly?.recommendedFraction === 'No Trade' || (emc.kelly?.fullKellyPct != null && emc.kelly.fullKellyPct < 10)) {
+                warnings.push(`⚠ MINIMAL EDGE: Kelly fraction ${emc.kelly.fullKellyPct?.toFixed(1) ?? '?'}% — do not force a trade.`);
+            }
+            if (emc.scenarios?.avoidTrading) {
+                warnings.push(`⚠ SCENARIO ANALYSIS: ${emc.scenarios.avoidReason ?? 'Stress test recommends avoiding new positions.'}`);
+            }
+            if (warnings.length > 0) {
+                lines.push(`\nSYSTEM ADVISORIES (enforced server-side):`);
+                for (const w of warnings)
+                    lines.push(`  ${w}`);
+            }
+        }
     }
     return lines.join('\n');
+}
+// ── Message history sanitiser ─────────────────────────────────────────────────
+/**
+ * Remove any trailing assistant messages whose tool_use blocks have no matching
+ * tool_result in the immediately following user message.
+ *
+ * This can happen when a tick errors out AFTER pushing the assistant reply to
+ * history but BEFORE the tool_result user message is appended — leaving the
+ * conversation in a state that the Anthropic API rejects on the next request.
+ */
+function sanitiseMessages(messages) {
+    while (messages.length > 0) {
+        const last = messages[messages.length - 1];
+        if (last.role !== 'assistant')
+            break;
+        // Check if this assistant message has any tool_use blocks
+        const content = Array.isArray(last.content) ? last.content : [];
+        const hasToolUse = content.some(b => b.type === 'tool_use');
+        if (!hasToolUse)
+            break; // no tool_use — nothing dangling
+        // There's a tool_use at the tail — it MUST be followed by a tool_result user message
+        // If it IS followed by one, the history is valid: stop here
+        // (This case shouldn't arise since we'd have at least one more message after)
+        // We're at the last message, so there's no following tool_result — remove it
+        messages.pop();
+    }
 }
 // ── Session compression ───────────────────────────────────────────────────────
 const KEEP_MESSAGES = 30;
@@ -787,156 +854,33 @@ function summariseToolResult(name, result) {
     }
 }
 // ── Tool Dispatcher ───────────────────────────────────────────────────────────
-async function dispatchTool(name, input, defaultMarket, mt5AccountId, agentKey = '') {
+async function dispatchTool(name, input, defaultMarket, mt5AccountId, agentKey = '', agentConfig) {
     // Reject tool calls with malformed JSON from Ollama/local models
     if (input._parse_error) {
         return { error: `Tool call "${name}" had unparseable JSON arguments. Please re-emit this tool call with valid JSON. Raw: ${input._raw ?? '(unknown)'}` };
     }
     const market = input.market ?? defaultMarket;
-    const adapter = getAdapter(market, mt5AccountId);
-    switch (name) {
-        case 'get_snapshot': {
-            const riskState = market === 'mt5' ? getRiskStateFor('mt5') : getRiskState();
-            const snap = await adapter.getSnapshot(input.symbol, riskState);
-            snap.context = await buildMarketContext(input.symbol, market);
-            const openNotional = snap.account.openOrders.reduce((sum, o) => sum + o.price * o.origQty, 0);
-            updatePositionNotionalFor(market, openNotional);
-            if (market === 'mt5' && snap.forex) {
-                const pt = snap.forex.point ?? 0.0001;
-                setMt5Context({ spread: snap.forex.spread, sessionOpen: snap.forex.sessionOpen, pipValue: snap.forex.pipValue, point: pt, digits: pt <= 0.001 ? 5 : 2 });
-            }
-            return snap;
-        }
-        case 'get_order_book':
-            return adapter.getOrderBook(input.symbol, input.depth);
-        case 'get_recent_trades':
-            return adapter.getRecentTrades(input.symbol, input.limit);
-        case 'get_open_orders':
-            return adapter.getOpenOrders(input.symbol);
-        case 'place_order': {
-            let requestedQty = input.quantity;
-            // ── Lot-size guardrail: clamp to 2× suggested size ──
-            const suggested = suggestedLotsByAgent.get(agentKey);
-            if (suggested != null && suggested > 0) {
-                const maxAllowed = Math.max(0.01, Math.round(suggested * 2 * 100) / 100);
-                if (requestedQty > maxAllowed) {
-                    logEvent(agentKey, 'warn', 'guardrail_block', `Lot size clamped: agent requested ${requestedQty} lots but max allowed is ${maxAllowed} (2× suggested ${suggested.toFixed(2)}). Using ${maxAllowed}.`);
-                    requestedQty = maxAllowed;
-                }
-                else if (requestedQty < 0.01) {
-                    requestedQty = 0.01;
-                }
-            }
-            const params = {
-                symbol: input.symbol,
-                side: input.side,
-                type: input.type,
-                quantity: requestedQty,
-                price: input.price,
-                timeInForce: input.timeInForce,
-                stopPips: input.stopPips,
-                tpPips: input.tpPips,
-            };
-            const agentGuardrails = getAgent(agentKey)?.config.guardrails;
-            const validation = market === 'mt5'
-                ? (() => { const ctx = getMt5Context(); return validateMt5Order(params, ctx.spread, ctx.sessionOpen, ctx.pipValue, agentGuardrails); })()
-                : validateOrder(params, params.price ?? 0);
-            if (!validation.ok) {
-                log.warn({ reason: validation.reason }, 'order blocked by guardrails');
-                return { blocked: true, reason: validation.reason };
-            }
-            if (market === 'mt5' && params.price != null) {
-                const ctxPoint = getMt5Context().point;
-                const pipSz = pipSize(params.symbol, ctxPoint);
-                if (params.stopPips != null) {
-                    params.stopPrice = params.side === 'BUY'
-                        ? params.price - params.stopPips * pipSz
-                        : params.price + params.stopPips * pipSz;
-                }
-                if (params.tpPips != null) {
-                    params.tpPrice = params.side === 'BUY'
-                        ? params.price + params.tpPips * pipSz
-                        : params.price - params.tpPips * pipSz;
-                }
-            }
-            return adapter.placeOrder(params);
-        }
-        case 'cancel_order': {
-            await adapter.cancelOrder(input.symbol, input.orderId);
-            return { cancelled: true };
-        }
-        case 'close_position': {
-            const mt5 = adapter;
-            if (typeof mt5.closePosition !== 'function')
-                throw new Error('close_position is only supported for MT5');
-            return mt5.closePosition(input.ticket, input.volume);
-        }
-        case 'modify_position': {
-            const mt5Adpt = adapter;
-            if (typeof mt5Adpt.modifyPosition !== 'function')
-                throw new Error('modify_position is only supported for MT5');
-            const { ticket, sl, tp } = input;
-            const result = await mt5Adpt.modifyPosition(ticket, sl, tp);
-            logEvent(agentKey, 'info', 'auto_execute', `modify_position #${ticket} → SL:${sl ?? 'unchanged'} TP:${tp ?? 'unchanged'}`);
-            return result;
-        }
-        case 'save_memory': {
-            const { category, key, value, confidence, ttl_hours } = input;
-            dbSaveMemory(agentKey, category, key, value, confidence, ttl_hours);
-            logEvent(agentKey, 'info', 'memory_write', `Saved memory [${category}] "${key}" (conf ${confidence})`);
-            return { ok: true, message: `Memory saved: [${category}] ${key}` };
-        }
-        case 'read_memories': {
-            const { category, limit } = input;
-            const memories = dbGetMemories(agentKey, category, limit ?? 10);
-            return { memories, count: memories.length };
-        }
-        case 'delete_memory': {
-            const { category, key } = input;
-            dbDeleteMemory(agentKey, category, key);
-            logEvent(agentKey, 'info', 'memory_write', `Deleted memory [${category}] "${key}"`);
-            return { ok: true };
-        }
-        case 'save_plan': {
-            const { market_bias, key_levels, risk_notes, plan_text, session_label } = input;
-            const planId = dbSavePlan(agentKey, { marketBias: market_bias, keyLevels: key_levels, riskNotes: risk_notes, planText: plan_text, sessionLabel: session_label, cycleCountAt: getAgent(agentKey)?.cycleCount });
-            logEvent(agentKey, 'info', 'plan_created', `Session plan saved [${market_bias.toUpperCase()}] id=${planId}`);
-            return { ok: true, planId, message: `Session plan saved with bias: ${market_bias}` };
-        }
-        case 'get_plan': {
-            const plan = dbGetActivePlan(agentKey);
-            if (!plan)
-                return { plan: null, message: 'No active plan for today. Consider running a planning cycle.' };
-            return { plan };
-        }
-        case 'get_trade_history': {
-            if (market !== 'mt5')
-                return { error: 'get_trade_history is only available for MT5' };
-            const mt5Adpt = adapter;
-            const days = input.days ?? 1;
-            const limit = input.limit ?? 20;
-            const sym = input.symbol;
-            const deals = await mt5Adpt.getDeals(sym, days, limit);
-            const DEAL_TYPE = { 0: 'BUY', 1: 'SELL', 2: 'BALANCE', 3: 'CREDIT', 4: 'CHARGE', 5: 'CORRECTION', 6: 'BONUS' };
-            return deals.map(d => ({
-                ticket: d.ticket,
-                symbol: d.symbol,
-                type: DEAL_TYPE[d.type] ?? `TYPE_${d.type}`,
-                volume: d.volume,
-                price: d.price,
-                profit: d.profit,
-                commission: d.commission,
-                swap: d.swap,
-                comment: d.comment, // "sl" = stopped out, "tp" = take profit, "" = manual/external
-                time: d.time,
-            }));
-        }
-        default:
-            throw new Error(`Unknown tool: ${name}`);
+    const ctx = {
+        input,
+        market,
+        mt5AccountId,
+        agentKey,
+        agentConfig,
+        suggestedLots: suggestedLotsByAgent.get(agentKey),
+    };
+    if (name === 'get_snapshot' || name === 'get_order_book' || name === 'get_recent_trades' || name === 'get_open_orders') {
+        return handleMarketData(name, ctx);
     }
+    if (name === 'place_order' || name === 'cancel_order' || name === 'close_position' || name === 'modify_position') {
+        return handleExecution(name, ctx);
+    }
+    if (name === 'save_memory' || name === 'read_memories' || name === 'delete_memory' || name === 'save_plan' || name === 'get_plan' || name === 'get_trade_history') {
+        return handleIntelligence(name, ctx);
+    }
+    throw new Error(`Unknown tool: ${name}`);
 }
 // ── Agent Tick (main entry point) ─────────────────────────────────────────────
-export async function runAgentTick(config, requestedTickType = 'trading') {
+export async function runAgentTick(config, requestedTickType = 'trading', ephemeralInstructions) {
     const agentKey = makeAgentKey(config.market, config.symbol, config.mt5AccountId, config.name);
     if (!tryAcquireCycleLock(agentKey)) {
         logEvent(agentKey, 'warn', 'tick_skip', 'Tick already running — skipped duplicate trigger');
@@ -974,7 +918,7 @@ export async function runAgentTick(config, requestedTickType = 'trading') {
         const agentClosedTickets = new Set();
         let tickUserMessage;
         try {
-            const snap = await dispatchTool('get_snapshot', { symbol: config.symbol, market: config.market }, config.market, config.mt5AccountId, agentKey);
+            const snap = await dispatchTool('get_snapshot', { symbol: config.symbol, market: config.market }, config.market, config.mt5AccountId, agentKey, config);
             let externalCloseNote = '';
             if (config.market === 'mt5') {
                 const positions = (snap.positions ?? []);
@@ -1029,8 +973,8 @@ export async function runAgentTick(config, requestedTickType = 'trading') {
                     }
                 }
             }
-            // ── Monte Carlo simulation ─────────────────────────────────────────────
-            // Pure math — runs synchronously in <50ms. Zero LLM involvement.
+            // ── Monte Carlo simulation (enhanced orchestrator) ─────────────────────
+            // Pure math — runs in <100ms. Zero LLM involvement.
             let mcResult;
             try {
                 const snapCandles = snap.candles;
@@ -1038,7 +982,7 @@ export async function runAgentTick(config, requestedTickType = 'trading') {
                 const snapFx = snap.forex;
                 const snapAcct = snap.accountInfo;
                 const snapPrice = snap.price;
-                // Derive suggested lot size from the sizing block (already computed in formatSnapshotSummary)
+                const snapCtx = snap.context;
                 const equity = snapAcct?.equity ?? 0;
                 const pipSz = snapFx?.pipSize ?? 1;
                 const pipVal = snapFx?.pipValue ?? 0;
@@ -1051,7 +995,9 @@ export async function runAgentTick(config, requestedTickType = 'trading') {
                     ? Math.max(0.01, Math.floor((maxRiskUsd / riskPerLot) * 100) / 100)
                     : 0.01;
                 if (snapCandles?.m1 && snapInds && snapPrice?.last && suggestedLots > 0) {
-                    const mc = runMonteCarlo({
+                    const enhancements = config?.mcEnhancements ?? MC_ENHANCEMENT_DEFAULTS;
+                    const tradeRecords = dbGetTradeRecords(agentKey, 200);
+                    const mc = await runEnhancedMonteCarlo({
                         m1: (snapCandles.m1 ?? []),
                         m5: (snapCandles.m5 ?? []),
                         m15: (snapCandles.m15 ?? []),
@@ -1065,11 +1011,24 @@ export async function runAgentTick(config, requestedTickType = 'trading') {
                         atr14,
                         ema20: snapInds.ema20 ?? 0,
                         ema50: snapInds.ema50 ?? 0,
+                        enhancements,
+                        tradeRecords,
+                        configuredRisk: config?.maxRiskPercent ?? null,
+                        fearGreedValue: snapCtx?.fearGreedValue,
                     });
                     if (mc) {
                         mcResult = mc;
+                        const core = mc.core;
                         // Log MC result so it appears in the Logs panel per tick
-                        logEvent(agentKey, 'info', 'mc_result', `MC: LONG win=${mc.long.winRate.toFixed(1)}% EV=${mc.long.ev >= 0 ? '+' : ''}$${mc.long.ev.toFixed(0)} | SHORT win=${mc.short.winRate.toFixed(1)}% EV=${mc.short.ev >= 0 ? '+' : ''}$${mc.short.ev.toFixed(0)} | Recommended: ${mc.recommended}`, { long: mc.long, short: mc.short, recommended: mc.recommended, edgeDelta: mc.edgeDelta, pathCount: mc.pathCount, barsForward: mc.barsForward });
+                        logEvent(agentKey, 'info', 'mc_result', `MC: LONG win=${core.long.winRate.toFixed(1)}% EV=${core.long.ev >= 0 ? '+' : ''}$${core.long.ev.toFixed(0)} | SHORT win=${core.short.winRate.toFixed(1)}% EV=${core.short.ev >= 0 ? '+' : ''}$${core.short.ev.toFixed(0)} | Recommended: ${core.recommended} | Consensus: ${mc.consensus.signal}`, {
+                            long: core.long, short: core.short,
+                            recommended: core.recommended, edgeDelta: core.edgeDelta,
+                            pathCount: core.pathCount, barsForward: core.barsForward,
+                            consensus: mc.consensus,
+                            markov: mc.markov, agentBased: mc.agentBased,
+                            scenarios: mc.scenarios, bayesian: mc.bayesian,
+                            significance: mc.significance, kelly: mc.kelly,
+                        });
                     }
                 }
             }
@@ -1086,6 +1045,11 @@ export async function runAgentTick(config, requestedTickType = 'trading') {
             const msg = prefetchErr instanceof Error ? prefetchErr.message : String(prefetchErr);
             log.warn({ err: msg }, 'snapshot pre-fetch failed — LLM will call get_snapshot manually');
             tickUserMessage = buildTickMessage(config, agentKey, tickNumber, isFirstTick, tickType);
+        }
+        // Append ephemeral instructions (one-off override from the trigger UI)
+        if (ephemeralInstructions?.trim()) {
+            tickUserMessage += `\n\n⚠️ ONE-TIME INSTRUCTION FOR THIS TICK ONLY:\n${ephemeralInstructions.trim()}`;
+            logEvent(agentKey, 'info', 'tick_start', `Ephemeral instructions injected: ${ephemeralInstructions.trim()}`);
         }
         // Append the tick message to the session conversation
         session.messages.push({ role: 'user', content: tickUserMessage });
@@ -1106,6 +1070,11 @@ export async function runAgentTick(config, requestedTickType = 'trading') {
                     recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper: false, decision: 'HOLD', reason: `Aborted after ${MAX_ITERATIONS} iterations`, time: new Date().toISOString() });
                     return;
                 }
+                // Guard: remove any trailing assistant message with un-answered tool_use blocks.
+                // This prevents the "tool_use ids found without tool_result" API error that occurs
+                // when a previous iteration errored out after pushing the assistant reply but before
+                // pushing the corresponding tool_result user message.
+                sanitiseMessages(session.messages);
                 const providerLabel = config.llmProvider === 'openrouter' ? `OpenRouter/${llmModel}` : `Anthropic/${llmModel}`;
                 logEvent(agentKey, 'debug', 'llm_request', `Sending to ${providerLabel} (tick #${tickNumber}, iteration ${iterations})`);
                 // ── LLM Payload Console Log ──────────────────────────────────────────
@@ -1132,7 +1101,9 @@ export async function runAgentTick(config, requestedTickType = 'trading') {
                     messages: session.messages,
                 });
                 log.debug({ stop_reason: response.stop_reason, usage: response.usage }, 'llm response');
-                session.messages.push({ role: 'assistant', content: response.content });
+                // Filter out empty text blocks — Anthropic rejects whitespace-only text content
+                const safeContent = response.content.filter(b => b.type !== 'text' || b.text.trim().length > 0);
+                session.messages.push({ role: 'assistant', content: safeContent });
                 if (response.stop_reason === 'end_turn') {
                     const text = response.content
                         .filter((b) => b.type === 'text')
@@ -1193,9 +1164,10 @@ export async function runAgentTick(config, requestedTickType = 'trading') {
                     log.info({ decision, tickNumber }, 'tick complete');
                     // Auto-execute safety net
                     if (!orderPlacedThisTick) {
-                        // Match: BUY [LIMIT|STOP|MARKET]? qty @ price
-                        const buyMatch = decision.match(/^BUY\s+(?:LIMIT\s+|STOP\s+|MARKET\s+)?([\d.]+)\s+@\s+([\d.]+)/i);
-                        const sellMatch = decision.match(/^SELL\s+(?:LIMIT\s+|STOP\s+|MARKET\s+)?([\d.]+)\s+@\s+([\d.]+)/i);
+                        // Match: BUY [LIMIT|STOP|MARKET]? qty [lots] [@|at] price
+                        // Also handles reversed prefix: "MARKET SELL qty lots at price"
+                        const buyMatch = decision.match(/^(?:MARKET\s+|LIMIT\s+|STOP\s+)?BUY\s+(?:LIMIT\s+|STOP\s+|MARKET\s+)?([\d.]+)\s+(?:lots?\s+)?(?:@|at)\s+([\d.]+)/i);
+                        const sellMatch = decision.match(/^(?:MARKET\s+|LIMIT\s+|STOP\s+)?SELL\s+(?:LIMIT\s+|STOP\s+|MARKET\s+)?([\d.]+)\s+(?:lots?\s+)?(?:@|at)\s+([\d.]+)/i);
                         const cancelMatch = decision.match(/^CANCEL\s+(\d+)/i);
                         if (buyMatch || sellMatch) {
                             const match = (buyMatch ?? sellMatch);
@@ -1209,7 +1181,7 @@ export async function runAgentTick(config, requestedTickType = 'trading') {
                             const tpMatch = decision.match(/\bTP:\s*([\d.]+)/i);
                             const slPrice = slMatch ? parseFloat(slMatch[1]) : null;
                             const tpPrice = tpMatch ? parseFloat(tpMatch[1]) : null;
-                            const pip = pipSize(config.symbol, getMt5Context().point);
+                            const pip = getMt5Context().pipSize;
                             const stopPips = slPrice != null ? Math.round(Math.abs(price - slPrice) / pip) : 20;
                             const tpPips = tpPrice != null ? Math.round(Math.abs(tpPrice - price) / pip) : undefined;
                             logEvent(agentKey, 'warn', 'auto_execute', `Agent stated ${side} ${orderType} without calling place_order — auto-executing @ ${price} SL ${stopPips}pip${tpPips ? ` TP ${tpPips}pip` : ''}`);
@@ -1303,6 +1275,17 @@ export async function runAgentTick(config, requestedTickType = 'trading') {
                         // Track closed tickets and update lastKnownPositions immediately
                         if (block.name === 'close_position' && result != null) {
                             const r = result;
+                            // Position was already closed externally (SL/TP hit, broker action) — tell the LLM to stop retrying
+                            if (r.alreadyClosed && r.ticket != null) {
+                                agentClosedTickets.add(r.ticket);
+                                const knownPos = lastKnownPositions.get(agentKey);
+                                if (knownPos)
+                                    knownPos.delete(r.ticket);
+                                resultForHistory = {
+                                    ...resultForHistory,
+                                    _important: `ℹ️ Ticket #${r.ticket} was already closed (SL/TP hit or closed externally). Do NOT retry close_position for this ticket. It is no longer an open position — remove it from your tracking and proceed.`,
+                                };
+                            }
                             if (r.closed && r.ticket != null) {
                                 agentClosedTickets.add(r.ticket);
                                 // Proactively remove from lastKnownPositions so next tick's pre-fetch
@@ -1363,44 +1346,24 @@ export async function runAgentTick(config, requestedTickType = 'trading') {
         }
         catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            // Rate limit: emergency stop + close all open positions
+            // Clean up any dangling tool_use in history so the next tick starts fresh
+            sanitiseMessages(session.messages);
+            // Rate limit: pause the agent — do NOT close positions (open trades must be left to run)
             if (err instanceof RateLimitError || (err instanceof Error && (err.message.includes('429') || err.message.toLowerCase().includes('rate limit')))) {
                 const resetMsg = (err instanceof RateLimitError && err.resetAt)
                     ? ` Resets at ${new Date(err.resetAt).toISOString()}.`
                     : '';
-                logEvent(agentKey, 'error', 'tick_error', `⚠ Rate limit hit — emergency stopping agent and closing all open positions.${resetMsg}`);
+                logEvent(agentKey, 'warn', 'tick_error', `⚠ Rate limit hit — agent paused. Open positions left untouched. Resume manually when ready.${resetMsg}`);
+                setAgentStatus(agentKey, 'paused');
+                // Stop the schedule so it doesn't keep hammering the API
                 try {
                     const { stopAgentSchedule } = await import('../scheduler/index.js');
                     stopAgentSchedule(agentKey);
                 }
                 catch (schedErr) {
-                    log.error({ schedErr }, 'failed to stop agent schedule during rate-limit emergency');
+                    log.error({ schedErr }, 'failed to stop agent schedule during rate-limit pause');
                 }
-                try {
-                    const openOrders = await dispatchTool('get_open_orders', { symbol: config.symbol }, config.market, config.mt5AccountId, agentKey);
-                    if (Array.isArray(openOrders) && openOrders.length > 0) {
-                        logEvent(agentKey, 'warn', 'tick_error', `Emergency closing ${openOrders.length} open position(s)…`);
-                        for (const order of openOrders) {
-                            try {
-                                if (config.market === 'mt5') {
-                                    const result = await dispatchTool('close_position', { ticket: order.orderId, market: config.market }, config.market, config.mt5AccountId, agentKey);
-                                    logEvent(agentKey, 'warn', 'tool_result', `← Emergency close_position: ${summariseToolResult('close_position', result)}`);
-                                }
-                                else {
-                                    await dispatchTool('cancel_order', { symbol: config.symbol, market: config.market, orderId: order.orderId }, config.market, config.mt5AccountId, agentKey);
-                                    logEvent(agentKey, 'warn', 'tool_result', `← Emergency cancel_order orderId=${order.orderId}: cancelled`);
-                                }
-                            }
-                            catch (closeErr) {
-                                logEvent(agentKey, 'error', 'tick_error', `Emergency close failed for orderId=${order.orderId}: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`);
-                            }
-                        }
-                    }
-                }
-                catch (fetchErr) {
-                    logEvent(agentKey, 'error', 'tick_error', `Could not fetch open orders for emergency close: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`);
-                }
-                recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper: false, decision: 'EMERGENCY_STOP', reason: `Rate limit: ${msg}`, time: new Date().toISOString(), error: msg });
+                recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper: false, decision: 'RATE_LIMIT_PAUSE', reason: `Rate limit — agent paused: ${msg}`, time: new Date().toISOString(), error: msg });
                 return;
             }
             // Quota / billing / no credits: pause agent, don't close positions (no emergency)

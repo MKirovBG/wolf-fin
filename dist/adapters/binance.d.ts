@@ -1,8 +1,9 @@
 import type { Balance, Order, Fill, OrderBook, Trade, MarketSnapshot, OrderParams, OrderResult, RiskState } from './types.js';
 import type { IMarketAdapter } from './interface.js';
+import type { IndicatorConfig, CandleConfig } from '../types.js';
 export declare class BinanceAdapter implements IMarketAdapter {
     readonly market: "crypto";
-    getSnapshot(symbol: string, riskState: RiskState): Promise<MarketSnapshot>;
+    getSnapshot(symbol: string, riskState: RiskState, indicatorCfg?: IndicatorConfig, candleCfg?: CandleConfig): Promise<MarketSnapshot>;
     getOrderBook(symbol: string, depth?: number): Promise<OrderBook>;
     getRecentTrades(symbol: string, limit?: number): Promise<Trade[]>;
     getBalances(): Promise<Balance[]>;

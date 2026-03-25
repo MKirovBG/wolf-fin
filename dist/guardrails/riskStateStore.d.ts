@@ -8,6 +8,8 @@ export interface Mt5Context {
     pipValue: number;
     point: number;
     digits: number;
+    /** Broker-derived pip size — point>=0.01 means index/commodity/crypto (pip=1.0), else pip=point×10 */
+    pipSize: number;
 }
 export declare function setMt5Context(ctx: Mt5Context): void;
 export declare function getMt5Context(): Mt5Context;

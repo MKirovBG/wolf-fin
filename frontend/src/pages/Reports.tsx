@@ -125,7 +125,7 @@ export function Reports() {
   if (loading) return <div className="p-6 text-muted text-sm">Loading...</div>
 
   return (
-    <div className="p-6">
+    <div className="p-4 md:p-6">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-xl font-bold text-text">Reports</h1>
         <button onClick={load} className="px-3 py-1.5 text-sm border border-border text-muted rounded-lg hover:text-text hover:border-muted2 transition-colors">

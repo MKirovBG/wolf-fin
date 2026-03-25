@@ -7,19 +7,19 @@ import { dirname, join } from 'path'
 import { existsSync, appendFileSync, readFileSync, writeFileSync } from 'fs'
 import pino from 'pino'
 import { getState, getAgent, upsertAgent, removeAgent, setAgentStatus, getLogs, subscribeToLogs, subscribeToAgentStatus } from './state.js'
-import { dbGetCycleResults, dbGetCycleResultsForAgent, dbGetCycleById, dbGetLogsForCycle, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor, makeAgentKey, dbGetStrategy, dbSaveStrategy, dbDeleteStrategy, dbGetMemories, dbClearMemories, dbDeleteMemory, dbGetActivePlan, dbGetAllPlans, dbResetAgentData, dbGetSelectedAccount, dbSetSelectedAccount, dbSavePromptAnalysis, dbGetPromptAnalysis, dbGetLatestMCResult, dbSaveBacktestResult, dbUpdateBacktestReport, dbGetBacktestResult } from '../db/index.js'
+import { dbGetCycleResults, dbGetCycleResultsForAgent, dbGetCycleById, dbGetLogsForCycle, dbGetMaxLogId, dbGetLogClearFloor, dbSetLogClearFloor, makeAgentKey, dbGetStrategy, dbSaveStrategy, dbDeleteStrategy, dbGetMemories, dbClearMemories, dbDeleteMemory, dbGetActivePlan, dbGetAllPlans, dbResetAgentData, dbGetSelectedAccount, dbSetSelectedAccount, dbSavePromptAnalysis, dbGetPromptAnalysis, dbGetLatestMCResult, dbSaveBacktestResult, dbUpdateBacktestReport, dbGetBacktestResult, dbUpsertMt5Accounts, dbMarkMt5AccountsGone, dbGetAllMt5Accounts, dbGetAgentStats } from '../db/index.js'
 import type { SelectedAccount } from '../db/index.js'
-import { getRiskState } from '../guardrails/riskState.js'
 import { getRiskStateFor } from '../guardrails/riskStateStore.js'
 import { startAgentSchedule, pauseAgentSchedule, stopAgentSchedule } from '../scheduler/index.js'
 import { runAgentTick } from '../agent/index.js'
 import { getAdapter } from '../adapters/registry.js'
 import { binanceAdapter } from '../adapters/binance.js'
-import { mt5Adapter, MT5Adapter } from '../adapters/mt5.js'
+import { mt5Adapter, MT5Adapter, setBridgeActiveLogin } from '../adapters/mt5.js'
 import { runBacktest } from '../adapters/backtest.js'
 import type { BacktestConfig } from '../adapters/backtest.js'
 import { BACKTEST_DEFAULTS } from '../adapters/backtest.js'
 import type { AgentConfig, AgentState } from '../types.js'
+import { fetchCalendarForDisplay } from '../adapters/calendar.js'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
 const PORT = parseInt(process.env.PORT ?? '3000', 10)
@@ -29,11 +29,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const ENV_KEYS = [
   'ANTHROPIC_API_KEY', 'CLAUDE_MODEL',
+  'CLAUDE_SESSION_TOKEN',
   'OPENROUTER_API_KEY',
   'BINANCE_API_KEY', 'BINANCE_API_SECRET',
-  'FINNHUB_KEY', 'TWELVE_DATA_KEY', 'COINGECKO_KEY',
+  'FINNHUB_KEY', 'COINGECKO_KEY',
   'OLLAMA_URL',
   'PLATFORM_LLM_PROVIDER', 'PLATFORM_LLM_MODEL',
+  'OPENAI_ACCESS_TOKEN', 'OPENAI_REFRESH_TOKEN', 'OPENAI_TOKEN_EXPIRES',
 ] as const
 
 function envPresent(key: string): boolean {
@@ -61,6 +63,14 @@ async function testConnection(service: string): Promise<{ ok: boolean; message: 
           headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY ?? '', 'anthropic-version': '2023-06-01' },
         })
         return r.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `HTTP ${r.status}` }
+      }
+      case 'anthropic-subscription': {
+        const token = process.env.CLAUDE_SESSION_TOKEN
+        if (!token) return { ok: false, message: 'CLAUDE_SESSION_TOKEN not set' }
+        const r = await fetch('https://api.anthropic.com/v1/models', {
+          headers: { 'Authorization': `Bearer ${token}`, 'anthropic-version': '2023-06-01' },
+        })
+        return r.ok ? { ok: true, message: 'Connected (subscription)' } : { ok: false, message: `HTTP ${r.status}` }
       }
       case 'openrouter': {
         const key = process.env.OPENROUTER_API_KEY
@@ -108,10 +118,6 @@ async function testConnection(service: string): Promise<{ ok: boolean; message: 
         const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=AAPL&token=${process.env.FINNHUB_KEY ?? ''}`)
         return r.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `HTTP ${r.status}` }
       }
-      case 'twelvedata': {
-        const r = await fetch(`https://api.twelvedata.com/price?symbol=AAPL&apikey=${process.env.TWELVE_DATA_KEY ?? ''}`)
-        return r.ok ? { ok: true, message: 'Connected' } : { ok: false, message: `HTTP ${r.status}` }
-      }
       case 'coingecko': {
         const cgKey = process.env.COINGECKO_KEY?.trim()
         const isDemo = cgKey?.startsWith('CG-')
@@ -152,7 +158,7 @@ export async function startServer(): Promise<void> {
     return {
       agents: Object.entries(agents).map(([key, agent]) => ({ ...agent, agentKey: key })),
       recentEvents,
-      risk: getRiskState(),
+      risk: getRiskStateFor('crypto'),
     }
   })
 
@@ -305,8 +311,14 @@ export async function startServer(): Promise<void> {
     reply.raw.setHeader('X-Accel-Buffering', 'no')
     reply.raw.flushHeaders()
 
-    // Send any missed events since the client's last known ID
-    if (sinceId > 0) {
+    // Fresh connection (no since param): push last 50 entries as initial state
+    // Reconnect (since param present): push only missed entries since last seen ID
+    if (!since) {
+      const recent = getLogs(undefined, agent, 50)
+      for (const entry of [...recent].reverse()) {
+        reply.raw.write(`data: ${JSON.stringify(entry)}\n\n`)
+      }
+    } else if (sinceId > 0) {
       const missed = getLogs(sinceId, agent, 100)
       for (const entry of [...missed].reverse()) {
         reply.raw.write(`data: ${JSON.stringify(entry)}\n\n`)
@@ -353,7 +365,7 @@ export async function startServer(): Promise<void> {
     }
     try {
       const adapter = getAdapter(market as 'crypto' | 'mt5')
-      const snapshot = await adapter.getSnapshot(symbol, getRiskState())
+      const snapshot = await adapter.getSnapshot(symbol, getRiskStateFor('crypto'))
       return snapshot
     } catch (e) {
       log.error({ market, symbol, err: e }, 'market data fetch error')
@@ -380,21 +392,286 @@ export async function startServer(): Promise<void> {
     return testConnection(service)
   })
 
+  // ── Claude Auth ───────────────────────────────────────────────────────────────
+  const CLAUDE_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
+  const CLAUDE_REDIRECT_URI = 'https://console.anthropic.com/oauth/code/callback'
+  const pkceStore = new Map<string, { verifier: string; createdAt: number }>()
+
+  // Method 1: import directly from local Claude Code CLI credentials
+  app.post('/api/auth/claude/import-from-cli', async (_req, reply) => {
+    try {
+      const { homedir } = await import('os')
+      const credPath = join(homedir(), '.claude', '.credentials.json')
+      if (!existsSync(credPath)) {
+        return reply.status(404).send({ ok: false, message: 'Claude Code credentials not found at ~/.claude/.credentials.json — make sure Claude Code CLI is installed and logged in.' })
+      }
+      const creds = JSON.parse(readFileSync(credPath, 'utf8')) as {
+        claudeAiOauth?: { accessToken?: string; subscriptionType?: string }
+      }
+      const token = creds?.claudeAiOauth?.accessToken
+      if (!token) {
+        return reply.status(400).send({ ok: false, message: 'No access token found in Claude Code credentials.' })
+      }
+      persistEnvKey('CLAUDE_SESSION_TOKEN', token)
+      return { ok: true, subscriptionType: creds?.claudeAiOauth?.subscriptionType ?? 'unknown' }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return reply.status(500).send({ ok: false, message: msg })
+    }
+  })
+
+  // Method 2: manual PKCE flow — returns auth URL; user pastes code back via /exchange
+  app.get('/api/auth/claude/start', async () => {
+    const { randomBytes, createHash } = await import('crypto')
+    const verifier = randomBytes(32).toString('base64url')
+    const challenge = createHash('sha256').update(verifier).digest('base64url')
+    const state = randomBytes(16).toString('hex')
+    pkceStore.set(state, { verifier, createdAt: Date.now() })
+    for (const [k, v] of pkceStore) {
+      if (Date.now() - v.createdAt > 600_000) pkceStore.delete(k)
+    }
+    const params = new URLSearchParams({
+      client_id: CLAUDE_CLIENT_ID,
+      response_type: 'code',
+      redirect_uri: CLAUDE_REDIRECT_URI,
+      scope: 'org:create_api_key user:profile user:inference',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      state,
+    })
+    return { url: `https://claude.ai/oauth/authorize?${params}`, state }
+  })
+
+  // Method 2 exchange: user pastes code from the redirect URL
+  app.post('/api/auth/claude/exchange', async (req, reply) => {
+    const { code, state } = req.body as { code: string; state: string }
+    const stored = state ? pkceStore.get(state) : null
+    if (!stored) return reply.status(400).send({ ok: false, message: 'State expired or invalid — please start the auth flow again.' })
+    pkceStore.delete(state)
+    try {
+      const tokenRes = await fetch('https://console.anthropic.com/v1/oauth/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          grant_type: 'authorization_code',
+          client_id: CLAUDE_CLIENT_ID,
+          code,
+          redirect_uri: CLAUDE_REDIRECT_URI,
+          code_verifier: stored.verifier,
+        }),
+      })
+      if (!tokenRes.ok) {
+        const text = await tokenRes.text()
+        return reply.status(502).send({ ok: false, message: `Token exchange failed (${tokenRes.status}): ${text}` })
+      }
+      const data = await tokenRes.json() as { access_token: string }
+      persistEnvKey('CLAUDE_SESSION_TOKEN', data.access_token)
+      return { ok: true }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return reply.status(500).send({ ok: false, message: msg })
+    }
+  })
+
+  // ── OpenAI (ChatGPT) OAuth — PKCE flow ─────────────────────────────────────
+  const OPENAI_CLIENT_ID    = 'app_EMoamEEZ73f0CkXaXp7hrann'
+  const OPENAI_AUTH_URL     = 'https://auth.openai.com/oauth/authorize'
+  const OPENAI_TOKEN_URL    = 'https://auth.openai.com/oauth/token'
+  const OPENAI_REDIRECT_URI = 'http://localhost:1455/auth/callback'
+  const OPENAI_SCOPES       = 'openid profile email offline_access'
+  const openAIPkceStore     = new Map<string, { verifier: string; createdAt: number }>()
+
+  app.get('/api/auth/openai/start', async () => {
+    const { randomBytes, createHash } = await import('crypto')
+    const verifier  = randomBytes(32).toString('base64url')
+    const challenge = createHash('sha256').update(verifier).digest('base64url')
+    const state     = randomBytes(16).toString('hex')
+    openAIPkceStore.set(state, { verifier, createdAt: Date.now() })
+    // Prune stale states
+    for (const [k, v] of openAIPkceStore) {
+      if (Date.now() - v.createdAt > 600_000) openAIPkceStore.delete(k)
+    }
+    const params = new URLSearchParams({
+      client_id:             OPENAI_CLIENT_ID,
+      response_type:         'code',
+      redirect_uri:          OPENAI_REDIRECT_URI,
+      scope:                 OPENAI_SCOPES,
+      code_challenge:        challenge,
+      code_challenge_method: 'S256',
+      state,
+      id_token_add_organizations: 'true',
+      codex_cli_simplified_flow:  'true',
+      originator:            'codex_cli_rs',
+    })
+    return { url: `${OPENAI_AUTH_URL}?${params}`, state }
+  })
+
+  app.post('/api/auth/openai/exchange', async (req, reply) => {
+    const { code, state } = req.body as { code: string; state: string }
+    const stored = state ? openAIPkceStore.get(state) : null
+    if (!stored) return reply.status(400).send({ ok: false, message: 'State expired or invalid — please start the auth flow again.' })
+    openAIPkceStore.delete(state)
+    try {
+      const tokenRes = await fetch(OPENAI_TOKEN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type:    'authorization_code',
+          client_id:     OPENAI_CLIENT_ID,
+          code,
+          redirect_uri:  OPENAI_REDIRECT_URI,
+          code_verifier: stored.verifier,
+        }).toString(),
+      })
+      if (!tokenRes.ok) {
+        const text = await tokenRes.text()
+        return reply.status(502).send({ ok: false, message: `Token exchange failed (${tokenRes.status}): ${text}` })
+      }
+      const data = await tokenRes.json() as {
+        access_token:  string
+        refresh_token?: string
+        expires_in?:   number
+      }
+      persistEnvKey('OPENAI_ACCESS_TOKEN', data.access_token)
+      if (data.refresh_token) persistEnvKey('OPENAI_REFRESH_TOKEN', data.refresh_token)
+      if (data.expires_in) {
+        const expiresAt = Date.now() + data.expires_in * 1000
+        persistEnvKey('OPENAI_TOKEN_EXPIRES', String(expiresAt))
+        process.env.OPENAI_TOKEN_EXPIRES = String(expiresAt)
+      }
+      process.env.OPENAI_ACCESS_TOKEN  = data.access_token
+      if (data.refresh_token) process.env.OPENAI_REFRESH_TOKEN = data.refresh_token
+      return { ok: true }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return reply.status(500).send({ ok: false, message: msg })
+    }
+  })
+
+  app.post('/api/auth/openai/refresh', async (_req, reply) => {
+    const refreshToken = process.env.OPENAI_REFRESH_TOKEN
+    if (!refreshToken) return reply.status(400).send({ ok: false, message: 'No refresh token stored — please re-authorize.' })
+    try {
+      const { refreshOpenAIToken } = await import('../llm/openai-subscription.js')
+      const data = await refreshOpenAIToken(refreshToken)
+      persistEnvKey('OPENAI_ACCESS_TOKEN', data.access_token)
+      if (data.refresh_token) persistEnvKey('OPENAI_REFRESH_TOKEN', data.refresh_token)
+      const expiresAt = Date.now() + data.expires_in * 1000
+      persistEnvKey('OPENAI_TOKEN_EXPIRES', String(expiresAt))
+      process.env.OPENAI_ACCESS_TOKEN  = data.access_token
+      if (data.refresh_token) process.env.OPENAI_REFRESH_TOKEN = data.refresh_token
+      process.env.OPENAI_TOKEN_EXPIRES = String(expiresAt)
+      return { ok: true }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return reply.status(502).send({ ok: false, message: msg })
+    }
+  })
+
   // ── Platform LLM config ─────────────────────────────────────────────────────
   app.get('/api/platform-llm', async () => {
     return {
-      provider: (process.env.PLATFORM_LLM_PROVIDER || 'anthropic') as 'anthropic' | 'openrouter' | 'ollama',
+      provider: (process.env.PLATFORM_LLM_PROVIDER || 'anthropic') as 'anthropic' | 'anthropic-subscription' | 'openrouter' | 'ollama' | 'openai-subscription',
       model: process.env.PLATFORM_LLM_MODEL || '',
     }
   })
 
   app.post('/api/platform-llm', async (req) => {
     const { provider, model } = req.body as { provider: string; model: string }
-    const validProviders = ['anthropic', 'openrouter', 'ollama']
+    const validProviders = ['anthropic', 'anthropic-subscription', 'openrouter', 'ollama', 'openai-subscription']
     if (!validProviders.includes(provider)) return { ok: false, message: 'Invalid provider' }
     persistEnvKey('PLATFORM_LLM_PROVIDER', provider)
     persistEnvKey('PLATFORM_LLM_MODEL', model ?? '')
+    // Apply immediately to the running process — no restart needed
+    process.env.PLATFORM_LLM_PROVIDER = provider
+    process.env.PLATFORM_LLM_MODEL = model ?? ''
     return { ok: true }
+  })
+
+  // ── Portfolio Risk ────────────────────────────────────────────────────────────
+  app.get('/api/portfolio', async () => {
+    const { agents, recentEvents } = getState()
+    const agentList = Object.entries(agents).map(([key, ag]) => ({ ...ag, agentKey: key }))
+
+    // Today's realized P&L from recent events
+    const today = new Date().toISOString().slice(0, 10)
+    const todayPnl = recentEvents
+      .filter(c => c.time.startsWith(today) && c.pnlUsd != null)
+      .reduce((s, c) => s + (c.pnlUsd ?? 0), 0)
+
+    // Detect symbol collisions (multiple agents on same symbol)
+    const bySymbol: Record<string, string[]> = {}
+    for (const [key, ag] of Object.entries(agents)) {
+      const s = ag.config.symbol
+      if (!bySymbol[s]) bySymbol[s] = []
+      bySymbol[s].push(key)
+    }
+    const collisions = Object.entries(bySymbol)
+      .filter(([, keys]) => keys.length > 1)
+      .map(([symbol, agentKeys]) => ({ symbol, agentKeys }))
+
+    const cryptoRisk = getRiskStateFor('crypto')
+    const mt5Risk    = getRiskStateFor('mt5')
+
+    return {
+      ok: true,
+      agents: agentList.map(a => ({
+        agentKey: a.agentKey,
+        symbol: a.config.symbol,
+        market: a.config.market,
+        status: a.status,
+        fetchMode: a.config.fetchMode,
+        name: a.config.name,
+      })),
+      running: agentList.filter(a => a.status === 'running').length,
+      paused:  agentList.filter(a => a.status === 'paused').length,
+      idle:    agentList.filter(a => a.status === 'idle').length,
+      todayPnlUsd: parseFloat(todayPnl.toFixed(2)),
+      totalNotionalUsd: parseFloat((cryptoRisk.positionNotionalUsd + mt5Risk.positionNotionalUsd).toFixed(2)),
+      symbolCollisions: collisions,
+    }
+  })
+
+  app.post('/api/portfolio/pause-all', async () => {
+    const { agents } = getState()
+    let count = 0
+    for (const [key, ag] of Object.entries(agents)) {
+      if (ag.status === 'running') {
+        pauseAgentSchedule(key)
+        setAgentStatus(key, 'paused')
+        count++
+      }
+    }
+    return { ok: true, paused: count }
+  })
+
+  // ── Economic Calendar ────────────────────────────────────────────────────────
+  app.get('/api/economic-calendar', async (req) => {
+    const { currencies, days } = req.query as { currencies?: string; days?: string }
+    const events = await fetchCalendarForDisplay(
+      currencies ? currencies.split(',').map(c => c.trim().toUpperCase()) : undefined,
+      days ? parseInt(days, 10) : 7,
+    )
+    return { ok: true, events }
+  })
+
+  // ── Agent Analytics ──────────────────────────────────────────────────────────
+  app.get('/api/agents/:key/analytics', async (req, reply) => {
+    const key = decodeURIComponent((req.params as { key: string }).key)
+    if (!getAgent(key)) return reply.status(404).send({ error: 'Agent not found' })
+    const cycles = dbGetCycleResultsForAgent(key, 2000)
+    const stats  = dbGetAgentStats(key)
+    // Build heatmap: "hour:dayOfWeek" → { totalPnl, count }
+    const heatmap: Record<string, { totalPnl: number; count: number }> = {}
+    for (const c of cycles) {
+      if (c.pnlUsd == null) continue
+      const d = new Date(c.time)
+      const cell = `${d.getUTCHours()}:${d.getUTCDay()}`
+      if (!heatmap[cell]) heatmap[cell] = { totalPnl: 0, count: 0 }
+      heatmap[cell].totalPnl += c.pnlUsd
+      heatmap[cell].count++
+    }
+    return { ok: true, cycles, stats, heatmap }
   })
 
   // ── Reports ─────────────────────────────────────────────────────────────────
@@ -445,6 +722,7 @@ export async function startServer(): Promise<void> {
   type Mt5AccountEntry = {
     id: string; exchange: 'mt5'; mode: 'DEMO' | 'LIVE'
     connected: boolean; error?: string
+    login?: number; name?: string; server?: string
     summary?: { balance: number; equity: number; margin: number; freeMargin: number; profit: number; leverage: number; login: number; server: string }
     positions?: Array<{ ticket: number; symbol: string; side: 'BUY' | 'SELL'; volume: number; priceOpen: number; priceCurrent: number; profit: number; swap: number; sl: number; tp: number; time: string }>
   }
@@ -490,62 +768,114 @@ export async function startServer(): Promise<void> {
   async function fetchMt5Entries(): Promise<Mt5AccountEntry[]> {
     const base = `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`
 
-    // Identify the currently active account — MT5 only supports one active connection at a time
+    // ── 1. Try to reach the bridge ────────────────────────────────────────────
     type HealthData = { connected: boolean; account?: { login: number; server: string; trade_mode: number } }
-    const health = await fetch(`${base}/health`)
-      .then(r => r.ok ? r.json() as Promise<HealthData> : { connected: false } as HealthData)
-      .catch(() => ({ connected: false } as HealthData))
-    const activeLogin = (health as HealthData).account?.login
+    let health: HealthData = { connected: false }
+    let bridgeUp = false
+    let bridgeAccounts: Array<{ login: number; name?: string; server?: string }> = []
 
-    // Get registered accounts list
-    const accountsRes = await fetch(`${base}/accounts`)
-    if (!accountsRes.ok) throw new Error(`MT5 bridge HTTP ${accountsRes.status}`)
-    const accountsData = await accountsRes.json() as { accounts: Array<{ login: number; name?: string; server?: string }> }
+    try {
+      health = await fetch(`${base}/health`).then(r => r.ok ? r.json() as Promise<HealthData> : { connected: false }).catch(() => ({ connected: false }))
+      const accountsRes = await fetch(`${base}/accounts`)
+      if (accountsRes.ok) {
+        const data = await accountsRes.json() as { accounts: Array<{ login: number; name?: string; server?: string }> }
+        bridgeAccounts = data.accounts ?? []
+        bridgeUp = true
+      }
+    } catch { /* bridge offline — fall through to DB */ }
 
-    if (accountsData.accounts.length === 0) {
-      // No registered accounts — return the currently active account only
-      const fullAcct = await fetch(`${base}/account`).then(r => r.ok ? r.json() as Promise<BridgeAcctData> : null).catch(() => null)
-      const positions = await fetch(`${base}/positions`).then(r => r.ok ? r.json() as Promise<BridgePosition[]> : [] as BridgePosition[]).catch(() => [] as BridgePosition[])
-      const mode = fullAcct?.trade_mode === 2 ? 'LIVE' : 'DEMO'
-      return [{
-        id: `mt5-${activeLogin ?? 'unknown'}`,
-        exchange: 'mt5', mode, connected: (health as HealthData).connected,
-        summary: fullAcct ? { balance: fullAcct.balance, equity: fullAcct.equity, margin: fullAcct.margin, freeMargin: fullAcct.free_margin, profit: fullAcct.profit, leverage: fullAcct.leverage, login: fullAcct.login, server: fullAcct.server } : undefined,
-        positions,
-      }]
+    const activeLogin = health.account?.login
+
+    // Keep the adapter's buildUrl in sync — active account must not append ?accountId=
+    if (activeLogin != null) setBridgeActiveLogin(activeLogin)
+
+    // ── 2. If bridge is up, persist whatever it currently reports ─────────────
+    if (bridgeUp) {
+      // Always include the currently active account from /health even if /accounts doesn't list it.
+      // This covers: (a) zero-account bridges, (b) bridges that cache old accounts after an MT5 account switch.
+      if (activeLogin != null && !bridgeAccounts.some(a => a.login === activeLogin)) {
+        const fullAcct = await fetch(`${base}/account`).then(r => r.ok ? r.json() as Promise<BridgeAcctData> : null).catch(() => null)
+        if (fullAcct) {
+          bridgeAccounts.push({ login: fullAcct.login, name: fullAcct.name, server: fullAcct.server })
+        }
+      }
+
+      if (bridgeAccounts.length > 0) {
+        // Resolve mode for each account from the bridge
+        const toUpsert = bridgeAccounts.map(a => ({
+          login: a.login,
+          name: a.name ?? `Account ${a.login}`,
+          server: a.server ?? '',
+          mode: (a.login === activeLogin && health.account
+            ? (health.account.trade_mode === 2 ? 'LIVE' : 'DEMO')
+            : 'DEMO') as 'DEMO' | 'LIVE',
+        }))
+        dbUpsertMt5Accounts(toUpsert)
+        dbMarkMt5AccountsGone(bridgeAccounts.map(a => a.login))
+      }
     }
 
-    // MT5 can only serve the currently active account — fetch data only for that account.
-    // Other registered accounts are shown as inactive (no error — just not connected right now).
+    // ── 3. Load the full persistent registry (bridge-live + disconnected) ──────
+    const allKnown = dbGetAllMt5Accounts()
+
+    // ── 4. Build entries — live accounts get full data, others show as inactive ─
     const results = await Promise.all(
-      accountsData.accounts.map(async (acc): Promise<Mt5AccountEntry> => {
-        // If this account is NOT the active one, show it as inactive rather than trying to fetch
-        if (activeLogin !== undefined && acc.login !== activeLogin) {
+      allKnown.map(async (acct): Promise<Mt5AccountEntry> => {
+        const inBridge = acct.inBridge && bridgeUp
+
+        // Inactive: not in current bridge report or bridge is down
+        if (!inBridge || (activeLogin !== undefined && acct.login !== activeLogin)) {
+          const reason = !bridgeUp
+            ? 'MT5 bridge is offline.'
+            : !acct.inBridge
+            ? `Not found in MT5 bridge — log into this account in MT5 to reconnect. Last seen: ${new Date(acct.lastSeenAt).toLocaleString()}`
+            : 'Not active — MT5 supports one connection at a time. Switch accounts in the MT5 bridge to view this account.'
           return {
-            id: `mt5-${acc.login}`,
+            id: `mt5-${acct.login}`,
             exchange: 'mt5' as const,
-            mode: 'DEMO' as const,
+            mode: acct.mode,
             connected: false,
-            error: 'Not active — MT5 supports one connection at a time. Switch accounts in the MT5 bridge to view this account.',
+            login: acct.login,
+            name: acct.name,
+            server: acct.server,
+            error: reason,
           }
         }
+
+        // Active: fetch full data.
+        // The bridge only supports /account (no params) for the currently active login —
+        // ?accountId= returns 404 on single-account bridge builds.
+        const accountUrl = acct.login === activeLogin ? `${base}/account` : `${base}/account?accountId=${acct.login}`
+        const positionsUrl = acct.login === activeLogin ? `${base}/positions` : `${base}/positions?accountId=${acct.login}`
         try {
           const [acctData, positions] = await Promise.all([
-            fetch(`${base}/account?accountId=${acc.login}`).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() as Promise<BridgeAcctData> }),
-            fetch(`${base}/positions?accountId=${acc.login}`).then(r => r.ok ? r.json() as Promise<BridgePosition[]> : [] as BridgePosition[]).catch(() => [] as BridgePosition[]),
+            fetch(accountUrl).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() as Promise<BridgeAcctData> }),
+            fetch(positionsUrl).then(r => r.ok ? r.json() as Promise<BridgePosition[]> : [] as BridgePosition[]).catch(() => [] as BridgePosition[]),
           ])
           const mode = acctData.trade_mode === 2 ? 'LIVE' : 'DEMO'
           return {
-            id: `mt5-${acc.login}`,
+            id: `mt5-${acct.login}`,
             exchange: 'mt5' as const, mode, connected: true,
+            login: acctData.login,
+            name: acctData.name ?? acct.name,
+            server: acctData.server,
             summary: { balance: acctData.balance, equity: acctData.equity, margin: acctData.margin, freeMargin: acctData.free_margin, profit: acctData.profit, leverage: acctData.leverage, login: acctData.login, server: acctData.server },
             positions,
           }
         } catch (e) {
-          return { id: `mt5-${acc.login}`, exchange: 'mt5' as const, mode: 'DEMO' as const, connected: false, error: e instanceof Error ? e.message : `Failed to fetch account ${acc.login}` }
+          return { id: `mt5-${acct.login}`, exchange: 'mt5' as const, mode: acct.mode, connected: false, login: acct.login, name: acct.name, server: acct.server, error: e instanceof Error ? e.message : `Failed to fetch account ${acct.login}` }
         }
       })
     )
+
+    // ── 5. If nothing in DB yet and bridge is also empty, return a placeholder ─
+    if (results.length === 0 && bridgeUp) {
+      return [{ id: 'mt5-unknown', exchange: 'mt5' as const, mode: 'DEMO' as const, connected: false, error: 'No accounts registered in MT5 bridge.' }]
+    }
+    if (results.length === 0) {
+      return [{ id: 'mt5-unknown', exchange: 'mt5' as const, mode: 'DEMO' as const, connected: false, error: 'Bridge not running' }]
+    }
+
     return results
   }
 
@@ -642,27 +972,58 @@ export async function startServer(): Promise<void> {
   })
 
   app.get('/api/mt5-accounts', async (_req, reply) => {
+    // Returns the full persistent DB registry (all ever-seen accounts) so the agent
+    // create form always shows every account including newly-discovered ones.
+    // The active account (currently on the bridge) is flagged with active:true for auto-selection.
     const base = `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`
     try {
-      const accountsRes = await fetch(`${base}/accounts`)
-      if (!accountsRes.ok) return reply.status(502).send({ error: 'MT5 bridge unavailable' })
-      const data = await accountsRes.json() as { accounts: Array<{ login: number; name?: string; server?: string }> }
+      // Get active login from bridge health (non-fatal if bridge is down)
+      const health = await fetch(`${base}/health`)
+        .then(r => r.ok ? r.json() as Promise<{ connected: boolean; account?: { login: number } }> : { connected: false })
+        .catch(() => ({ connected: false }))
+      const activeLogin = (health as { account?: { login: number } }).account?.login
+      if (activeLogin != null) setBridgeActiveLogin(activeLogin)
+
+      // Load from persistent DB — includes all accounts ever seen, not just what bridge reports now
+      const allKnown = dbGetAllMt5Accounts()
+
+      // For the active account, fetch live balance/equity; others return DB metadata only
       const enriched = await Promise.all(
-        data.accounts.map(async (acc) => {
-          const acctData = await fetch(`${base}/account?accountId=${acc.login}`)
-            .then(r => r.ok ? r.json() as Promise<BridgeAcctData> : null)
-            .catch(() => null)
+        allKnown.map(async (acc) => {
+          const isActive = acc.login === activeLogin
+          let balance: number | null = null
+          let equity: number | null = null
+          let currency = 'USD'
+          let mode: 'LIVE' | 'DEMO' = acc.mode
+
+          if (isActive) {
+            const acctData = await fetch(`${base}/account`)
+              .then(r => r.ok ? r.json() as Promise<BridgeAcctData> : null)
+              .catch(() => null)
+            if (acctData) {
+              balance = acctData.balance
+              equity = acctData.equity
+              currency = acctData.currency ?? 'USD'
+              mode = acctData.trade_mode === 2 ? 'LIVE' : 'DEMO'
+            }
+          }
+
           return {
             login: acc.login,
-            name: acc.name ?? `Account ${acc.login}`,
-            server: acc.server ?? '',
-            balance: acctData?.balance ?? null,
-            equity: acctData?.equity ?? null,
-            currency: acctData?.currency ?? 'USD',
-            mode: (acctData?.trade_mode === 2 ? 'LIVE' : 'DEMO') as 'LIVE' | 'DEMO',
+            name: acc.name || `Account ${acc.login}`,
+            server: acc.server,
+            balance,
+            equity,
+            currency,
+            mode,
+            active: isActive,
+            inBridge: acc.inBridge,
           }
         })
       )
+
+      // Sort: active first, then by last seen (most recent first)
+      enriched.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0))
       return reply.send(enriched)
     } catch (e) {
       return reply.status(502).send({ error: e instanceof Error ? e.message : 'Bridge error' })
@@ -806,7 +1167,6 @@ export async function startServer(): Promise<void> {
   // ── Agent Performance Stats ───────────────────────────────────────────────────
   app.get('/api/agents/:key/stats', async (req, reply) => {
     const { key } = req.params as { key: string }
-    const { dbGetAgentStats } = await import('../db/index.js')
     return reply.send(dbGetAgentStats(decodeURIComponent(key)))
   })
 
@@ -866,11 +1226,11 @@ export async function startServer(): Promise<void> {
     if (!agent) return reply.status(404).send({ error: 'Agent not found' })
 
     try {
-      const { getPlatformLLMProvider, getPlatformLLMModel } = await import('../llm/index.js')
+      const { getLLMProvider, getModelForConfig } = await import('../llm/index.js')
       const { buildSystemPrompt } = await import('../agent/index.js')
 
-      const provider = getPlatformLLMProvider()
-      const model = getPlatformLLMModel()
+      const provider = getLLMProvider(agent.config)
+      const model = getModelForConfig(agent.config)
       const systemPrompt = buildSystemPrompt(agent.config, key)
 
       const strategy = dbGetStrategy(key)
@@ -889,7 +1249,7 @@ export async function startServer(): Promise<void> {
       ].filter(Boolean).join('\n')
 
       const memorySummary = memories.length > 0
-        ? memories.map(m => `[${m.category}] ${m.content}`).join('\n')
+        ? memories.map(m => `[${m.category}] ${m.key}: ${m.value}`).join('\n')
         : 'No memories yet'
 
       const analysisPrompt = `You are analyzing a Wolf-Fin AI trading agent. Provide a thorough, plain-English analysis that helps the user understand exactly how this agent will behave — what it trades, how it decides, what protects it, and what to expect.
@@ -901,13 +1261,13 @@ COMPILED SYSTEM PROMPT:
 ${systemPrompt.slice(0, 6000)}
 
 STRATEGY DOCUMENT:
-${strategy?.content?.slice(0, 2000) ?? 'Not configured'}
+${strategy ? `Style: ${strategy.style}\nEntry Rules: ${strategy.entryRules}\nExit Rules: ${strategy.exitRules}${strategy.filters ? `\nFilters: ${strategy.filters}` : ''}${strategy.notes ? `\nNotes: ${strategy.notes}` : ''}`.slice(0, 2000) : 'Not configured'}
 
 PERSISTENT MEMORIES (${memories.length}):
 ${memorySummary}
 
 ACTIVE PLAN:
-${plan?.content?.slice(0, 1000) ?? 'No active plan'}
+${plan ? `Bias: ${plan.marketBias}${plan.keyLevels ? `\nKey Levels: ${plan.keyLevels}` : ''}${plan.riskNotes ? `\nRisk Notes: ${plan.riskNotes}` : ''}\n${plan.planText}`.slice(0, 1000) : 'No active plan'}
 
 Return ONLY valid JSON in exactly this shape — no markdown, no explanation:
 {
@@ -963,7 +1323,7 @@ Return ONLY valid JSON in exactly this shape — no markdown, no explanation:
       const clean = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim()
       const analysis = JSON.parse(clean)
 
-      const meta = { provider: process.env.PLATFORM_LLM_PROVIDER || 'anthropic', model }
+      const meta = { provider: agent.config.llmProvider || process.env.PLATFORM_LLM_PROVIDER || 'anthropic', model }
       dbSavePromptAnalysis(key, analysis, meta)
 
       return reply.send({ ok: true, analysis, meta })
@@ -1066,9 +1426,75 @@ Return ONLY valid JSON in exactly this shape — no markdown, no explanation:
     }
   })
 
-  // ── Backtest AI Report (Platform LLM) ────────────────────────────────────────
+  // ── Backtest Parameter Sweep ──────────────────────────────────────────────────
+  // Fetches candles once, then runs all slMult × tpMult combos synchronously.
+  app.post('/api/agent-backtest-sweep', async (req, reply) => {
+    const {
+      key, timeframe = 'H1', bars = 1000,
+      slRange = [0.5, 0.75, 1.0, 1.5, 2.0],
+      tpRange = [1.0, 1.5, 2.0, 2.5, 3.0],
+      rsiOversold, rsiOverbought, requireEmaConfirm,
+      rsiPeriod, emaFast, emaSlow, atrPeriod,
+      startingEquityUsd, maxRiskPercent,
+    } = req.body as {
+      key: string; timeframe?: string; bars?: number
+      slRange?: number[]; tpRange?: number[]
+      rsiOversold?: number; rsiOverbought?: number; requireEmaConfirm?: boolean
+      rsiPeriod?: number; emaFast?: number; emaSlow?: number; atrPeriod?: number
+      startingEquityUsd?: number; maxRiskPercent?: number
+    }
+
+    if (!key) return reply.status(400).send({ error: 'key required' })
+    const agent = getAgent(key)
+    if (!agent) return reply.status(404).send({ error: 'Agent not found' })
+    if (agent.config.market !== 'mt5') return reply.status(400).send({ error: 'Sweep requires MT5 agent.' })
+
+    try {
+      const tf = (timeframe as string).toUpperCase() as 'M1' | 'M5' | 'M15' | 'M30' | 'H1' | 'H4' | 'D1'
+      const candleCount = Math.min(Math.max(bars ?? 1000, 100), 5000)
+      const adapter = new MT5Adapter(agent.config.mt5AccountId)
+      const [candles, symbolInfo] = await Promise.all([
+        adapter.getHistoricalCandles(agent.config.symbol, tf, candleCount),
+        adapter.getSymbolInfo(agent.config.symbol).catch(() => ({ pipSize: 1, pipValue: 1, point: 0.00001 })),
+      ])
+      if (candles.length < 60) return reply.status(422).send({ error: `Not enough data: ${candles.length} bars` })
+
+      const baseCfg = {
+        ...BACKTEST_DEFAULTS,
+        rsiOversold:       rsiOversold       ?? BACKTEST_DEFAULTS.rsiOversold,
+        rsiOverbought:     rsiOverbought     ?? BACKTEST_DEFAULTS.rsiOverbought,
+        requireEmaConfirm: requireEmaConfirm ?? BACKTEST_DEFAULTS.requireEmaConfirm,
+        rsiPeriod:         rsiPeriod         ?? BACKTEST_DEFAULTS.rsiPeriod,
+        emaFast:           emaFast           ?? BACKTEST_DEFAULTS.emaFast,
+        emaSlow:           emaSlow           ?? BACKTEST_DEFAULTS.emaSlow,
+        atrPeriod:         atrPeriod         ?? BACKTEST_DEFAULTS.atrPeriod,
+        startingEquityUsd: startingEquityUsd ?? BACKTEST_DEFAULTS.startingEquityUsd,
+        maxRiskPercent:    maxRiskPercent    ?? (agent.config.maxRiskPercent ?? BACKTEST_DEFAULTS.maxRiskPercent),
+        pipSize:  symbolInfo.pipSize,
+        pipValue: symbolInfo.pipValue,
+      }
+
+      const results = []
+      for (const sl of slRange) {
+        for (const tp of tpRange) {
+          const r = runBacktest(candles, { ...baseCfg, slMult: sl, tpMult: tp })
+          results.push({
+            slMult: sl, tpMult: tp,
+            totalPnl: r.stats.totalPnl, winRate: r.stats.winRate,
+            totalTrades: r.stats.totalTrades, maxDrawdownPct: r.stats.maxDrawdownPct,
+            sharpe: r.stats.sharpe,
+          })
+        }
+      }
+      return reply.send({ ok: true, results, slRange, tpRange, timeframe: tf, barsUsed: candles.length })
+    } catch (err) {
+      return reply.status(500).send({ error: `Sweep failed: ${err instanceof Error ? err.message : String(err)}` })
+    }
+  })
+
+  // ── Backtest AI Report ────────────────────────────────────────────────────────
   // Generates a detailed LLM-written analysis of a completed backtest run.
-  // The full BacktestResult + config is sent as context; LLM returns JSON.
+  // Uses the agent's own LLM provider setting (same as trading decisions).
   app.post('/api/agent-backtest-report', async (req, reply) => {
     const { key, timeframe, barsRequested, result } = req.body as {
       key: string
@@ -1082,9 +1508,9 @@ Return ONLY valid JSON in exactly this shape — no markdown, no explanation:
     if (!agent) return reply.status(404).send({ error: 'Agent not found' })
 
     try {
-      const { getPlatformLLMProvider, getPlatformLLMModel } = await import('../llm/index.js')
-      const provider = getPlatformLLMProvider()
-      const model    = getPlatformLLMModel()
+      const { getLLMProvider, getModelForConfig } = await import('../llm/index.js')
+      const provider = getLLMProvider(agent.config)
+      const model    = getModelForConfig(agent.config)
 
       const { stats, config, trades, barsTotal, warmupBars } = result
       const activeTrades = barsTotal - warmupBars
@@ -1192,7 +1618,7 @@ Return ONLY valid JSON — no markdown fences, no explanation outside the JSON �
       // Persist the report alongside the backtest result
       dbUpdateBacktestReport(key, report, model)
 
-      return reply.send({ ok: true, report, model, provider: process.env.PLATFORM_LLM_PROVIDER || 'anthropic' })
+      return reply.send({ ok: true, report, model, provider: agent.config.llmProvider || process.env.PLATFORM_LLM_PROVIDER || 'anthropic' })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       log.error({ err: msg }, 'backtest report failed')
@@ -1220,8 +1646,12 @@ Return ONLY valid JSON — no markdown fences, no explanation outside the JSON �
   await app.listen({ port: PORT, host: '0.0.0.0' })
   log.info({ port: PORT }, `server running at http://localhost:${PORT}`)
 
+  // ── MT5 bridge: prime bridgeActiveLogin immediately so agents don't start with
+  //    an undefined active login (which causes ?accountId= on every bridge request).
+  fetchMt5Entries().catch(() => { /* bridge may not be running yet — silently skip */ })
+
   // ── Startup connectivity checks ──────────────────────────────────────────────
-  const services = ['anthropic', 'binance', 'finnhub', 'twelvedata', 'coingecko']
+  const services = ['anthropic', 'binance', 'finnhub', 'coingecko']
   log.info('checking service connectivity...')
   for (const service of services) {
     testConnection(service).then(result => {

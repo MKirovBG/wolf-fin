@@ -19,6 +19,9 @@ export interface IndicatorConfig {
   bbStdDev?: number              // Bollinger Bands std deviation multiplier (default 2)
   vwapEnabled?: boolean          // Include VWAP (default true)
   mtfEnabled?: boolean           // Enable multi-timeframe indicators (default true)
+  macdEnabled?: boolean          // MACD 12/26/9 (default false)
+  adxEnabled?: boolean           // ADX 14 (default false)
+  stochEnabled?: boolean         // Stochastic 14/3 (default false)
 }
 
 export interface CandleConfig {
@@ -44,7 +47,7 @@ export interface AgentConfig {
   promptTemplate?: string        // full system prompt with {{pill}} tokens; if empty uses default
   guardrails?: Partial<GuardrailsConfig>  // defaults: all true
   mt5AccountId?: number          // Which MT5 account this agent trades with
-  llmProvider?: 'anthropic' | 'openrouter' | 'ollama'  // defaults to 'anthropic'
+  llmProvider?: 'platform' | 'anthropic' | 'anthropic-subscription' | 'openrouter' | 'ollama' | 'openai-subscription'  // 'platform' = inherit platform LLM config
   llmModel?: string              // Model ID e.g. "openai/gpt-4o", "anthropic/claude-opus-4-5", "llama3.1:latest"
   dailyTargetUsd?: number        // Daily profit target in USD — used for position sizing (default 500)
   maxRiskPercent?: number        // Max % of equity at risk per trade (default 10)

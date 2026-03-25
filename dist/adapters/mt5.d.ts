@@ -1,5 +1,8 @@
-import type { Balance, Order, Fill, OrderBook, Trade, MarketSnapshot, OrderParams, OrderResult, RiskState } from './types.js';
+import type { Candle, Balance, Order, Fill, OrderBook, Trade, MarketSnapshot, OrderParams, OrderResult, RiskState } from './types.js';
 import type { IMarketAdapter } from './interface.js';
+import type { IndicatorConfig, CandleConfig } from '../types.js';
+export declare function setBridgeActiveLogin(login: number): void;
+export declare function getBridgeActiveLogin(): number | undefined;
 interface BridgeDeal {
     ticket: number;
     order: number;
@@ -20,7 +23,7 @@ export declare class MT5Adapter implements IMarketAdapter {
     private accountId?;
     constructor(accountId?: number);
     private buildUrl;
-    getSnapshot(symbol: string, riskState: RiskState): Promise<MarketSnapshot>;
+    getSnapshot(symbol: string, riskState: RiskState, indicatorCfg?: IndicatorConfig, _candleCfg?: CandleConfig): Promise<MarketSnapshot>;
     getOrderBook(symbol: string, depth?: number): Promise<OrderBook>;
     getRecentTrades(symbol: string, limit?: number): Promise<Trade[]>;
     getBalances(): Promise<Balance[]>;
@@ -44,6 +47,14 @@ export declare class MT5Adapter implements IMarketAdapter {
     }>;
     getSpread(symbol: string): Promise<number | null>;
     isMarketOpen(symbol: string): Promise<boolean>;
+    /** Fetch large historical candle dataset for backtesting (up to 10,000 bars). */
+    getHistoricalCandles(symbol: string, timeframe: 'M1' | 'M5' | 'M15' | 'M30' | 'H1' | 'H4' | 'D1', count: number): Promise<Candle[]>;
+    /** Fetch current pip size and pip value for a symbol — used by the backtester. */
+    getSymbolInfo(symbol: string): Promise<{
+        pipSize: number;
+        pipValue: number;
+        point: number;
+    }>;
 }
 export declare const mt5Adapter: MT5Adapter;
 export {};

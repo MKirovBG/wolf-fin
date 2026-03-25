@@ -1,14 +1,15 @@
 import { useState, useRef, useEffect } from 'react'
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { ToastProvider } from './Toast.tsx'
 import { useAccount, buildAccountLabel, entryToSelectedAccount } from '../contexts/AccountContext.tsx'
 import type { AccountEntry } from '../types/index.ts'
 
 const links = [
-  { to: '/',        label: 'Dashboard' },
-  { to: '/agents',  label: 'Agents'    },
-  { to: '/keys',    label: 'Integrations' },
-  { to: '/reports', label: 'Reports'   },
+  { to: '/',          label: 'Dashboard'    },
+  { to: '/agents',    label: 'Agents'       },
+  { to: '/keys',      label: 'Integrations' },
+  { to: '/reports',   label: 'Reports'      },
+  { to: '/analytics', label: 'Analytics'    },
 ]
 
 // ── Account selector ──────────────────────────────────────────────────────────
@@ -111,54 +112,89 @@ function AccountSelector() {
 // ── Layout ────────────────────────────────────────────────────────────────────
 
 export function Layout() {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const location = useLocation()
+
+  // Close mobile menu on route change
+  useEffect(() => { setMenuOpen(false) }, [location.pathname])
+
+  const navLinkClass = ({ isActive }: { isActive: boolean }) =>
+    `px-5 py-2.5 text-sm font-medium transition-colors ${
+      isActive
+        ? 'text-green bg-green-dim border-l-2 border-green'
+        : 'text-muted hover:text-text hover:bg-surface2'
+    }`
+
+  const sidebar = (
+    <aside className="w-52 bg-surface border-r border-border flex flex-col flex-shrink-0 h-full">
+      <div className="px-5 py-4 border-b border-border flex items-center justify-between">
+        <span className="text-green font-bold text-base tracking-[2px]">WOLF-FIN</span>
+        {/* Close button — mobile only */}
+        <button
+          onClick={() => setMenuOpen(false)}
+          className="md:hidden text-muted hover:text-text p-1"
+          aria-label="Close menu"
+        >✕</button>
+      </div>
+      <nav className="flex flex-col py-2 flex-1 overflow-y-auto">
+        {links.map(l => (
+          <NavLink key={l.to} to={l.to} end={l.to === '/'} className={navLinkClass}>
+            {l.label}
+          </NavLink>
+        ))}
+        <NavLink to="/account" className={navLinkClass}>Accounts</NavLink>
+      </nav>
+      <div className="border-t border-border pt-3">
+        <AccountSelector />
+        <div className="px-5 py-2">
+          <span className="text-xs text-muted2">v1.0.0</span>
+        </div>
+      </div>
+    </aside>
+  )
+
   return (
     <ToastProvider>
       <div className="flex min-h-screen bg-bg">
-        <aside className="w-52 bg-surface border-r border-border flex flex-col flex-shrink-0">
-          <div className="px-5 py-4 border-b border-border">
-            <span className="text-green font-bold text-base tracking-[2px]">WOLF-FIN</span>
-          </div>
-          <nav className="flex flex-col py-2 flex-1">
-            {links.map(l => (
-              <NavLink
-                key={l.to}
-                to={l.to}
-                end={l.to === '/'}
-                className={({ isActive }) =>
-                  `px-5 py-2.5 text-sm font-medium transition-colors ${
-                    isActive
-                      ? 'text-green bg-green-dim border-l-2 border-green'
-                      : 'text-muted hover:text-text hover:bg-surface2'
-                  }`
-                }
-              >
-                {l.label}
-              </NavLink>
-            ))}
-            {/* Account Management — always visible, not scoped */}
-            <NavLink
-              to="/account"
-              className={({ isActive }) =>
-                `px-5 py-2.5 text-sm font-medium transition-colors ${
-                  isActive
-                    ? 'text-green bg-green-dim border-l-2 border-green'
-                    : 'text-muted hover:text-text hover:bg-surface2'
-                }`
-              }
-            >
-              Accounts
-            </NavLink>
-          </nav>
-          <div className="border-t border-border pt-3">
-            <AccountSelector />
-            <div className="px-5 py-2">
-              <span className="text-xs text-muted2">v1.0.0</span>
+
+        {/* Desktop sidebar */}
+        <div className="hidden md:flex md:flex-shrink-0">
+          {sidebar}
+        </div>
+
+        {/* Mobile sidebar overlay */}
+        {menuOpen && (
+          <div className="fixed inset-0 z-50 flex md:hidden">
+            <div className="absolute inset-0 bg-black/60" onClick={() => setMenuOpen(false)} />
+            <div className="relative z-10 flex-shrink-0">
+              {sidebar}
             </div>
           </div>
-        </aside>
-        <main className="flex-1 overflow-auto">
-          <Outlet />
-        </main>
+        )}
+
+        {/* Main content */}
+        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+          {/* Mobile top bar */}
+          <div className="md:hidden flex items-center justify-between px-4 py-3 border-b border-border bg-surface flex-shrink-0">
+            <button
+              onClick={() => setMenuOpen(true)}
+              className="text-muted hover:text-text p-1"
+              aria-label="Open menu"
+            >
+              <div className="flex flex-col gap-1">
+                <span className="block w-5 h-px bg-current" />
+                <span className="block w-5 h-px bg-current" />
+                <span className="block w-5 h-px bg-current" />
+              </div>
+            </button>
+            <span className="text-green font-bold text-sm tracking-[2px]">WOLF-FIN</span>
+            <div className="w-7" /> {/* spacer */}
+          </div>
+          <main className="flex-1 overflow-auto">
+            <Outlet />
+          </main>
+        </div>
+
       </div>
     </ToastProvider>
   )

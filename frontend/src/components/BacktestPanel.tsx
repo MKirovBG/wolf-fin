@@ -5,8 +5,9 @@ import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
   ReferenceLine, CartesianGrid,
 } from 'recharts'
-import type { BacktestParams, BacktestResponse, BacktestTradeResult, BacktestStats, BacktestReport } from '../api/client.ts'
-import type { AgentConfig } from '../types/index.ts'
+import type { BacktestParams, BacktestResponse, BacktestTradeResult, BacktestStats, BacktestReport, SweepParams } from '../api/client.ts'
+import { runBacktestSweep } from '../api/client.ts'
+import type { AgentConfig, SweepCell } from '../types/index.ts'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -252,6 +253,204 @@ function AIReport({ loading, error, report, model, onRetry }: {
   )
 }
 
+// ── Sweep Heatmap ──────────────────────────────────────────────────────────────
+
+const DEFAULT_SL_RANGE = [0.5, 0.75, 1.0, 1.5, 2.0]
+const DEFAULT_TP_RANGE = [1.0, 1.5, 2.0, 2.5, 3.0]
+
+function SweepHeatmap({ results, slRange, tpRange, metric }: {
+  results: SweepCell[]
+  slRange: number[]
+  tpRange: number[]
+  metric: 'totalPnl' | 'winRate' | 'sharpe'
+}) {
+  const getValue = (r: SweepCell) =>
+    metric === 'winRate' ? (r.winRate != null ? r.winRate * 100 : null) :
+    metric === 'sharpe'  ? r.sharpe :
+    r.totalPnl
+
+  const vals = results.map(r => getValue(r)).filter(v => v != null) as number[]
+  const minV = Math.min(...vals)
+  const maxV = Math.max(...vals)
+  const range = maxV - minV || 1
+
+  const cellColor = (v: number | null): string => {
+    if (v == null) return 'rgba(255,255,255,0.03)'
+    const norm = (v - minV) / range  // 0=worst, 1=best
+    if (metric === 'totalPnl' || metric === 'sharpe') {
+      if (v < 0) return `rgba(239,68,68,${0.15 + (1 - norm) * 0.5})`
+      return `rgba(34,197,94,${0.15 + norm * 0.5})`
+    }
+    // winRate: always positive
+    return `rgba(34,197,94,${0.1 + norm * 0.55})`
+  }
+
+  const fmt = (v: number | null) => {
+    if (v == null) return '—'
+    if (metric === 'totalPnl') return (v >= 0 ? '+$' : '-$') + Math.abs(v).toFixed(0)
+    if (metric === 'winRate')  return v.toFixed(1) + '%'
+    return v.toFixed(2)
+  }
+
+  const getCell = (sl: number, tp: number) =>
+    results.find(r => r.slMult === sl && r.tpMult === tp)
+
+  const metricLabel = metric === 'totalPnl' ? 'Total P&L' : metric === 'winRate' ? 'Win Rate' : 'Sharpe'
+
+  return (
+    <div>
+      <div className="text-[10px] font-semibold uppercase tracking-widest text-muted2 mb-3">{metricLabel} by SL × TP</div>
+      {/* Column headers (TP values) */}
+      <div className="flex items-center mb-1">
+        <div className="w-16 shrink-0" />
+        {tpRange.map(tp => (
+          <div key={tp} className="flex-1 text-center text-[10px] text-muted2">TP {tp}×</div>
+        ))}
+      </div>
+      {/* Rows (SL values) */}
+      {slRange.map(sl => (
+        <div key={sl} className="flex items-center mb-px">
+          <div className="w-16 shrink-0 text-[10px] text-muted2 text-right pr-2">SL {sl}×</div>
+          {tpRange.map(tp => {
+            const cell = getCell(sl, tp)
+            const v = cell ? getValue(cell) : null
+            const isZero = cell && cell.totalTrades === 0
+            return (
+              <div
+                key={tp}
+                className="flex-1 h-10 rounded flex items-center justify-center text-[10px] font-mono cursor-default transition-opacity hover:opacity-80"
+                style={{ background: cellColor(v), margin: '0 1px' }}
+                title={cell
+                  ? `SL ${sl}× / TP ${tp}×\nP&L: ${fmt(cell.totalPnl)}\nWin rate: ${cell.winRate != null ? (cell.winRate*100).toFixed(1)+'%' : '—'}\nTrades: ${cell.totalTrades}\nSharpe: ${cell.sharpe?.toFixed(2) ?? '—'}\nMax DD: ${cell.maxDrawdownPct.toFixed(1)}%`
+                  : ''}
+              >
+                {isZero ? <span className="text-muted2 text-[9px]">0 trades</span> : <span className="text-text">{fmt(v)}</span>}
+              </div>
+            )
+          })}
+        </div>
+      ))}
+      {/* Best config callout */}
+      {vals.length > 0 && (() => {
+        const best = results.reduce((b, r) => {
+          const bv = getValue(b) ?? -Infinity
+          const rv = getValue(r) ?? -Infinity
+          return rv > bv ? r : b
+        })
+        return (
+          <div className="mt-3 text-[11px] text-muted bg-surface2 rounded px-3 py-2 border border-border/60">
+            Best: <span className="text-text font-mono">SL {best.slMult}× / TP {best.tpMult}×</span>
+            {' → '}<span className="text-green font-mono">{fmt(getValue(best))}</span>
+            {' · '}<span className="text-muted">{best.totalTrades} trades</span>
+            {best.winRate != null && <span className="text-muted"> · {(best.winRate*100).toFixed(1)}% win rate</span>}
+          </div>
+        )
+      })()}
+    </div>
+  )
+}
+
+function SweepPanel({ agentKey, config }: { agentKey: string; config: AgentConfig }) {
+  const [loading, setLoading]   = useState(false)
+  const [error, setError]       = useState<string | null>(null)
+  const [results, setResults]   = useState<{ cells: SweepCell[]; slRange: number[]; tpRange: number[]; barsUsed: number; timeframe: string } | null>(null)
+  const [metric, setMetric]     = useState<'totalPnl' | 'winRate' | 'sharpe'>('totalPnl')
+  const [timeframe, setTimeframe] = useState<'M15' | 'M30' | 'H1' | 'H4'>('H1')
+  const [bars, setBars]         = useState(1000)
+
+  const run = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const params: SweepParams = {
+        key: agentKey,
+        timeframe,
+        bars,
+        slRange: DEFAULT_SL_RANGE,
+        tpRange: DEFAULT_TP_RANGE,
+        rsiPeriod:    config.indicatorConfig?.rsiPeriod ?? 14,
+        emaFast:      config.indicatorConfig?.emaFast   ?? 20,
+        emaSlow:      config.indicatorConfig?.emaSlow   ?? 50,
+        atrPeriod:    config.indicatorConfig?.atrPeriod ?? 14,
+        maxRiskPercent: config.maxRiskPercent ?? 2,
+        startingEquityUsd: 10_000,
+      }
+      const res = await runBacktestSweep(params)
+      setResults({ cells: res.results, slRange: res.slRange, tpRange: res.tpRange, barsUsed: res.barsUsed, timeframe: res.timeframe })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Sweep failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* Config */}
+      <div className="bg-surface border border-border rounded-lg p-5">
+        <h3 className="text-sm font-semibold text-text mb-1">Parameter Sweep</h3>
+        <p className="text-xs text-muted mb-4">
+          Runs {DEFAULT_SL_RANGE.length * DEFAULT_TP_RANGE.length} backtests ({DEFAULT_SL_RANGE.length} SL × {DEFAULT_TP_RANGE.length} TP values) on the same candle data.
+          SL range: {DEFAULT_SL_RANGE.join(', ')}× ATR. TP range: {DEFAULT_TP_RANGE.join(', ')}× ATR.
+        </p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+          <div className="space-y-1.5">
+            <label className="text-xs text-muted font-medium">Timeframe</label>
+            <div className="flex flex-wrap gap-1">
+              {(['M15', 'M30', 'H1', 'H4'] as const).map(tf => (
+                <button key={tf} onClick={() => setTimeframe(tf)}
+                  className={`px-2 py-1 text-xs rounded border transition-colors ${timeframe === tf ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted'}`}>
+                  {tf}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs text-muted font-medium">History (bars)</label>
+            <div className="flex flex-wrap gap-1">
+              {[500, 1000, 2000].map(b => (
+                <button key={b} onClick={() => setBars(b)}
+                  className={`px-2 py-1 text-xs rounded border transition-colors ${bars === b ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted'}`}>
+                  {b.toLocaleString()}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <button
+          onClick={run} disabled={loading}
+          className="w-full py-2.5 rounded-lg bg-accent text-white font-semibold text-sm hover:bg-accent/80 disabled:opacity-50 transition-colors">
+          {loading ? `⏳ Running ${DEFAULT_SL_RANGE.length * DEFAULT_TP_RANGE.length} backtests…` : '▶ Run Sweep'}
+        </button>
+      </div>
+
+      {error && (
+        <div className="bg-red/10 border border-red/30 rounded-lg px-4 py-3 text-sm text-red">{error}</div>
+      )}
+
+      {results && (
+        <div className="bg-surface border border-border rounded-lg p-5">
+          <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+            <div>
+              <h3 className="text-sm font-semibold text-text">Sweep Results</h3>
+              <p className="text-xs text-muted mt-0.5">{results.timeframe} · {results.barsUsed.toLocaleString()} bars</p>
+            </div>
+            <div className="flex gap-1">
+              {(['totalPnl', 'winRate', 'sharpe'] as const).map(m => (
+                <button key={m} onClick={() => setMetric(m)}
+                  className={`px-2.5 py-1 text-xs rounded border transition-colors ${metric === m ? 'border-accent text-accent bg-accent/10' : 'border-border text-muted'}`}>
+                  {m === 'totalPnl' ? 'P&L' : m === 'winRate' ? 'Win Rate' : 'Sharpe'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <SweepHeatmap results={results.cells} slRange={results.slRange} tpRange={results.tpRange} metric={metric} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Config form ───────────────────────────────────────────────────────────────
 
 const TIMEFRAMES = ['M5', 'M15', 'M30', 'H1', 'H4', 'D1'] as const
@@ -299,12 +498,14 @@ export function BacktestPanel({ agentKey, config }: Props) {
   const [rsiOversold,      setRsiOversold]      = useState(35)
   const [rsiOverbought,    setRsiOverbought]    = useState(65)
   const [requireEma,       setRequireEma]       = useState(true)
-  const [rsiPeriod,        setRsiPeriod]        = useState(14)
-  const [emaFast,          setEmaFast]          = useState(20)
-  const [emaSlow,          setEmaSlow]          = useState(50)
-  const [atrPeriod,        setAtrPeriod]        = useState(14)
+  const [rsiPeriod,        setRsiPeriod]        = useState(config.indicatorConfig?.rsiPeriod ?? 14)
+  const [emaFast,          setEmaFast]          = useState(config.indicatorConfig?.emaFast   ?? 20)
+  const [emaSlow,          setEmaSlow]          = useState(config.indicatorConfig?.emaSlow   ?? 50)
+  const [atrPeriod,        setAtrPeriod]        = useState(config.indicatorConfig?.atrPeriod ?? 14)
   const [startEquity,      setStartEquity]      = useState(10_000)
   const [maxRiskPct,       setMaxRiskPct]       = useState(config.maxRiskPercent ?? 2)
+
+  const [mode,          setMode]          = useState<'single' | 'sweep'>('single')
 
   const [loading,       setLoading]       = useState(false)
   const [error,         setError]         = useState<string | null>(null)
@@ -317,8 +518,31 @@ export function BacktestPanel({ agentKey, config }: Props) {
   const [savedAt,       setSavedAt]       = useState<string | null>(null)
   const [restoring,     setRestoring]     = useState(true)
 
-  // Restore the last saved backtest on mount
+  // Restore the last saved backtest config + results on mount
   useEffect(() => {
+    // Restore config from localStorage
+    try {
+      const saved = localStorage.getItem(`wolf-fin:backtest-config:${agentKey}`)
+      if (saved) {
+        const c = JSON.parse(saved) as Record<string, unknown>
+        if (c.timeframe && TIMEFRAMES.includes(c.timeframe as typeof TIMEFRAMES[number])) setTimeframe(c.timeframe as typeof TIMEFRAMES[number])
+        if (typeof c.bars        === 'number') setBars(c.bars)
+        if (typeof c.slMult      === 'number') setSlMult(c.slMult)
+        if (typeof c.tpMult      === 'number') setTpMult(c.tpMult)
+        if (typeof c.maxHoldBars === 'number') setMaxHoldBars(c.maxHoldBars)
+        if (typeof c.rsiOversold === 'number') setRsiOversold(c.rsiOversold)
+        if (typeof c.rsiOverbought === 'number') setRsiOverbought(c.rsiOverbought)
+        if (typeof c.requireEma  === 'boolean') setRequireEma(c.requireEma)
+        if (typeof c.rsiPeriod   === 'number') setRsiPeriod(c.rsiPeriod)
+        if (typeof c.emaFast     === 'number') setEmaFast(c.emaFast)
+        if (typeof c.emaSlow     === 'number') setEmaSlow(c.emaSlow)
+        if (typeof c.atrPeriod   === 'number') setAtrPeriod(c.atrPeriod)
+        if (typeof c.startEquity === 'number') setStartEquity(c.startEquity)
+        if (typeof c.maxRiskPct  === 'number') setMaxRiskPct(c.maxRiskPct)
+      }
+    } catch { /* ignore corrupt localStorage */ }
+
+    // Restore last results from server
     const load = async () => {
       try {
         const raw = await fetch(`/api/agent-backtest-result?key=${encodeURIComponent(agentKey)}`)
@@ -384,6 +608,17 @@ export function BacktestPanel({ agentKey, config }: Props) {
     setReport(null)
     setReportError(null)
     setSavedAt(null)
+
+    // Persist config so it survives page refreshes
+    try {
+      localStorage.setItem(`wolf-fin:backtest-config:${agentKey}`, JSON.stringify({
+        timeframe, bars, slMult, tpMult, maxHoldBars,
+        rsiOversold, rsiOverbought, requireEma,
+        rsiPeriod, emaFast, emaSlow, atrPeriod,
+        startEquity, maxRiskPct,
+      }))
+    } catch { /* ignore storage errors */ }
+
     try {
       const params: BacktestParams = {
         key: agentKey,
@@ -439,6 +674,27 @@ export function BacktestPanel({ agentKey, config }: Props) {
 
   return (
     <div className="space-y-6">
+
+      {/* Mode toggle */}
+      <div className="flex gap-1 bg-surface2 rounded-lg p-1 w-fit">
+        {(['single', 'sweep'] as const).map(m => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+              mode === m
+                ? 'bg-accent text-white'
+                : 'text-muted hover:text-text'
+            }`}
+          >
+            {m === 'single' ? '▶ Single Run' : '⊞ Sweep'}
+          </button>
+        ))}
+      </div>
+
+      {mode === 'sweep' && <SweepPanel agentKey={agentKey} config={config} />}
+
+      {mode === 'single' && <>
 
       {/* Config card */}
       <div className="bg-surface border border-border rounded-lg p-5">
@@ -736,6 +992,8 @@ export function BacktestPanel({ agentKey, config }: Props) {
           />
         </>
       )}
+
+      </>}
     </div>
   )
 }

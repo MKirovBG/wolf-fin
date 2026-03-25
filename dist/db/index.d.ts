@@ -44,6 +44,12 @@ export declare function dbGetCycleResultsForAgent(agentKey: string, limit?: numb
     id: number;
     agentKey: string;
 }>;
+/** Returns closed trades for the given agent as TradeRecord[], for Bayesian + Kelly layers */
+export declare function dbGetTradeRecords(agentKey: string, limit?: number): Array<{
+    wonTrade: boolean;
+    pnlUsd: number;
+    closedAt: string;
+}>;
 export declare function dbGetCycleById(id: number): (CycleResult & {
     id: number;
     agentKey: string;
@@ -58,6 +64,25 @@ export interface SelectedAccount {
 }
 export declare function dbGetSelectedAccount(): SelectedAccount | null;
 export declare function dbSetSelectedAccount(account: SelectedAccount | null): void;
+export interface Mt5AccountRow {
+    login: number;
+    name: string;
+    server: string;
+    mode: 'DEMO' | 'LIVE';
+    lastSeenAt: string;
+    inBridge: boolean;
+}
+/** Upsert a batch of accounts currently reported by the bridge (marks them in_bridge=1). */
+export declare function dbUpsertMt5Accounts(accounts: Array<{
+    login: number;
+    name: string;
+    server: string;
+    mode: 'DEMO' | 'LIVE';
+}>): void;
+/** Mark all accounts NOT in the given login list as no longer in bridge. */
+export declare function dbMarkMt5AccountsGone(currentLogins: number[]): void;
+/** Get all known MT5 accounts (bridge-live and disconnected). */
+export declare function dbGetAllMt5Accounts(): Mt5AccountRow[];
 export declare function dbGetMaxLogId(): number;
 export declare function dbLogEvent(entry: LogEntry): void;
 /** Force-flush pending log entries (call before process exit) */
@@ -141,6 +166,27 @@ export declare function dbSaveSession(agentKey: string, data: {
     summary?: string | null;
 }): void;
 export declare function dbDeleteSession(agentKey: string, sessionDate: string): void;
+export declare function dbGetLatestMCResult(agentKey: string): {
+    mc: Record<string, unknown>;
+    time: string;
+} | null;
+export declare function dbSavePromptAnalysis(agentKey: string, analysis: unknown, meta: unknown): void;
+export declare function dbGetPromptAnalysis(agentKey: string): {
+    analysis: unknown;
+    meta: unknown;
+    createdAt: string;
+} | null;
 /** Returns the most recent completed session before today — used for cross-session memory. */
 export declare function dbGetPreviousSession(agentKey: string): AgentSessionData | null;
+/** Saves (or replaces) the latest backtest run for an agent. Clears any previous report. */
+export declare function dbSaveBacktestResult(agentKey: string, result: unknown): void;
+/** Attaches (or updates) the AI report on the agent's saved backtest row. */
+export declare function dbUpdateBacktestReport(agentKey: string, report: unknown, model: string): void;
+/** Returns the agent's saved backtest result + report, or null if none exists. */
+export declare function dbGetBacktestResult(agentKey: string): {
+    result: unknown;
+    report: unknown | null;
+    model: string | null;
+    ranAt: string;
+} | null;
 //# sourceMappingURL=index.d.ts.map

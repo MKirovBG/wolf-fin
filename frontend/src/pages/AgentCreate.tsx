@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { addAgent, getMt5Accounts, getOpenRouterModels, getOllamaModels, searchSymbols } from '../api/client.ts'
-import type { AgentConfig, GuardrailsConfig, IndicatorConfig, CandleConfig, ContextConfig, Mt5AccountInfo, OpenRouterModel, OllamaModel } from '../types/index.ts'
+import { addAgent, getMt5Accounts, getOpenRouterModels, getOllamaModels, searchSymbols, getPlatformLLM } from '../api/client.ts'
+import type { AgentConfig, GuardrailsConfig, IndicatorConfig, CandleConfig, ContextConfig, Mt5AccountInfo, OpenRouterModel, OllamaModel, PlatformLLMConfig } from '../types/index.ts'
 import { useToast } from '../components/Toast.tsx'
 import { PromptEditor } from '../components/PromptEditor.tsx'
 import { GuardrailsEditor } from '../components/GuardrailsEditor.tsx'
@@ -118,6 +118,17 @@ function SymbolSearch({
   )
 }
 
+// ── Anthropic models ───────────────────────────────────────────────────────────
+const ANTHROPIC_MODELS = [
+  { id: 'claude-opus-4-6',              label: 'Claude Opus 4.6'       },
+  { id: 'claude-sonnet-4-6',            label: 'Claude Sonnet 4.6'     },
+  { id: 'claude-haiku-4-5-20251001',    label: 'Claude Haiku 4.5'      },
+  { id: 'claude-opus-4-5',             label: 'Claude Opus 4.5'       },
+  { id: 'claude-sonnet-4-5',           label: 'Claude Sonnet 4.5'     },
+  { id: 'claude-haiku-3-5',            label: 'Claude Haiku 3.5'      },
+  { id: 'claude-sonnet-3-7',           label: 'Claude Sonnet 3.7'     },
+]
+
 // ── Main page ──────────────────────────────────────────────────────────────────
 export function AgentCreate() {
   const navigate = useNavigate()
@@ -142,7 +153,8 @@ export function AgentCreate() {
   const [dailyTargetUsd, setDailyTargetUsd] = useState<number | ''>(500)
   const [maxRiskPercent, setMaxRiskPercent] = useState<number | ''>(10)
   const [maxDailyLossUsd, setMaxDailyLossUsd] = useState<number | ''>('')
-  const [llmProvider, setLlmProvider] = useState<'anthropic' | 'openrouter' | 'ollama'>('anthropic')
+  const [llmProvider, setLlmProvider] = useState<'platform' | 'anthropic' | 'anthropic-subscription' | 'openrouter' | 'ollama'>('platform')
+  const [platformLLM, setPlatformLLMInfo] = useState<PlatformLLMConfig | null>(null)
   const [llmModel, setLlmModel] = useState('')
 
   // Prompt
@@ -171,9 +183,19 @@ export function AgentCreate() {
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
+    getPlatformLLM().then(setPlatformLLMInfo).catch(() => { /* ignore */ })
+  }, [])
+
+  useEffect(() => {
     if (market === 'mt5') {
-      getMt5Accounts().then(setMt5Accounts).catch(() => setMt5Accounts([]))
+      getMt5Accounts().then(accounts => {
+        setMt5Accounts(accounts)
+        // Auto-select the account that is currently active on the bridge
+        const active = accounts.find(a => a.active)
+        if (active && !mt5AccountId) setMt5AccountId(active.login)
+      }).catch(() => setMt5Accounts([]))
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [market])
 
   useEffect(() => {
@@ -238,7 +260,7 @@ export function AgentCreate() {
   }
 
   return (
-    <div className="p-6 max-w-3xl mx-auto">
+    <div className="p-4 md:p-6 max-w-3xl mx-auto">
       {/* Header */}
       <div className="mb-6">
         <Link to="/agents" className="text-sm text-muted hover:text-text transition-colors">← Back to Agents</Link>
@@ -355,7 +377,9 @@ export function AgentCreate() {
             <div className="grid grid-cols-2 gap-4">
               <Field label="LLM Provider">
                 <select value={llmProvider} onChange={e => setLlmProvider(e.target.value as typeof llmProvider)} className="w-full">
-                  <option value="anthropic">Anthropic (Claude)</option>
+                  <option value="platform">Platform LLM (default)</option>
+                  <option value="anthropic">Anthropic (API Key)</option>
+                  <option value="anthropic-subscription">Anthropic (Subscription)</option>
                   <option value="openrouter">OpenRouter</option>
                   <option value="ollama">Ollama (Local)</option>
                 </select>
@@ -407,6 +431,49 @@ export function AgentCreate() {
                 />
               </Field>
             </div>
+
+            {llmProvider === 'platform' && (
+              <div className="bg-bg border border-border rounded-lg p-3 text-sm">
+                {platformLLM ? (
+                  <div className="flex items-center gap-3">
+                    <span className="w-2 h-2 rounded-full bg-accent flex-shrink-0" />
+                    <div>
+                      <span className="text-text font-medium capitalize">{platformLLM.provider.replace('anthropic-subscription', 'Anthropic (Subscription)').replace('anthropic', 'Anthropic (API Key)')}</span>
+                      {platformLLM.model && <span className="text-muted font-mono text-xs ml-2">· {platformLLM.model}</span>}
+                      <p className="text-xs text-muted mt-0.5">Configured on the <Link to="/keys" className="underline hover:text-text">Integrations page</Link></p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-muted text-xs">Uses the platform LLM — configure it on the <Link to="/keys" className="underline hover:text-text">Integrations page</Link></p>
+                )}
+              </div>
+            )}
+
+            {llmProvider === 'anthropic' && (
+              <div>
+                <label className="text-xs font-medium text-muted uppercase tracking-wider">Claude Model</label>
+                <select value={llmModel} onChange={e => setLlmModel(e.target.value)} className="w-full mt-2">
+                  <option value="">— Default (claude-sonnet-4-6) —</option>
+                  {ANTHROPIC_MODELS.map(m => (
+                    <option key={m.id} value={m.id}>{m.label} · {m.id}</option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-muted mt-1">Requires ANTHROPIC_API_KEY to be set on the server.</p>
+              </div>
+            )}
+
+            {llmProvider === 'anthropic-subscription' && (
+              <div>
+                <label className="text-xs font-medium text-muted uppercase tracking-wider">Claude Model</label>
+                <select value={llmModel} onChange={e => setLlmModel(e.target.value)} className="w-full mt-2">
+                  <option value="">— Default (claude-sonnet-4-6) —</option>
+                  {ANTHROPIC_MODELS.map(m => (
+                    <option key={m.id} value={m.id}>{m.label} · {m.id}</option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-muted mt-1">Uses your Claude.ai subscription. Requires CLAUDE_SESSION_TOKEN to be set on the Integrations page.</p>
+              </div>
+            )}
 
             {llmProvider === 'openrouter' && (
               <div>
@@ -487,6 +554,13 @@ export function AgentCreate() {
               </div>
             )}
           </div>
+
+          {/* Haiku warning for live MT5 trading */}
+          {market === 'mt5' && llmModel.toLowerCase().includes('haiku') && (
+            <div className="mt-3 px-3 py-2.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs leading-relaxed">
+              <span className="font-semibold">Warning:</span> Haiku models frequently fail to call trading tools under complex prompts and will write text decisions instead of placing orders. Use <span className="font-mono">{llmProvider === 'openrouter' ? 'anthropic/claude-sonnet-4-6' : 'claude-sonnet-4-6'}</span> or better for live MT5 trading.
+            </div>
+          )}
         </Section>
 
         {/* ── 4. System Prompt ─────────────────────────────────────────────── */}

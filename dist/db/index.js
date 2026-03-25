@@ -106,6 +106,18 @@ export function initDb() {
       period_end TEXT
     );
   `);
+    // Migration: prompt analyses table
+    try {
+        db.exec(`
+      CREATE TABLE IF NOT EXISTS prompt_analyses (
+        agent_key  TEXT PRIMARY KEY,
+        analysis   TEXT NOT NULL,
+        meta       TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `);
+    }
+    catch { /* already exists */ }
     // Migration: add pnl_usd column to existing databases
     try {
         db.exec('ALTER TABLE cycle_results ADD COLUMN pnl_usd REAL');
@@ -137,6 +149,33 @@ export function initDb() {
         created_at   TEXT NOT NULL,
         updated_at   TEXT NOT NULL,
         PRIMARY KEY (agent_key, session_date)
+      )
+    `);
+    }
+    catch { /* already exists */ }
+    // Backtest results — one saved run per agent, replaced on each new run
+    try {
+        db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_backtests (
+        agent_key   TEXT PRIMARY KEY,
+        result_json TEXT NOT NULL,
+        report_json TEXT,
+        model       TEXT,
+        ran_at      TEXT NOT NULL
+      )
+    `);
+    }
+    catch { /* already exists */ }
+    // Persistent MT5 account registry — survives bridge restarts, preserves history
+    try {
+        db.exec(`
+      CREATE TABLE IF NOT EXISTS mt5_accounts (
+        login        INTEGER PRIMARY KEY,
+        name         TEXT    NOT NULL DEFAULT '',
+        server       TEXT    NOT NULL DEFAULT '',
+        mode         TEXT    NOT NULL DEFAULT 'DEMO',
+        last_seen_at TEXT    NOT NULL,
+        in_bridge    INTEGER NOT NULL DEFAULT 1
       )
     `);
     }
@@ -280,6 +319,17 @@ export function dbGetCycleResultsForAgent(agentKey, limit = 100) {
     const rows = db.prepare('SELECT * FROM cycle_results WHERE agent_key = ? ORDER BY id DESC LIMIT ?').all(agentKey, limit);
     return rows.map(rowToCycle);
 }
+/** Returns closed trades for the given agent as TradeRecord[], for Bayesian + Kelly layers */
+export function dbGetTradeRecords(agentKey, limit = 200) {
+    const rows = db.prepare(`SELECT pnl_usd, time FROM cycle_results
+     WHERE agent_key = ? AND pnl_usd IS NOT NULL
+     ORDER BY id DESC LIMIT ?`).all(agentKey, limit);
+    return rows.map(r => ({
+        wonTrade: r.pnl_usd > 0,
+        pnlUsd: r.pnl_usd,
+        closedAt: r.time,
+    }));
+}
 export function dbGetCycleById(id) {
     const row = db.prepare('SELECT * FROM cycle_results WHERE id = ?').get(id);
     return row ? rowToCycle(row) : null;
@@ -345,6 +395,46 @@ export function dbSetSelectedAccount(account) {
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `).run(JSON.stringify(account));
     }
+}
+/** Upsert a batch of accounts currently reported by the bridge (marks them in_bridge=1). */
+export function dbUpsertMt5Accounts(accounts) {
+    const now = new Date().toISOString();
+    const stmt = db.prepare(`
+    INSERT INTO mt5_accounts (login, name, server, mode, last_seen_at, in_bridge)
+    VALUES (?, ?, ?, ?, ?, 1)
+    ON CONFLICT(login) DO UPDATE SET
+      name         = excluded.name,
+      server       = CASE WHEN excluded.server != '' THEN excluded.server ELSE mt5_accounts.server END,
+      mode         = excluded.mode,
+      last_seen_at = excluded.last_seen_at,
+      in_bridge    = 1
+  `);
+    const upsertAll = db.transaction((rows) => {
+        for (const a of rows)
+            stmt.run(a.login, a.name, a.server, a.mode, now);
+    });
+    upsertAll(accounts);
+}
+/** Mark all accounts NOT in the given login list as no longer in bridge. */
+export function dbMarkMt5AccountsGone(currentLogins) {
+    if (currentLogins.length === 0) {
+        db.prepare('UPDATE mt5_accounts SET in_bridge = 0').run();
+        return;
+    }
+    const placeholders = currentLogins.map(() => '?').join(',');
+    db.prepare(`UPDATE mt5_accounts SET in_bridge = 0 WHERE login NOT IN (${placeholders})`).run(...currentLogins);
+}
+/** Get all known MT5 accounts (bridge-live and disconnected). */
+export function dbGetAllMt5Accounts() {
+    const rows = db.prepare('SELECT * FROM mt5_accounts ORDER BY last_seen_at DESC').all();
+    return rows.map(r => ({
+        login: r.login,
+        name: r.name,
+        server: r.server,
+        mode: r.mode,
+        lastSeenAt: r.last_seen_at,
+        inBridge: r.in_bridge === 1,
+    }));
 }
 // ── Log entries ──────────────────────────────────────────────────────────────
 export function dbGetMaxLogId() {
@@ -547,6 +637,32 @@ export function dbSaveSession(agentKey, data) {
 export function dbDeleteSession(agentKey, sessionDate) {
     db.prepare('DELETE FROM agent_sessions WHERE agent_key = ? AND session_date = ?').run(agentKey, sessionDate);
 }
+// ── Monte Carlo (latest result per agent) ─────────────────────────────────────
+export function dbGetLatestMCResult(agentKey) {
+    const row = db.prepare(`SELECT data, time FROM log_entries WHERE agent_key = ? AND event = 'mc_result' ORDER BY id DESC LIMIT 1`).get(agentKey);
+    if (!row?.data)
+        return null;
+    try {
+        return { mc: JSON.parse(row.data), time: row.time };
+    }
+    catch {
+        return null;
+    }
+}
+// ── Prompt Analyses ───────────────────────────────────────────────────────────
+export function dbSavePromptAnalysis(agentKey, analysis, meta) {
+    db.prepare(`
+    INSERT INTO prompt_analyses (agent_key, analysis, meta, created_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(agent_key) DO UPDATE SET analysis = excluded.analysis, meta = excluded.meta, created_at = excluded.created_at
+  `).run(agentKey, JSON.stringify(analysis), JSON.stringify(meta), new Date().toISOString());
+}
+export function dbGetPromptAnalysis(agentKey) {
+    const row = db.prepare('SELECT analysis, meta, created_at FROM prompt_analyses WHERE agent_key = ?').get(agentKey);
+    if (!row)
+        return null;
+    return { analysis: JSON.parse(row.analysis), meta: JSON.parse(row.meta), createdAt: row.created_at };
+}
 /** Returns the most recent completed session before today — used for cross-session memory. */
 export function dbGetPreviousSession(agentKey) {
     const today = new Date().toISOString().slice(0, 10);
@@ -561,6 +677,35 @@ export function dbGetPreviousSession(agentKey) {
         summary: row.summary,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+    };
+}
+// ── Backtest results ─────────────────────────────────────────────────────────
+/** Saves (or replaces) the latest backtest run for an agent. Clears any previous report. */
+export function dbSaveBacktestResult(agentKey, result) {
+    db.prepare(`
+    INSERT INTO agent_backtests (agent_key, result_json, report_json, model, ran_at)
+    VALUES (?, ?, NULL, NULL, ?)
+    ON CONFLICT(agent_key) DO UPDATE SET
+      result_json = excluded.result_json,
+      report_json = NULL,
+      model       = NULL,
+      ran_at      = excluded.ran_at
+  `).run(agentKey, JSON.stringify(result), new Date().toISOString());
+}
+/** Attaches (or updates) the AI report on the agent's saved backtest row. */
+export function dbUpdateBacktestReport(agentKey, report, model) {
+    db.prepare('UPDATE agent_backtests SET report_json = ?, model = ? WHERE agent_key = ?').run(JSON.stringify(report), model, agentKey);
+}
+/** Returns the agent's saved backtest result + report, or null if none exists. */
+export function dbGetBacktestResult(agentKey) {
+    const row = db.prepare('SELECT result_json, report_json, model, ran_at FROM agent_backtests WHERE agent_key = ?').get(agentKey);
+    if (!row)
+        return null;
+    return {
+        result: JSON.parse(row.result_json),
+        report: row.report_json ? JSON.parse(row.report_json) : null,
+        model: row.model,
+        ranAt: row.ran_at,
     };
 }
 //# sourceMappingURL=index.js.map

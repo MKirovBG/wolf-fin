@@ -23,9 +23,11 @@ export interface Mt5Context {
   pipValue: number
   point: number
   digits: number
+  /** Broker-derived pip size — point>=0.01 means index/commodity/crypto (pip=1.0), else pip=point×10 */
+  pipSize: number
 }
 
-let lastMt5Context: Mt5Context = { spread: 0, sessionOpen: false, pipValue: 0.0001, point: 0.0001, digits: 5 }
+let lastMt5Context: Mt5Context = { spread: 0, sessionOpen: false, pipValue: 0.0001, point: 0.0001, digits: 5, pipSize: 0.0001 }
 
 export function setMt5Context(ctx: Mt5Context): void {
   lastMt5Context = ctx

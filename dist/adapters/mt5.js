@@ -5,6 +5,16 @@ import { computeIndicators, computeMultiTFIndicators, computeKeyLevels } from '.
 // Falls back to localhost with MT5_BRIDGE_PORT for backward compat.
 const BASE = () => process.env.MT5_BRIDGE_URL?.replace(/\/+$/, '') ??
     `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`;
+// Tracks the login currently active on the bridge (set from /health responses).
+// Used by the server for UI display (showing which account is connected).
+// NOT used for URL routing — buildUrl never appends ?accountId= regardless.
+let bridgeActiveLogin;
+export function setBridgeActiveLogin(login) {
+    bridgeActiveLogin = login;
+}
+export function getBridgeActiveLogin() {
+    return bridgeActiveLogin;
+}
 const BRIDGE_KEY = () => process.env.MT5_BRIDGE_KEY ?? '';
 function bridgeHeaders() {
     const h = { 'Content-Type': 'application/json' };
@@ -63,9 +73,15 @@ function isCommodity(symbol) {
     return s.startsWith('XAU') || s.startsWith('XAG') || s.startsWith('XPT') || s.startsWith('XPD') ||
         s.includes('OIL') || s.includes('GAS') || s.includes('GOLD') || s.includes('SILVER');
 }
-function pipSizeHeuristic(symbol, _point) {
-    // Commodities: 1 pip = $1 price move (e.g., XAUUSD 3040→3041 = 1 pip).
-    // This keeps ATR/SL/TP numbers intuitive for the LLM (~40 pips instead of ~4000).
+function pipSizeHeuristic(symbol, point) {
+    // Primary path: derive from broker point value — no symbol knowledge needed.
+    // MT5 convention: point >= 0.01 → commodity/index/crypto → 1 pip = 1 full price unit.
+    //                 point <  0.01 → forex → 1 pip = point × 10 (standard 10-point pip).
+    // Examples: EURUSD point=0.00001→0.0001, USDJPY point=0.001→0.01, XAUUSD/US500 point=0.01→1.0
+    if (point != null && point > 0) {
+        return point >= 0.01 ? 1.0 : point * 10;
+    }
+    // Fallback: broker point unavailable (e.g. no snapshot yet). Use symbol name only as last resort.
     if (isCommodity(symbol))
         return 1.0;
     if (symbol.toUpperCase().includes('JPY'))
@@ -80,12 +96,14 @@ export class MT5Adapter {
         this.accountId = accountId;
     }
     buildUrl(path) {
-        if (!this.accountId)
-            return path;
-        const sep = path.includes('?') ? '&' : '?';
-        return `${path}${sep}accountId=${this.accountId}`;
+        // MT5 bridge is single-account: all endpoints serve the active account on
+        // parameterless routes. The ?accountId= parameter is not supported — the
+        // bridge returns 404 for every account including the active one when it
+        // receives an accountId query param unless explicitly multi-account configured.
+        // accountId is stored on the adapter for identity purposes only, not routing.
+        return path;
     }
-    async getSnapshot(symbol, riskState) {
+    async getSnapshot(symbol, riskState, indicatorCfg, _candleCfg) {
         const snap = await mt5Get(this.buildUrl(`/snapshot/${toMt5Symbol(symbol)}`));
         const mapCandles = (arr) => arr.map(c => ({
             openTime: c.openTime,
@@ -185,8 +203,8 @@ export class MT5Adapter {
             },
             candles: { m1, m5, m15, m30, h1, h4 },
             indicators: {
-                ...computeIndicators(h1),
-                mtf: computeMultiTFIndicators(m15, h1, h4),
+                ...computeIndicators(h1, indicatorCfg),
+                ...(indicatorCfg?.mtfEnabled !== false ? { mtf: computeMultiTFIndicators(m15, h1, h4, indicatorCfg) } : {}),
             },
             account: { balances, openOrders },
             positions, // rich MT5 position detail (sl, tp, profit, priceCurrent, swap)
@@ -241,9 +259,7 @@ export class MT5Adapter {
     async getOpenOrders(symbol) {
         const sym = symbol ? toMt5Symbol(symbol) : undefined;
         const posPath = sym ? `/positions?symbol=${sym}` : '/positions';
-        const ordPath = sym
-            ? `/orders?symbol=${sym}&accountId=${this.accountId ?? ''}`
-            : `/orders?accountId=${this.accountId ?? ''}`;
+        const ordPath = sym ? `/orders?symbol=${sym}` : '/orders';
         // Fetch both open positions AND pending limit/stop orders in parallel
         const [positions, pendingOrders] = await Promise.all([
             mt5Get(this.buildUrl(posPath)),
@@ -303,8 +319,7 @@ export class MT5Adapter {
     /** Rich deal history with profit/loss and exit reason (sl, tp, etc.) for LLM reasoning */
     async getDeals(symbol, days = 1, limit = 20) {
         const sym = symbol ? `&symbol=${toMt5Symbol(symbol)}` : '';
-        const acct = this.accountId ? `&accountId=${this.accountId}` : '';
-        return mt5Get(this.buildUrl(`/history/deals?days=${days}&limit=${limit}${sym}${acct}`));
+        return mt5Get(this.buildUrl(`/history/deals?days=${days}&limit=${limit}${sym}`));
     }
     async placeOrder(params) {
         const magic = parseInt(process.env.MT5_MAGIC ?? '123456');
@@ -318,8 +333,6 @@ export class MT5Adapter {
             magic,
             comment: 'wolf-fin',
         };
-        if (this.accountId)
-            body.accountId = this.accountId;
         // MARKET orders must NOT include a price — MT5 executes at best available.
         // Sending a price for MARKET causes error 10015 (Invalid price).
         // For LIMIT/STOP orders, price is required.
@@ -373,14 +386,13 @@ export class MT5Adapter {
             type: params.type,
             price: result.price,
             origQty: result.volume,
-            status: 'FILLED',
+            // deal=0 means the order is pending (LIMIT/STOP not yet filled); deal>0 means it executed immediately
+            status: result.deal > 0 ? 'FILLED' : 'NEW',
             transactTime: Date.now(),
         };
     }
     async cancelOrder(_symbol, orderId) {
         const body = { ticket: Number(orderId) };
-        if (this.accountId)
-            body.accountId = this.accountId;
         try {
             await mt5Post('/order/cancel', body);
         }
@@ -400,8 +412,6 @@ export class MT5Adapter {
     }
     async closePosition(ticket, volume) {
         const body = { ticket };
-        if (this.accountId)
-            body.accountId = this.accountId;
         if (volume != null)
             body.volume = volume;
         try {
@@ -419,8 +429,6 @@ export class MT5Adapter {
     }
     async modifyPosition(ticket, sl, tp) {
         const body = { ticket };
-        if (this.accountId)
-            body.accountId = this.accountId;
         if (sl != null)
             body.sl = sl;
         if (tp != null)
@@ -438,6 +446,28 @@ export class MT5Adapter {
         // trade_mode: 0 = SYMBOL_TRADE_MODE_DISABLED, others = various trade modes
         // In practice, trade_mode > 0 means trading is allowed
         return info.trade_mode > 0;
+    }
+    /** Fetch large historical candle dataset for backtesting (up to 10,000 bars). */
+    async getHistoricalCandles(symbol, timeframe, count) {
+        const capped = Math.min(Math.max(count, 1), 10_000);
+        const url = this.buildUrl(`/candles/${toMt5Symbol(symbol)}?timeframe=${timeframe}&count=${capped}`);
+        const res = await mt5Get(url);
+        return res.candles.map(c => ({
+            openTime: c.openTime,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+            volume: c.volume,
+            closeTime: c.closeTime,
+        }));
+    }
+    /** Fetch current pip size and pip value for a symbol — used by the backtester. */
+    async getSymbolInfo(symbol) {
+        const info = await mt5Get(this.buildUrl(`/symbol-info/${toMt5Symbol(symbol)}`));
+        const pipSz = pipSizeHeuristic(symbol, info.point);
+        const pipVal = info.trade_tick_value ?? 1;
+        return { pipSize: pipSz, pipValue: pipVal, point: info.point };
     }
 }
 export const mt5Adapter = new MT5Adapter();

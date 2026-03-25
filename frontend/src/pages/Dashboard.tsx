@@ -8,6 +8,8 @@ import { ThreadedLogsPanel } from '../components/ThreadedLogsPanel.tsx'
 import { Badge, decisionVariant } from '../components/Badge.tsx'
 import { AgentStatusBadge } from '../components/AgentStatusBadge.tsx'
 import { useAccount } from '../contexts/AccountContext.tsx'
+import { CalendarWidget } from '../components/CalendarWidget.tsx'
+import { PortfolioRisk } from '../components/PortfolioRisk.tsx'
 
 function rel(iso: string) {
   const d = Date.now() - new Date(iso).getTime()
@@ -52,27 +54,42 @@ export function Dashboard() {
   // Initial load
   useEffect(() => { load() }, [load])
 
-  // SSE: apply individual agent updates in real-time, filtered by selected account
+  // SSE: apply individual agent updates in real-time, with auto-reconnect on drop
   useEffect(() => {
-    const es = new EventSource('/api/events')
-    es.addEventListener('agent', (e: MessageEvent) => {
-      try {
-        const updated = JSON.parse(e.data) as AgentState & { agentKey: string }
-        setLastUpdate(new Date().toLocaleTimeString())
-        setData(prev => {
-          if (!prev) return prev
-          const agents = prev.agents.some(a => a.agentKey === updated.agentKey)
-            ? prev.agents.map(a => a.agentKey === updated.agentKey ? updated : a)
-            : [...prev.agents, updated]
-          const recentEvents = updated.lastCycle
-            ? [updated.lastCycle, ...prev.recentEvents].slice(0, 100)
-            : prev.recentEvents
-          return { ...prev, agents, recentEvents }
-        })
-      } catch { /* ignore */ }
-    })
-    return () => es.close()
-  }, [])
+    let es: EventSource | null = null
+    let closed = false
+
+    const connect = () => {
+      if (closed) return
+      es = new EventSource('/api/events')
+      es.addEventListener('agent', (e: MessageEvent) => {
+        try {
+          const updated = JSON.parse(e.data) as AgentState & { agentKey: string }
+          setLastUpdate(new Date().toLocaleTimeString())
+          setData(prev => {
+            if (!prev) return prev
+            const agents = prev.agents.some(a => a.agentKey === updated.agentKey)
+              ? prev.agents.map(a => a.agentKey === updated.agentKey ? updated : a)
+              : [...prev.agents, updated]
+            const recentEvents = updated.lastCycle
+              ? [updated.lastCycle, ...prev.recentEvents].slice(0, 100)
+              : prev.recentEvents
+            return { ...prev, agents, recentEvents }
+          })
+        } catch { /* ignore */ }
+      })
+      es.onerror = () => {
+        es?.close()
+        if (!closed) {
+          load() // re-sync state from REST on reconnect
+          setTimeout(connect, 3000)
+        }
+      }
+    }
+
+    connect()
+    return () => { closed = true; es?.close() }
+  }, [load])
 
   // Filter all data to the selected account
   const allAgents = data?.agents ?? []
@@ -118,7 +135,7 @@ export function Dashboard() {
   ]
 
   return (
-    <div className="p-6">
+    <div className="p-4 md:p-6">
       {/* Header */}
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-xl font-bold text-text">Dashboard</h1>
@@ -130,6 +147,9 @@ export function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Portfolio Risk strip */}
+      <PortfolioRisk />
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-4">
@@ -283,6 +303,9 @@ export function Dashboard() {
           </div>
         </Card>
       )}
+
+      {/* Economic Calendar */}
+      <CalendarWidget compact={true} maxEvents={5} />
 
       {/* Live threaded logs — filtered to selected account's agents only */}
       <div className="mb-4">

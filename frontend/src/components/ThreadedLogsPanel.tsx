@@ -30,30 +30,43 @@ export function ThreadedLogsPanel({ agentKey, agentKeys, maxThreads }: Props) {
     }).catch(() => {})
   }, [agentKey])
 
-  // SSE — receive new log entries in real-time (no polling)
+  // SSE — receive new log entries in real-time, with auto-reconnect on drop
   useEffect(() => {
-    const url = agentKey ? `/api/events?agent=${encodeURIComponent(agentKey)}` : '/api/events'
-    const es = new EventSource(url)
+    let es: EventSource | null = null
+    let closed = false
 
-    es.onmessage = (e: MessageEvent) => {
-      if (pausedRef.current) return
-      try {
-        const entry = JSON.parse(e.data) as LogEntry
-        if (agentKey && entry.agentKey !== agentKey) return
-        if (agentKeys && !agentKeys.has(entry.agentKey)) return
+    const connect = () => {
+      if (closed) return
+      const params = new URLSearchParams()
+      if (agentKey) params.set('agent', agentKey)
+      if (lastIdRef.current > 0) params.set('since', String(lastIdRef.current))
+      es = new EventSource(`/api/events?${params}`)
 
-        allLogsRef.current = [entry, ...allLogsRef.current].slice(0, 2000)
-        if (entry.id > lastIdRef.current) lastIdRef.current = entry.id
-        setTick(t => t + 1)
+      es.onmessage = (e: MessageEvent) => {
+        if (pausedRef.current) return
+        try {
+          const entry = JSON.parse(e.data) as LogEntry
+          if (agentKey && entry.agentKey !== agentKey) return
+          if (agentKeys && !agentKeys.has(entry.agentKey)) return
 
-        // Scroll to top when a new tick starts
-        if ((entry.event === 'tick_start' || entry.event === 'cycle_start') && topRef.current) {
-          topRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        }
-      } catch { /* ignore */ }
+          allLogsRef.current = [entry, ...allLogsRef.current].slice(0, 2000)
+          if (entry.id > lastIdRef.current) lastIdRef.current = entry.id
+          setTick(t => t + 1)
+
+          if ((entry.event === 'tick_start' || entry.event === 'cycle_start') && topRef.current) {
+            topRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          }
+        } catch { /* ignore */ }
+      }
+
+      es.onerror = () => {
+        es?.close()
+        if (!closed) setTimeout(connect, 3000)
+      }
     }
 
-    return () => es.close()
+    connect()
+    return () => { closed = true; es?.close() }
   }, [agentKey])
 
   const handleClear = async () => {

@@ -73,6 +73,22 @@ export function minutesUntilSessionClose(): number | null {
 }
 
 /**
+ * Derives pip size from broker point value.
+ * point >= 0.01 → index/commodity/crypto-CFD → pip = 1.0
+ * point >= 0.001 → JPY/ZAR pairs → pip = point × 10
+ * default → 4-decimal forex → pip = 0.0001
+ */
+export function pipSize(symbol: string, point?: number): number {
+  if (point != null && point > 0) {
+    return point >= 0.01 ? 1.0 : point * 10
+  }
+  const s = symbol.toUpperCase()
+  if (s.startsWith('XAU') || s.startsWith('XAG') || s.includes('OIL') || s.includes('GOLD')) return 1.0
+  if (s.includes('JPY')) return 0.01
+  return 0.0001
+}
+
+/**
  * Returns a human-readable session label for the system prompt.
  * e.g. "London / New York overlap (high liquidity)"
  */

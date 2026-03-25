@@ -8,14 +8,19 @@ import { fetchForexNews } from '../adapters/finnhubNews.js';
  * Assembles a MarketContext for the given symbol and market.
  * All fetches are parallel and fail gracefully — a broken enrichment
  * source never stops the trading cycle.
+ * Pass contextConfig to selectively disable enrichment sources.
  */
-export async function buildMarketContext(symbol, market) {
+export async function buildMarketContext(symbol, market, cfg = {}) {
     if (market === 'crypto') {
+        const wantFearGreed = cfg.fearGreed !== false;
+        const wantCryptoMarket = cfg.cryptoMarket !== false;
+        const wantNews = cfg.news !== false;
+        const wantCalendar = cfg.economicCalendar !== false;
         const [fearGreed, cryptoMarket, news, upcomingEvents] = await Promise.all([
-            fetchFearGreed(),
-            fetchCryptoMarket(),
-            fetchCryptoNews(symbol),
-            fetchUpcomingEvents(),
+            wantFearGreed ? fetchFearGreed() : Promise.resolve(null),
+            wantCryptoMarket ? fetchCryptoMarket() : Promise.resolve(null),
+            wantNews ? fetchCryptoNews(symbol) : Promise.resolve([]),
+            wantCalendar ? fetchUpcomingEvents() : Promise.resolve([]),
         ]);
         const ctx = {};
         if (fearGreed)
@@ -29,9 +34,11 @@ export async function buildMarketContext(symbol, market) {
         return ctx;
     }
     // Forex/MT5: calendar events + Finnhub forex news
+    const wantCalendar = cfg.economicCalendar !== false;
+    const wantForexNews = cfg.forexNews !== false;
     const [upcomingEvents, forexNews] = await Promise.all([
-        fetchUpcomingEvents(),
-        fetchForexNews(symbol),
+        wantCalendar ? fetchUpcomingEvents() : Promise.resolve([]),
+        wantForexNews ? fetchForexNews(symbol) : Promise.resolve([]),
     ]);
     const ctx = {};
     if (upcomingEvents.length > 0)

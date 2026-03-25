@@ -6,12 +6,12 @@ export class OllamaProvider {
         this.baseUrl = baseUrl;
     }
     async createMessage(params) {
+        const hasTools = params.tools.length > 0;
         const body = {
             model: params.model,
             max_tokens: params.max_tokens,
             messages: toOAIMessages(params.system, params.messages),
-            tools: toOAITools(params.tools),
-            tool_choice: 'auto',
+            ...(hasTools ? { tools: toOAITools(params.tools), tool_choice: 'auto' } : {}),
             stream: false,
         };
         let res;

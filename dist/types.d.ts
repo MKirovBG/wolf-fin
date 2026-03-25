@@ -1,21 +1,45 @@
+import type { MCEnhancements } from './adapters/mc-types.js';
 export type AgentStatus = 'idle' | 'running' | 'paused';
 export interface GuardrailsConfig {
     sessionOpenCheck: boolean;
     extremeSpreadCheck: boolean;
     stopPipsRequired: boolean;
 }
+export interface IndicatorConfig {
+    rsiPeriod?: number;
+    emaFast?: number;
+    emaSlow?: number;
+    atrPeriod?: number;
+    bbPeriod?: number;
+    bbStdDev?: number;
+    vwapEnabled?: boolean;
+    mtfEnabled?: boolean;
+    macdEnabled?: boolean;
+    adxEnabled?: boolean;
+    stochEnabled?: boolean;
+}
+export interface CandleConfig {
+    timeframes?: Array<'m1' | 'm5' | 'm15' | 'm30' | 'h1' | 'h4'>;
+    limit?: number;
+}
+export interface ContextConfig {
+    fearGreed?: boolean;
+    news?: boolean;
+    cryptoMarket?: boolean;
+    economicCalendar?: boolean;
+    forexNews?: boolean;
+}
 export interface AgentConfig {
     name?: string;
     symbol: string;
     market: 'crypto' | 'mt5';
     fetchMode: 'manual' | 'scheduled' | 'autonomous';
-    scheduleIntervalSeconds: number;
     leverage?: number;
     customPrompt?: string;
     promptTemplate?: string;
     guardrails?: Partial<GuardrailsConfig>;
     mt5AccountId?: number;
-    llmProvider?: 'anthropic' | 'openrouter' | 'ollama';
+    llmProvider?: 'platform' | 'anthropic' | 'anthropic-subscription' | 'openrouter' | 'ollama';
     llmModel?: string;
     dailyTargetUsd?: number;
     maxRiskPercent?: number;
@@ -23,6 +47,10 @@ export interface AgentConfig {
     maxDrawdownPercent?: number;
     scheduledStartUtc?: string;
     scheduledEndUtc?: string;
+    indicatorConfig?: IndicatorConfig;
+    candleConfig?: CandleConfig;
+    contextConfig?: ContextConfig;
+    mcEnhancements?: MCEnhancements;
 }
 export interface AgentState {
     config: AgentConfig;

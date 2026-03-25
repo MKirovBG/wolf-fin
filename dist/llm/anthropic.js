@@ -7,7 +7,7 @@ export class AnthropicProvider {
             model: params.model,
             max_tokens: params.max_tokens,
             system: params.system,
-            tools: params.tools,
+            ...(params.tools.length > 0 ? { tools: params.tools } : {}),
             messages: params.messages,
         });
         return {

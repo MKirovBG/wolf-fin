@@ -59,6 +59,7 @@ function NumInput({ value, onChange, min, max, step = 1, disabled }: {
 const IND_DEFAULTS: Required<IndicatorConfig> = {
   rsiPeriod: 14, emaFast: 20, emaSlow: 50, atrPeriod: 14,
   bbPeriod: 20, bbStdDev: 2, vwapEnabled: true, mtfEnabled: true,
+  macdEnabled: false, adxEnabled: false, stochEnabled: false,
 }
 
 export function IndicatorConfigEditor({
@@ -85,6 +86,24 @@ export function IndicatorConfigEditor({
         hint="Computes RSI and EMA cross on M15 and H4 in addition to the primary H1. Produces a confluence score from −3 (all bearish) to +3 (all bullish). Helps the agent avoid counter-trend entries — disable to reduce per-tick computation."
       >
         <Toggle checked={v.mtfEnabled} onChange={val => set('mtfEnabled', val)} disabled={disabled} />
+      </Row>
+      <Row
+        label="MACD (12/26/9)"
+        hint="Moving Average Convergence/Divergence. Histogram crossing zero signals trend reversals; positive histogram = bullish momentum building, negative = bearish. Adds ~3 tokens per tick to the LLM context."
+      >
+        <Toggle checked={v.macdEnabled} onChange={val => set('macdEnabled', val)} disabled={disabled} />
+      </Row>
+      <Row
+        label="ADX (14)"
+        hint="Average Directional Index measures trend strength, not direction. ADX above 25 = trending market (EMA signals reliable); below 20 = ranging (use RSI / mean-reversion signals instead). Helps filter false breakouts."
+      >
+        <Toggle checked={v.adxEnabled} onChange={val => set('adxEnabled', val)} disabled={disabled} />
+      </Row>
+      <Row
+        label="Stochastic (14,3)"
+        hint="Stochastic oscillator for overbought/oversold timing. K above 80 = overbought (potential reversal or pullback); K below 20 = oversold. Most useful in ranging markets — combine with ADX to know when to apply it."
+      >
+        <Toggle checked={v.stochEnabled} onChange={val => set('stochEnabled', val)} disabled={disabled} />
       </Row>
 
       <div className="pt-3 grid grid-cols-2 gap-x-6">

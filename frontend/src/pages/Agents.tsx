@@ -43,7 +43,7 @@ export function Agents() {
   const running = agents.filter(a => a.status === 'running').length
 
   return (
-    <div className="p-6">
+    <div className="p-4 md:p-6">
       {/* Header */}
       <div className="flex justify-between items-center mb-6">
         <div>

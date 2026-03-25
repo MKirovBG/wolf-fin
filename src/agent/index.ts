@@ -8,13 +8,12 @@ import pino from 'pino'
 import { getLLMProvider, getModelForConfig } from '../llm/index.js'
 import { RateLimitError } from '../llm/openrouter.js'
 import { getAdapter } from '../adapters/registry.js'
-import { getRiskState } from '../guardrails/riskState.js'
-import { updatePositionNotionalFor, setMt5Context, getRiskStateFor } from '../guardrails/riskStateStore.js'
-import { validateOrder } from '../guardrails/validate.js'
-import { validateMt5Order } from '../guardrails/mt5.js'
 import { getMt5Context } from '../guardrails/riskStateStore.js'
-import { buildMarketContext } from './context.js'
-import { sessionLabel, minutesUntilSessionClose } from '../adapters/session.js'
+import { pipSize, sessionLabel, minutesUntilSessionClose } from '../adapters/session.js'
+import { handleMarketData } from './tools/marketData.js'
+import { handleExecution } from './tools/execution.js'
+import { handleIntelligence } from './tools/intelligence.js'
+import type { DispatchCtx } from './tools/types.js'
 import { fetchForexNews } from '../adapters/finnhubNews.js'
 import type { ForexNewsItem } from '../adapters/finnhubNews.js'
 import { formatMCBlock } from '../adapters/montecarlo.js'
@@ -26,13 +25,13 @@ import { getTools } from '../tools/definitions.js'
 import { recordCycle, logEvent, tryAcquireCycleLock, releaseCycleLock, getAgent, setAgentStatus, setAgentPaused, consumePlanRequest } from '../server/state.js'
 import {
   dbGetAgentPerformance, makeAgentKey,
-  dbSaveMemory, dbGetMemories, dbDeleteMemory,
-  dbSavePlan, dbGetActivePlan, dbGetStrategy,
+  dbSaveMemory, dbGetMemories,
+  dbGetActivePlan, dbGetStrategy,
   dbGetTodaySession, dbSaveSession, dbGetPreviousSession,
   dbGetTradeRecords,
 } from '../db/index.js'
 import type { AgentConfig } from '../types.js'
-import type { OrderParams, RiskState } from '../adapters/types.js'
+import type { RiskState } from '../adapters/types.js'
 
 export type { AgentConfig } from '../types.js'
 
@@ -168,17 +167,10 @@ async function detectExternalCloses(
   return notes.join('\n')
 }
 
-/** Pip size for stop-price calculation — commodity-aware */
-function pipSize(symbol: string, point?: number): number {
-  const s = symbol.toUpperCase()
-  if (s.startsWith('XAU') || s.startsWith('XAG') || s.startsWith('XPT') || s.startsWith('XPD') ||
-      s.includes('OIL') || s.includes('GAS') || s.includes('GOLD') || s.includes('SILVER')) {
-    return point ?? 0.01
-  }
-  if (s.includes('JPY')) return 0.01
-  return 0.0001
-}
-
+/** Pip size from broker point — no symbol-name mapping needed.
+ *  point >= 0.01 → index/commodity/crypto: 1 pip = 1 full price unit
+ *  point <  0.01 → forex: 1 pip = point × 10 (standard 10-point pip)
+ *  No point available → minimal fallback only */
 // ── Snapshot summary formatter (for subsequent tick messages) ─────────────────
 
 // Detect appropriate decimal places from the magnitude of price.
@@ -206,7 +198,7 @@ function candleTrendLine(candles: Candle[], count: number, dp: number): string {
 
 function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string, config?: AgentConfig, mc?: MCResult | EnhancedMCResult): string {
   const price = snap.price as { bid?: number; ask?: number; last?: number } | undefined
-  const indicators = snap.indicators as { rsi14?: number; ema20?: number; ema50?: number; atr14?: number; vwap?: number; bbWidth?: number; mtf?: { m15?: { rsi14: number; ema20: number; atr14: number }; h4?: { rsi14: number; ema20: number; ema50?: number; atr14: number }; confluence: number } } | undefined
+  const indicators = snap.indicators as { rsi14?: number; ema20?: number; ema50?: number; atr14?: number; vwap?: number; bbWidth?: number; mtf?: { m15?: { rsi14: number; ema20: number; atr14: number }; h4?: { rsi14: number; ema20: number; ema50?: number; atr14: number }; confluence: number }; macd?: { macd: number; signal: number; histogram: number }; adx?: { adx: number; plusDI: number; minusDI: number }; stoch?: { k: number; d: number } } | undefined
   const forex = snap.forex as { spread?: number; sessionOpen?: boolean; pipValue?: number; point?: number; pipSize?: number; swapLong?: number; swapShort?: number } | undefined
   const candles = snap.candles as { m1?: Candle[]; m5?: Candle[]; m15?: Candle[]; m30?: Candle[]; h1?: Candle[]; h4?: Candle[] } | undefined
   const positions = snap.positions as Array<{
@@ -312,6 +304,20 @@ function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string,
       parts.push(`VWAP: ${indicators.vwap.toFixed(dp)}${vwapRel}`)
     }
     if (parts.length > 0) lines.push(parts.join(' | '))
+
+    // Optional: MACD, ADX, Stochastic
+    if (indicators.macd) {
+      const h = indicators.macd.histogram
+      lines.push(`MACD: ${indicators.macd.macd.toFixed(dp)} | Signal: ${indicators.macd.signal.toFixed(dp)} | Hist: ${h >= 0 ? '+' : ''}${h.toFixed(dp)} ${h > 0 ? '(bullish momentum)' : '(bearish momentum)'}`)
+    }
+    if (indicators.adx) {
+      const trend = indicators.adx.adx >= 25 ? 'TRENDING' : 'RANGING'
+      lines.push(`ADX(14): ${indicators.adx.adx.toFixed(1)} (${trend}) | +DI: ${indicators.adx.plusDI.toFixed(1)} | -DI: ${indicators.adx.minusDI.toFixed(1)}`)
+    }
+    if (indicators.stoch) {
+      const label = indicators.stoch.k >= 80 ? '(overbought)' : indicators.stoch.k <= 20 ? '(oversold)' : ''
+      lines.push(`Stoch(14,3): K=${indicators.stoch.k.toFixed(1)} D=${indicators.stoch.d.toFixed(1)} ${label}`)
+    }
   }
 
   // ── Multi-timeframe indicator summary ──────────────────────────────────────
@@ -379,9 +385,15 @@ function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string,
     const lotsByMargin   = marginPerLot > 0 ? (freeMargin * 0.5) / marginPerLot : 0.01
 
     // Final: minimum of all three, floored at 0.01
-    const suggestedLots  = Math.max(0.01, Math.floor(Math.min(lotsByTarget, lotsByRisk, lotsByMargin) * 100) / 100)
+    const baseLots       = Math.max(0.01, Math.floor(Math.min(lotsByTarget, lotsByRisk, lotsByMargin) * 100) / 100)
 
-    // Store for guardrail clamp
+    // Apply VOLATILE regime multiplier (MC Markov state)
+    const isVolatile     = mc != null && 'markov' in mc && (mc as EnhancedMCResult).markov?.currentState === 'VOLATILE'
+    const regimeMultiplier = isVolatile ? 0.5 : 1.0
+    const suggestedLots  = Math.max(0.01, Math.floor(baseLots * regimeMultiplier * 100) / 100)
+    const regimeNote     = isVolatile ? ` ⚠ VOLATILE regime — size halved from ${baseLots.toFixed(2)}` : ''
+
+    // Store for guardrail hard cap
     if (agentKey) suggestedLotsByAgent.set(agentKey, suggestedLots)
 
     const riskUsd        = suggestedLots * riskPerLot
@@ -393,7 +405,7 @@ function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string,
       `  Daily target: $${dailyTarget} | Max risk: ${maxRiskPct}% ($${maxRiskUsd.toFixed(0)}) | Leverage: 1:${leverage}`,
       `  ATR-based SL: ~${slPips.toFixed(1)} pips ($${riskPerLot.toFixed(0)}/lot) | TP at R:R ${rrRatio}: ~${(slPips * rrRatio).toFixed(1)} pips ($${rewardPerLot.toFixed(0)}/lot)`,
       `  ► SUGGESTED SIZE: ${suggestedLots.toFixed(2)} lots — risk $${riskUsd.toFixed(0)}, reward $${rewardUsd.toFixed(0)}, margin $${marginNeeded.toFixed(0)}`,
-      `  (System will reject orders above ${Math.max(0.01, Math.round(suggestedLots * 2 * 100) / 100)} lots)`
+      `  (System enforces ${suggestedLots.toFixed(2)} lots hard cap — orders above this are silently reduced)${regimeNote}`
     )
   }
 
@@ -483,9 +495,62 @@ function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string,
     } else {
       lines.push(formatMCBlock(mc as MCResult, pipSz, dp))
     }
+
+    // ── System advisories derived from MC signals ─────────────────────────
+    if ('core' in mc) {
+      const emc = mc as EnhancedMCResult
+      const warnings: string[] = []
+
+      if (emc.markov?.currentState === 'VOLATILE') {
+        const storedLots = agentKey ? (suggestedLotsByAgent.get(agentKey) ?? 0.01) : 0.01
+        warnings.push(`⚠ VOLATILE REGIME: position size capped at 50% (${storedLots.toFixed(2)} lots hard cap).`)
+      }
+      if (emc.bayesian?.posteriorMean != null && emc.bayesian.posteriorMean < 0.4) {
+        warnings.push(`⚠ LOW STATISTICAL EDGE: Bayesian win rate ${(emc.bayesian.posteriorMean * 100).toFixed(1)}% < 40% threshold.`)
+      }
+      if (emc.kelly?.recommendedFraction === 'No Trade' || (emc.kelly?.fullKellyPct != null && emc.kelly.fullKellyPct < 10)) {
+        warnings.push(`⚠ MINIMAL EDGE: Kelly fraction ${emc.kelly.fullKellyPct?.toFixed(1) ?? '?'}% — do not force a trade.`)
+      }
+      if (emc.scenarios?.avoidTrading) {
+        warnings.push(`⚠ SCENARIO ANALYSIS: ${emc.scenarios.avoidReason ?? 'Stress test recommends avoiding new positions.'}`)
+      }
+
+      if (warnings.length > 0) {
+        lines.push(`\nSYSTEM ADVISORIES (enforced server-side):`)
+        for (const w of warnings) lines.push(`  ${w}`)
+      }
+    }
   }
 
   return lines.join('\n')
+}
+
+// ── Message history sanitiser ─────────────────────────────────────────────────
+
+/**
+ * Remove any trailing assistant messages whose tool_use blocks have no matching
+ * tool_result in the immediately following user message.
+ *
+ * This can happen when a tick errors out AFTER pushing the assistant reply to
+ * history but BEFORE the tool_result user message is appended — leaving the
+ * conversation in a state that the Anthropic API rejects on the next request.
+ */
+function sanitiseMessages(messages: Anthropic.MessageParam[]): void {
+  while (messages.length > 0) {
+    const last = messages[messages.length - 1]
+    if (last.role !== 'assistant') break
+
+    // Check if this assistant message has any tool_use blocks
+    const content = Array.isArray(last.content) ? last.content : []
+    const hasToolUse = content.some(b => (b as { type: string }).type === 'tool_use')
+    if (!hasToolUse) break  // no tool_use — nothing dangling
+
+    // There's a tool_use at the tail — it MUST be followed by a tool_result user message
+    // If it IS followed by one, the history is valid: stop here
+    // (This case shouldn't arise since we'd have at least one more message after)
+    // We're at the last message, so there's no following tool_result — remove it
+    messages.pop()
+  }
 }
 
 // ── Session compression ───────────────────────────────────────────────────────
@@ -935,147 +1000,25 @@ async function dispatchTool(
   }
 
   const market = (input.market as 'crypto' | 'mt5' | undefined) ?? defaultMarket
-  const adapter = getAdapter(market, mt5AccountId)
-
-  switch (name) {
-    case 'get_snapshot': {
-      const riskState = market === 'mt5' ? getRiskStateFor('mt5') : getRiskState()
-      const snap = await adapter.getSnapshot(input.symbol as string, riskState, agentConfig?.indicatorConfig, agentConfig?.candleConfig)
-      snap.context = await buildMarketContext(input.symbol as string, market, agentConfig?.contextConfig)
-      const openNotional = snap.account.openOrders.reduce(
-        (sum, o) => sum + o.price * o.origQty, 0,
-      )
-      updatePositionNotionalFor(market, openNotional)
-      if (market === 'mt5' && snap.forex) {
-        const pt = snap.forex.point ?? 0.0001
-        setMt5Context({ spread: snap.forex.spread, sessionOpen: snap.forex.sessionOpen, pipValue: snap.forex.pipValue, point: pt, digits: pt <= 0.001 ? 5 : 2 })
-      }
-      return snap
-    }
-    case 'get_order_book':
-      return adapter.getOrderBook(input.symbol as string, input.depth as number | undefined)
-    case 'get_recent_trades':
-      return adapter.getRecentTrades(input.symbol as string, input.limit as number | undefined)
-    case 'get_open_orders':
-      return adapter.getOpenOrders(input.symbol as string | undefined)
-    case 'place_order': {
-      let requestedQty = input.quantity as number
-      // ── Lot-size guardrail: clamp to 2× suggested size ──
-      const suggested = suggestedLotsByAgent.get(agentKey)
-      if (suggested != null && suggested > 0) {
-        const maxAllowed = Math.max(0.01, Math.round(suggested * 2 * 100) / 100)
-        if (requestedQty > maxAllowed) {
-          logEvent(agentKey, 'warn', 'guardrail_block',
-            `Lot size clamped: agent requested ${requestedQty} lots but max allowed is ${maxAllowed} (2× suggested ${suggested.toFixed(2)}). Using ${maxAllowed}.`)
-          requestedQty = maxAllowed
-        } else if (requestedQty < 0.01) {
-          requestedQty = 0.01
-        }
-      }
-      const params: OrderParams = {
-        symbol: input.symbol as string,
-        side: input.side as 'BUY' | 'SELL',
-        type: input.type as 'LIMIT' | 'MARKET',
-        quantity: requestedQty,
-        price: input.price as number | undefined,
-        timeInForce: input.timeInForce as 'GTC' | 'IOC' | 'FOK' | undefined,
-        stopPips: input.stopPips as number | undefined,
-        tpPips: input.tpPips as number | undefined,
-      }
-      const agentGuardrails = getAgent(agentKey)?.config.guardrails
-      const validation =
-        market === 'mt5'
-          ? (() => { const ctx = getMt5Context(); return validateMt5Order(params, ctx.spread, ctx.sessionOpen, ctx.pipValue, agentGuardrails) })()
-          : validateOrder(params, params.price ?? 0)
-      if (!validation.ok) {
-        log.warn({ reason: validation.reason }, 'order blocked by guardrails')
-        return { blocked: true, reason: validation.reason }
-      }
-      if (market === 'mt5' && params.price != null) {
-        const ctxPoint = getMt5Context().point
-        const pipSz = pipSize(params.symbol, ctxPoint)
-        if (params.stopPips != null) {
-          params.stopPrice = params.side === 'BUY'
-            ? params.price - params.stopPips * pipSz
-            : params.price + params.stopPips * pipSz
-        }
-        if (params.tpPips != null) {
-          params.tpPrice = params.side === 'BUY'
-            ? params.price + params.tpPips * pipSz
-            : params.price - params.tpPips * pipSz
-        }
-      }
-      return adapter.placeOrder(params)
-    }
-    case 'cancel_order': {
-      await adapter.cancelOrder(input.symbol as string, input.orderId as number)
-      return { cancelled: true }
-    }
-    case 'close_position': {
-      const mt5 = adapter as import('../adapters/mt5.js').MT5Adapter
-      if (typeof mt5.closePosition !== 'function') throw new Error('close_position is only supported for MT5')
-      return mt5.closePosition(input.ticket as number, input.volume as number | undefined)
-    }
-    case 'modify_position': {
-      const mt5Adpt = adapter as import('../adapters/mt5.js').MT5Adapter
-      if (typeof mt5Adpt.modifyPosition !== 'function') throw new Error('modify_position is only supported for MT5')
-      const { ticket, sl, tp } = input as { ticket: number; sl?: number; tp?: number }
-      const result = await mt5Adpt.modifyPosition(ticket, sl, tp)
-      logEvent(agentKey, 'info', 'auto_execute', `modify_position #${ticket} → SL:${sl ?? 'unchanged'} TP:${tp ?? 'unchanged'}`)
-      return result
-    }
-    case 'save_memory': {
-      const { category, key, value, confidence, ttl_hours } = input as { category: string; key: string; value: string; confidence: number; ttl_hours?: number }
-      dbSaveMemory(agentKey, category, key, value, confidence, ttl_hours)
-      logEvent(agentKey, 'info', 'memory_write', `Saved memory [${category}] "${key}" (conf ${confidence})`)
-      return { ok: true, message: `Memory saved: [${category}] ${key}` }
-    }
-    case 'read_memories': {
-      const { category, limit } = input as { category?: string; limit?: number }
-      const memories = dbGetMemories(agentKey, category, limit ?? 10)
-      return { memories, count: memories.length }
-    }
-    case 'delete_memory': {
-      const { category, key } = input as { category: string; key: string }
-      dbDeleteMemory(agentKey, category, key)
-      logEvent(agentKey, 'info', 'memory_write', `Deleted memory [${category}] "${key}"`)
-      return { ok: true }
-    }
-    case 'save_plan': {
-      const { market_bias, key_levels, risk_notes, plan_text, session_label } = input as { market_bias: string; key_levels?: string; risk_notes?: string; plan_text: string; session_label?: string }
-      const planId = dbSavePlan(agentKey, { marketBias: market_bias, keyLevels: key_levels, riskNotes: risk_notes, planText: plan_text, sessionLabel: session_label, cycleCountAt: getAgent(agentKey)?.cycleCount })
-      logEvent(agentKey, 'info', 'plan_created', `Session plan saved [${market_bias.toUpperCase()}] id=${planId}`)
-      return { ok: true, planId, message: `Session plan saved with bias: ${market_bias}` }
-    }
-    case 'get_plan': {
-      const plan = dbGetActivePlan(agentKey)
-      if (!plan) return { plan: null, message: 'No active plan for today. Consider running a planning cycle.' }
-      return { plan }
-    }
-    case 'get_trade_history': {
-      if (market !== 'mt5') return { error: 'get_trade_history is only available for MT5' }
-      const mt5Adpt = adapter as import('../adapters/mt5.js').MT5Adapter
-      const days  = (input.days  as number | undefined) ?? 1
-      const limit = (input.limit as number | undefined) ?? 20
-      const sym   = input.symbol as string | undefined
-      const deals = await mt5Adpt.getDeals(sym, days, limit)
-      const DEAL_TYPE: Record<number, string> = { 0: 'BUY', 1: 'SELL', 2: 'BALANCE', 3: 'CREDIT', 4: 'CHARGE', 5: 'CORRECTION', 6: 'BONUS' }
-      return deals.map(d => ({
-        ticket:    d.ticket,
-        symbol:    d.symbol,
-        type:      DEAL_TYPE[d.type] ?? `TYPE_${d.type}`,
-        volume:    d.volume,
-        price:     d.price,
-        profit:    d.profit,
-        commission: d.commission,
-        swap:      d.swap,
-        comment:   d.comment, // "sl" = stopped out, "tp" = take profit, "" = manual/external
-        time:      d.time,
-      }))
-    }
-    default:
-      throw new Error(`Unknown tool: ${name}`)
+  const ctx: DispatchCtx = {
+    input,
+    market,
+    mt5AccountId,
+    agentKey,
+    agentConfig,
+    suggestedLots: suggestedLotsByAgent.get(agentKey),
   }
+
+  if (name === 'get_snapshot' || name === 'get_order_book' || name === 'get_recent_trades' || name === 'get_open_orders') {
+    return handleMarketData(name, ctx)
+  }
+  if (name === 'place_order' || name === 'cancel_order' || name === 'close_position' || name === 'modify_position') {
+    return handleExecution(name, ctx)
+  }
+  if (name === 'save_memory' || name === 'read_memories' || name === 'delete_memory' || name === 'save_plan' || name === 'get_plan' || name === 'get_trade_history') {
+    return handleIntelligence(name, ctx)
+  }
+  throw new Error(`Unknown tool: ${name}`)
 }
 
 // ── Agent Tick (main entry point) ─────────────────────────────────────────────
@@ -1304,6 +1247,12 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
           return
         }
 
+        // Guard: remove any trailing assistant message with un-answered tool_use blocks.
+        // This prevents the "tool_use ids found without tool_result" API error that occurs
+        // when a previous iteration errored out after pushing the assistant reply but before
+        // pushing the corresponding tool_result user message.
+        sanitiseMessages(session.messages)
+
         const providerLabel = config.llmProvider === 'openrouter' ? `OpenRouter/${llmModel}` : `Anthropic/${llmModel}`
         logEvent(agentKey, 'debug', 'llm_request', `Sending to ${providerLabel} (tick #${tickNumber}, iteration ${iterations})`)
 
@@ -1333,7 +1282,11 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
         })
 
         log.debug({ stop_reason: response.stop_reason, usage: response.usage }, 'llm response')
-        session.messages.push({ role: 'assistant', content: response.content })
+        // Filter out empty text blocks — Anthropic rejects whitespace-only text content
+        const safeContent = response.content.filter(
+          b => b.type !== 'text' || (b as Anthropic.TextBlock).text.trim().length > 0
+        )
+        session.messages.push({ role: 'assistant', content: safeContent })
 
         if (response.stop_reason === 'end_turn') {
           const text = response.content
@@ -1392,9 +1345,10 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
 
           // Auto-execute safety net
           if (!orderPlacedThisTick) {
-            // Match: BUY [LIMIT|STOP|MARKET]? qty @ price
-            const buyMatch    = decision.match(/^BUY\s+(?:LIMIT\s+|STOP\s+|MARKET\s+)?([\d.]+)\s+@\s+([\d.]+)/i)
-            const sellMatch   = decision.match(/^SELL\s+(?:LIMIT\s+|STOP\s+|MARKET\s+)?([\d.]+)\s+@\s+([\d.]+)/i)
+            // Match: BUY [LIMIT|STOP|MARKET]? qty [lots] [@|at] price
+            // Also handles reversed prefix: "MARKET SELL qty lots at price"
+            const buyMatch    = decision.match(/^(?:MARKET\s+|LIMIT\s+|STOP\s+)?BUY\s+(?:LIMIT\s+|STOP\s+|MARKET\s+)?([\d.]+)\s+(?:lots?\s+)?(?:@|at)\s+([\d.]+)/i)
+            const sellMatch   = decision.match(/^(?:MARKET\s+|LIMIT\s+|STOP\s+)?SELL\s+(?:LIMIT\s+|STOP\s+|MARKET\s+)?([\d.]+)\s+(?:lots?\s+)?(?:@|at)\s+([\d.]+)/i)
             const cancelMatch = decision.match(/^CANCEL\s+(\d+)/i)
 
             if (buyMatch || sellMatch) {
@@ -1409,7 +1363,7 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
               const tpMatch  = decision.match(/\bTP:\s*([\d.]+)/i)
               const slPrice  = slMatch ? parseFloat(slMatch[1]) : null
               const tpPrice  = tpMatch ? parseFloat(tpMatch[1]) : null
-              const pip      = pipSize(config.symbol, getMt5Context().point)
+              const pip      = getMt5Context().pipSize
               const stopPips = slPrice != null ? Math.round(Math.abs(price - slPrice) / pip) : 20
               const tpPips   = tpPrice != null ? Math.round(Math.abs(tpPrice - price) / pip) : undefined
               logEvent(agentKey, 'warn', 'auto_execute', `Agent stated ${side} ${orderType} without calling place_order — auto-executing @ ${price} SL ${stopPips}pip${tpPips ? ` TP ${tpPips}pip` : ''}`)
@@ -1506,7 +1460,18 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
 
             // Track closed tickets and update lastKnownPositions immediately
             if (block.name === 'close_position' && result != null) {
-              const r = result as { ticket?: number; closed?: boolean; dealTicket?: number }
+              const r = result as { ticket?: number; closed?: boolean; dealTicket?: number; alreadyClosed?: boolean }
+
+              // Position was already closed externally (SL/TP hit, broker action) — tell the LLM to stop retrying
+              if (r.alreadyClosed && r.ticket != null) {
+                agentClosedTickets.add(r.ticket)
+                const knownPos = lastKnownPositions.get(agentKey)
+                if (knownPos) knownPos.delete(r.ticket)
+                resultForHistory = {
+                  ...(resultForHistory as Record<string, unknown>),
+                  _important: `ℹ️ Ticket #${r.ticket} was already closed (SL/TP hit or closed externally). Do NOT retry close_position for this ticket. It is no longer an open position — remove it from your tracking and proceed.`,
+                }
+              }
               if (r.closed && r.ticket != null) {
                 agentClosedTickets.add(r.ticket)
                 // Proactively remove from lastKnownPositions so next tick's pre-fetch
@@ -1572,44 +1537,27 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
 
-      // Rate limit: emergency stop + close all open positions
+      // Clean up any dangling tool_use in history so the next tick starts fresh
+      sanitiseMessages(session.messages)
+
+      // Rate limit: pause the agent — do NOT close positions (open trades must be left to run)
       if (err instanceof RateLimitError || (err instanceof Error && (err.message.includes('429') || err.message.toLowerCase().includes('rate limit')))) {
         const resetMsg = (err instanceof RateLimitError && err.resetAt)
           ? ` Resets at ${new Date(err.resetAt).toISOString()}.`
           : ''
-        logEvent(agentKey, 'error', 'tick_error',
-          `⚠ Rate limit hit — emergency stopping agent and closing all open positions.${resetMsg}`)
+        logEvent(agentKey, 'warn', 'tick_error',
+          `⚠ Rate limit hit — agent paused. Open positions left untouched. Resume manually when ready.${resetMsg}`)
+        setAgentStatus(agentKey, 'paused')
 
+        // Stop the schedule so it doesn't keep hammering the API
         try {
           const { stopAgentSchedule } = await import('../scheduler/index.js')
           stopAgentSchedule(agentKey)
         } catch (schedErr) {
-          log.error({ schedErr }, 'failed to stop agent schedule during rate-limit emergency')
+          log.error({ schedErr }, 'failed to stop agent schedule during rate-limit pause')
         }
 
-        try {
-          const openOrders = await dispatchTool('get_open_orders', { symbol: config.symbol }, config.market, config.mt5AccountId, agentKey) as Array<{ orderId: number }>
-          if (Array.isArray(openOrders) && openOrders.length > 0) {
-            logEvent(agentKey, 'warn', 'tick_error', `Emergency closing ${openOrders.length} open position(s)…`)
-            for (const order of openOrders) {
-              try {
-                if (config.market === 'mt5') {
-                  const result = await dispatchTool('close_position', { ticket: order.orderId, market: config.market }, config.market, config.mt5AccountId, agentKey)
-                  logEvent(agentKey, 'warn', 'tool_result', `← Emergency close_position: ${summariseToolResult('close_position', result)}`)
-                } else {
-                  await dispatchTool('cancel_order', { symbol: config.symbol, market: config.market, orderId: order.orderId }, config.market, config.mt5AccountId, agentKey)
-                  logEvent(agentKey, 'warn', 'tool_result', `← Emergency cancel_order orderId=${order.orderId}: cancelled`)
-                }
-              } catch (closeErr) {
-                logEvent(agentKey, 'error', 'tick_error', `Emergency close failed for orderId=${order.orderId}: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`)
-              }
-            }
-          }
-        } catch (fetchErr) {
-          logEvent(agentKey, 'error', 'tick_error', `Could not fetch open orders for emergency close: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`)
-        }
-
-        recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper: false, decision: 'EMERGENCY_STOP', reason: `Rate limit: ${msg}`, time: new Date().toISOString(), error: msg })
+        recordCycle(agentKey, { symbol: config.symbol, market: config.market, paper: false, decision: 'RATE_LIMIT_PAUSE', reason: `Rate limit — agent paused: ${msg}`, time: new Date().toISOString(), error: msg })
         return
       }
 

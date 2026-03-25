@@ -1,10 +1,41 @@
-// Wolf-Fin Calendar — Finnhub economic calendar for high-impact event detection
-/**
- * Fetches today's high-impact economic events from Finnhub.
- * Returns events happening within the next `windowMs` milliseconds.
- * Returns [] when FINNHUB_KEY is missing or on any network error.
- */
-export async function fetchUpcomingEvents(windowMs = 2 * 60 * 60 * 1000) {
+// Wolf-Fin Calendar — Forex Factory free feed with Finnhub fallback
+// ── Forex Factory free community JSON feed ────────────────────────────────────
+const FF_URLS = {
+    thisWeek: 'https://nfs.faireconomy.media/ff_calendar_thisweek.json',
+    nextWeek: 'https://nfs.faireconomy.media/ff_calendar_nextweek.json',
+};
+let ffCache = null;
+const FF_TTL_MS = 60 * 60 * 1000; // 1-hour cache
+async function fetchFFCalendar() {
+    if (ffCache && Date.now() - ffCache.fetchedAt < FF_TTL_MS)
+        return ffCache.events;
+    try {
+        const [thisWeek, nextWeek] = await Promise.allSettled([
+            fetch(FF_URLS.thisWeek, { signal: AbortSignal.timeout(8000) }).then(r => r.ok ? r.json() : []),
+            fetch(FF_URLS.nextWeek, { signal: AbortSignal.timeout(8000) }).then(r => r.ok ? r.json() : []),
+        ]);
+        const raw = [
+            ...(thisWeek.status === 'fulfilled' ? thisWeek.value : []),
+            ...(nextWeek.status === 'fulfilled' ? nextWeek.value : []),
+        ];
+        const events = raw.map(e => ({
+            name: e.title,
+            country: e.country,
+            impact: (e.impact.charAt(0).toUpperCase() + e.impact.slice(1).toLowerCase()),
+            time: new Date(e.date).getTime(),
+            forecast: e.forecast ?? undefined,
+            previous: e.previous ?? undefined,
+            actual: e.actual ?? undefined,
+        }));
+        ffCache = { events, fetchedAt: Date.now() };
+        return events;
+    }
+    catch {
+        return ffCache?.events ?? [];
+    }
+}
+// ── Finnhub fallback (only when FF fails and key is set) ─────────────────────
+async function fetchFinnhubEvents(windowMs) {
     const key = process.env.FINNHUB_KEY;
     if (!key)
         return [];
@@ -20,9 +51,8 @@ export async function fetchUpcomingEvents(windowMs = 2 * 60 * 60 * 1000) {
         return (json.economicCalendar ?? [])
             .filter(e => e.impact?.toLowerCase() === 'high' && e.time)
             .map(e => ({
-            name: e.event ?? '',
-            country: e.country ?? '',
-            impact: e.impact ?? '',
+            name: e.event ?? '', country: e.country ?? '',
+            impact: 'High',
             time: new Date(e.time).getTime(),
         }))
             .filter(e => e.time >= now && e.time <= cutoff);
@@ -31,12 +61,51 @@ export async function fetchUpcomingEvents(windowMs = 2 * 60 * 60 * 1000) {
         return [];
     }
 }
+// ── Public API ────────────────────────────────────────────────────────────────
+/**
+ * Fetches high-impact economic events within the next `windowMs` ms.
+ * Tries FF first; if FF returns [] and Finnhub key is set, falls back to Finnhub.
+ * Returns [] on all errors — never throws.
+ */
+export async function fetchUpcomingEvents(windowMs = 2 * 60 * 60 * 1000) {
+    const ffEvents = await fetchFFCalendar();
+    const now = Date.now();
+    const cutoff = now + windowMs;
+    const filtered = ffEvents.filter(e => e.impact === 'High' && e.time >= now && e.time <= cutoff);
+    // If FF returned something, use it
+    if (ffEvents.length > 0)
+        return filtered;
+    // FF feed empty/down — try Finnhub fallback
+    return fetchFinnhubEvents(windowMs);
+}
 /**
  * Returns true if a high-impact event is scheduled within `windowMs`.
- * Used by the forex guardrail to skip the trading cycle.
+ * Returns false when no data is available (never blocks trading on data absence).
  */
 export async function isHighImpactEventSoon(windowMs = 30 * 60 * 1000) {
     const events = await fetchUpcomingEvents(windowMs);
     return events.length > 0;
+}
+/**
+ * Fetches High + Medium impact events for the next N days.
+ * Optionally filtered to a set of currency codes (e.g. ['USD', 'EUR']).
+ * Used by the UI /api/economic-calendar route.
+ */
+export async function fetchCalendarForDisplay(currencies, daysAhead = 7) {
+    const ffEvents = await fetchFFCalendar();
+    const now = Date.now();
+    const cutoff = now + daysAhead * 24 * 60 * 60 * 1000;
+    return ffEvents
+        .filter(e => {
+        if (e.time < now || e.time > cutoff)
+            return false;
+        if (e.impact !== 'High' && e.impact !== 'Medium')
+            return false;
+        if (currencies && currencies.length > 0) {
+            return currencies.some(c => e.country.toUpperCase() === c.toUpperCase());
+        }
+        return true;
+    })
+        .sort((a, b) => a.time - b.time);
 }
 //# sourceMappingURL=calendar.js.map

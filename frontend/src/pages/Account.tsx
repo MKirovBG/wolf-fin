@@ -275,14 +275,17 @@ function Mt5Card({ entry }: { entry: Mt5AccountEntry }) {
         <div className="flex items-center gap-3">
           <span className="text-text font-bold text-sm">METATRADER 5</span>
           <ModeBadge mode={entry.mode} />
-          <ConnectedDot ok={entry.connected} inactive={!entry.connected && entry.error?.startsWith('Not active')} />
-          {s && (
+          <ConnectedDot ok={entry.connected} inactive={!entry.connected && !!entry.error} />
+          {/* Show account identity whether active or not */}
+          {(s ?? entry.login) && (
             <span className="text-sm text-muted font-mono">
-              #{s.login} @ {s.server}
+              #{s?.login ?? entry.login}
+              {(s?.server ?? entry.server) ? ` @ ${s?.server ?? entry.server}` : ''}
+              {(entry.name ?? '') && !entry.connected ? ` · ${entry.name}` : ''}
             </span>
           )}
         </div>
-        <SetActiveButton entry={entry} />
+        {entry.connected && <SetActiveButton entry={entry} />}
       </div>
 
       {!entry.connected && (
@@ -391,7 +394,7 @@ export function Account() {
   const mt5Accounts = accounts.filter((a): a is Mt5AccountEntry => a.exchange === 'mt5')
 
   return (
-    <div className="p-6">
+    <div className="p-4 md:p-6">
       <div className="flex justify-between items-center mb-6">
         <div>
           <h1 className="text-xl font-bold text-text">Account Management</h1>

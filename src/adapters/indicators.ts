@@ -1,5 +1,13 @@
 // Wolf-Fin Indicators — pre-computed technical signals from OHLCV candle arrays
 
+import { createRequire } from 'node:module'
+const require = createRequire(import.meta.url)
+const TI = require('technicalindicators') as {
+  MACD: { calculate: (i: { values: number[]; fastPeriod: number; slowPeriod: number; signalPeriod: number; SimpleMAOscillator: boolean; SimpleMASignal: boolean }) => Array<{ MACD: number; signal: number; histogram: number }> }
+  ADX:  { calculate: (i: { high: number[]; low: number[]; close: number[]; period: number }) => Array<{ adx: number; pdi: number; mdi: number }> }
+  Stochastic: { calculate: (i: { high: number[]; low: number[]; close: number[]; period: number; signalPeriod: number }) => Array<{ k: number; d: number }> }
+}
+
 import type { Candle } from './types.js'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -108,6 +116,45 @@ export function bbWidth(candles: Candle[], period = 20, stdDevMultiplier = 2): n
   return middle === 0 ? 0 : (upper - lower) / middle
 }
 
+// ── MACD (12/26/9) ────────────────────────────────────────────────────────────
+
+export function computeMacd(candles: Candle[], fast = 12, slow = 26, signal = 9): { macd: number; signal: number; histogram: number } | undefined {
+  if (candles.length < slow + signal) return undefined
+  const results = TI.MACD.calculate({
+    values: closes(candles), fastPeriod: fast, slowPeriod: slow,
+    signalPeriod: signal, SimpleMAOscillator: false, SimpleMASignal: false,
+  })
+  const last = results[results.length - 1]
+  if (!last) return undefined
+  return { macd: last.MACD, signal: last.signal, histogram: last.histogram }
+}
+
+// ── ADX (14) ─────────────────────────────────────────────────────────────────
+
+export function computeAdx(candles: Candle[], period = 14): { adx: number; plusDI: number; minusDI: number } | undefined {
+  if (candles.length < period + 1) return undefined
+  const results = TI.ADX.calculate({
+    high: candles.map(c => c.high), low: candles.map(c => c.low),
+    close: closes(candles), period,
+  })
+  const last = results[results.length - 1]
+  if (!last) return undefined
+  return { adx: last.adx, plusDI: last.pdi, minusDI: last.mdi }
+}
+
+// ── Stochastic (14/3) ─────────────────────────────────────────────────────────
+
+export function computeStoch(candles: Candle[], period = 14, signalPeriod = 3): { k: number; d: number } | undefined {
+  if (candles.length < period + signalPeriod) return undefined
+  const results = TI.Stochastic.calculate({
+    high: candles.map(c => c.high), low: candles.map(c => c.low),
+    close: closes(candles), period, signalPeriod,
+  })
+  const last = results[results.length - 1]
+  if (!last) return undefined
+  return { k: last.k, d: last.d }
+}
+
 // ── Bundle: compute all indicators from 1h candles (primary timeframe) ────────
 
 import type { Indicators, KeyLevel, TFIndicators, MTFIndicators } from './types.js'
@@ -121,7 +168,7 @@ export function computeIndicators(h1Candles: Candle[], cfg: IndicatorConfig = {}
   const bbPeriod  = cfg.bbPeriod  ?? 20
   const bbStd     = cfg.bbStdDev  ?? 2
   const includeVwap = cfg.vwapEnabled !== false
-  return {
+  const result: Indicators = {
     rsi14:   rsi(h1Candles, rsiPeriod),
     ema20:   ema(h1Candles, emaFast),
     ema50:   ema(h1Candles, emaSlow),
@@ -129,6 +176,10 @@ export function computeIndicators(h1Candles: Candle[], cfg: IndicatorConfig = {}
     vwap:    includeVwap ? vwap(h1Candles) : 0,
     bbWidth: bbWidth(h1Candles, bbPeriod, bbStd),
   }
+  if (cfg.macdEnabled)  result.macd  = computeMacd(h1Candles)
+  if (cfg.adxEnabled)   result.adx   = computeAdx(h1Candles)
+  if (cfg.stochEnabled) result.stoch = computeStoch(h1Candles)
+  return result
 }
 
 // ── Multi-Timeframe Indicators ───────────────────────────────────────────────

@@ -118,7 +118,7 @@ export interface AnthropicModel {
 }
 
 export interface PlatformLLMConfig {
-  provider: 'anthropic' | 'openrouter' | 'ollama'
+  provider: 'anthropic' | 'anthropic-subscription' | 'openrouter' | 'ollama' | 'openai-subscription'
   model: string
 }
 
@@ -145,6 +145,9 @@ export interface IndicatorConfig {
   bbStdDev?: number
   vwapEnabled?: boolean
   mtfEnabled?: boolean
+  macdEnabled?: boolean
+  adxEnabled?: boolean
+  stochEnabled?: boolean
 }
 
 export interface CandleConfig {
@@ -170,7 +173,7 @@ export interface AgentConfig {
   promptTemplate?: string
   guardrails?: Partial<GuardrailsConfig>
   mt5AccountId?: number
-  llmProvider?: 'anthropic' | 'openrouter' | 'ollama'
+  llmProvider?: 'platform' | 'anthropic' | 'anthropic-subscription' | 'openrouter' | 'ollama' | 'openai-subscription'
   llmModel?: string
   dailyTargetUsd?: number
   maxRiskPercent?: number
@@ -261,6 +264,9 @@ export interface Indicators {
   atr14: number
   vwap: number
   bbWidth: number
+  macd?: { macd: number; signal: number; histogram: number }
+  adx?: { adx: number; plusDI: number; minusDI: number }
+  stoch?: { k: number; d: number }
 }
 
 export interface Candle {
@@ -440,6 +446,10 @@ export interface Mt5AccountEntry {
   mode: 'DEMO' | 'LIVE'
   connected: boolean
   error?: string
+  /** Persisted even when inactive — always show the account number */
+  login?: number
+  name?: string
+  server?: string
   summary?: Mt5AccountSummary
   positions?: Mt5Position[]
 }
@@ -454,6 +464,8 @@ export interface Mt5AccountInfo {
   equity: number | null
   currency: string
   mode: 'LIVE' | 'DEMO'
+  active?: boolean   // true = currently connected to bridge
+  inBridge?: boolean // true = known to bridge (may not be active)
 }
 
 export interface MarketSummary {
@@ -503,4 +515,58 @@ export interface AgentPlan {
   createdAt: string
   cycleCountAt?: number
   active: boolean
+}
+
+// ── Portfolio Risk ────────────────────────────────────────────────────────────
+
+export interface PortfolioData {
+  ok: boolean
+  agents: Array<{ agentKey: string; symbol: string; market: string; status: AgentStatus; fetchMode: string; name?: string }>
+  running: number
+  paused: number
+  idle: number
+  todayPnlUsd: number
+  totalNotionalUsd: number
+  symbolCollisions: Array<{ symbol: string; agentKeys: string[] }>
+}
+
+// ── Backtest Sweep ─────────────────────────────────────────────────────────────
+
+export interface SweepCell {
+  slMult: number
+  tpMult: number
+  totalPnl: number
+  winRate: number | null
+  totalTrades: number
+  maxDrawdownPct: number
+  sharpe: number | null
+}
+
+export interface SweepResponse {
+  ok: boolean
+  results: SweepCell[]
+  slRange: number[]
+  tpRange: number[]
+  timeframe: string
+  barsUsed: number
+}
+
+// ── Economic Calendar ─────────────────────────────────────────────────────────
+
+export interface EconomicEvent {
+  name: string
+  country: string
+  impact: 'High' | 'Medium' | 'Low'
+  time: number
+  forecast?: string
+  previous?: string
+  actual?: string | null
+}
+
+// ── Agent Analytics ───────────────────────────────────────────────────────────
+
+export interface AgentAnalyticsData {
+  cycles: Array<CycleResult & { id: number; agentKey: string }>
+  stats: AgentStats
+  heatmap: Record<string, { totalPnl: number; count: number }>
 }

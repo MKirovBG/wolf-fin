@@ -14,6 +14,8 @@ import { IntelligencePanel } from '../components/IntelligencePanel.tsx'
 import { StrategyEditor } from '../components/StrategyEditor.tsx'
 import { PromptAnalysisPanel } from '../components/PromptAnalysisPanel.tsx'
 import { BacktestPanel } from '../components/BacktestPanel.tsx'
+import { AgentProfileCard } from '../components/AgentProfileCard.tsx'
+import { CalendarWidget } from '../components/CalendarWidget.tsx'
 import { useToast } from '../components/Toast.tsx'
 
 function rel(iso: string) {
@@ -23,8 +25,20 @@ function rel(iso: string) {
   return `${Math.floor(d / 3600000)}h ago`
 }
 
+function extractCurrencies(symbol: string, market: string): string[] | undefined {
+  if (market === 'crypto') return ['USD']
+  // Forex pairs: EURUSD → ['EUR', 'USD'], XAUUSD → ['USD']
+  const sym = symbol.replace('/', '').toUpperCase()
+  if (sym.length === 6) {
+    const base = sym.slice(0, 3)
+    const quote = sym.slice(3, 6)
+    if (base === 'XAU' || base === 'XAG') return [quote]
+    return [base, quote]
+  }
+  return undefined
+}
 
-type Tab = 'overview' | 'logs' | 'history' | 'performance' | 'intelligence' | 'strategy' | 'prompt-analysis' | 'backtest'
+type Tab = 'overview' | 'profile' | 'logs' | 'history' | 'performance' | 'intelligence' | 'strategy' | 'prompt-analysis' | 'backtest'
 
 // ── Cycle Detail Modal ────────────────────────────────────────────────────────
 interface CycleDetailModalProps {
@@ -582,7 +596,7 @@ export function AgentDetail() {
     <div className="flex flex-col h-full" style={{ minHeight: 0 }}>
 
       {/* ── Fixed header ────────────────────────────────────────────────────── */}
-      <div className="px-6 pt-5 pb-0 shrink-0 bg-bg border-b border-border">
+      <div className="px-4 md:px-6 pt-4 md:pt-5 pb-0 shrink-0 bg-bg border-b border-border">
         <Link to="/agents" className="text-sm text-muted hover:text-text transition-colors">← Agents</Link>
 
         <div className="flex items-start justify-between mt-3 mb-4">
@@ -685,7 +699,7 @@ export function AgentDetail() {
 
         {/* Tab bar */}
         <div className="flex gap-0">
-          {(['overview', 'logs', 'history', 'performance', 'intelligence', 'strategy', 'prompt-analysis', 'backtest'] as Tab[]).map(t => (
+          {(['overview', 'profile', 'logs', 'history', 'performance', 'intelligence', 'strategy', 'prompt-analysis', 'backtest'] as Tab[]).map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -696,6 +710,7 @@ export function AgentDetail() {
               }`}
             >
               {t === 'overview'         ? 'Overview'
+                : t === 'profile'      ? 'Profile'
                 : t === 'logs'         ? 'Logs'
                 : t === 'history'      ? 'History'
                 : t === 'performance'  ? 'Performance'
@@ -728,9 +743,20 @@ export function AgentDetail() {
 
       {/* ── Tab content ─────────────────────────────────────────────────────── */}
       <div
-        className={`flex-1 px-6 py-5 ${tab === 'logs' ? 'overflow-hidden flex flex-col' : 'overflow-auto'}`}
+        className={`flex-1 px-4 md:px-6 py-4 md:py-5 ${tab === 'logs' ? 'overflow-hidden flex flex-col' : 'overflow-auto'}`}
         style={{ minHeight: 0 }}
       >
+
+        {/* PROFILE TAB */}
+        {tab === 'profile' && (
+          <div className="max-w-3xl mx-auto space-y-6">
+            <AgentProfileCard agent={agent} />
+            <CalendarWidget
+              currencies={extractCurrencies(agent.config.symbol, agent.config.market)}
+              maxEvents={8}
+            />
+          </div>
+        )}
 
         {/* OVERVIEW TAB */}
         {tab === 'overview' && (

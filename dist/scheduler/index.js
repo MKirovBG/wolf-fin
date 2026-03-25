@@ -16,18 +16,10 @@ import { makeAgentKey } from '../db/index.js';
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 // Map of agentKey → abort signal for the running loop
 const tasks = new Map();
-// Map of agentKey → consecutive HOLD count for throttle backoff
-const consecutiveHolds = new Map();
-/** Delay (ms) based on how many consecutive HOLDs the agent has produced. */
-function holdBackoffMs(holds) {
-    if (holds <= 3)
-        return 0; // first few — market may shift quickly
-    if (holds <= 10)
-        return 30_000; // 30 s
-    if (holds <= 20)
-        return 60_000; // 1 min
-    return 120_000; // 2 min cap
-}
+// Minimum delay between ticks regardless of decision outcome.
+// Prevents bursting multiple LLM calls per minute and hitting API rate limits.
+// Configurable via AGENT_MIN_TICK_INTERVAL_MS (default: 30s).
+const MIN_TICK_INTERVAL_MS = parseInt(process.env.AGENT_MIN_TICK_INTERVAL_MS ?? '30000', 10);
 function agentKey(config) {
     return makeAgentKey(config.market, config.symbol, config.mt5AccountId, config.name);
 }
@@ -113,21 +105,10 @@ export function startAgentSchedule(config) {
                     log.info({ key }, 'loop stopped — agent was paused by a guardrail');
                     continue;
                 }
-                // ── Hold-throttle backoff ──────────────────────────────────────────
-                // When the agent keeps HOLDing, slow down to save API calls.
-                const decision = state?.lastCycle?.decision ?? '';
-                if (/^(HOLD|\[HOLD)/.test(decision)) {
-                    const holds = (consecutiveHolds.get(key) ?? 0) + 1;
-                    consecutiveHolds.set(key, holds);
-                    const delay = holdBackoffMs(holds);
-                    if (delay > 0) {
-                        log.info({ key, holds, delaySec: delay / 1000 }, 'hold-throttle — backing off');
-                        await sleepCancellable(delay, signal);
-                    }
-                }
-                else {
-                    consecutiveHolds.set(key, 0);
-                }
+                // ── Inter-tick throttle ────────────────────────────────────────────
+                // Always wait at least MIN_TICK_INTERVAL_MS between ticks to stay
+                // well under API rate limits (Tier 1 = 50 RPM; each tick = 3-8 calls).
+                await sleepCancellable(MIN_TICK_INTERVAL_MS, signal);
             }
         }
         log.info({ key }, 'agent loop stopped');
@@ -139,7 +120,6 @@ export function pauseAgentSchedule(key) {
         signal.cancelled = true;
         tasks.delete(key);
     }
-    consecutiveHolds.delete(key);
     setAgentStatus(key, 'paused');
     log.info({ key }, 'agent schedule paused');
 }
@@ -149,7 +129,6 @@ export function stopAgentSchedule(key) {
         signal.cancelled = true;
         tasks.delete(key);
     }
-    consecutiveHolds.delete(key);
     setAgentStatus(key, 'idle');
     log.info({ key }, 'agent schedule stopped');
 }
@@ -162,7 +141,6 @@ export function stopAllSchedules() {
         setAgentStatus(key, 'idle');
     }
     tasks.clear();
-    consecutiveHolds.clear();
     log.info('all agent schedules stopped');
 }
 //# sourceMappingURL=index.js.map

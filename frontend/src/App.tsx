@@ -8,6 +8,7 @@ import { AgentDetail } from './pages/AgentDetail.tsx'
 import { ApiKeys } from './pages/ApiKeys.tsx'
 import { Reports } from './pages/Reports.tsx'
 import { Account } from './pages/Account.tsx'
+import { Analytics } from './pages/Analytics.tsx'
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
             <Route path="agents/k/:agentKey" element={<AgentDetail />} />
             <Route path="keys" element={<ApiKeys />} />
             <Route path="reports" element={<Reports />} />
+            <Route path="analytics" element={<Analytics />} />
             <Route path="account" element={<Account />} />
           </Route>
         </Routes>

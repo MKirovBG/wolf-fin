@@ -24,6 +24,19 @@ const BASE = () =>
   process.env.MT5_BRIDGE_URL?.replace(/\/+$/, '') ??
   `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`
 
+// Tracks the login currently active on the bridge (set from /health responses).
+// Used by the server for UI display (showing which account is connected).
+// NOT used for URL routing — buildUrl never appends ?accountId= regardless.
+let bridgeActiveLogin: number | undefined
+
+export function setBridgeActiveLogin(login: number): void {
+  bridgeActiveLogin = login
+}
+
+export function getBridgeActiveLogin(): number | undefined {
+  return bridgeActiveLogin
+}
+
 const BRIDGE_KEY = () => process.env.MT5_BRIDGE_KEY ?? ''
 
 function bridgeHeaders(): Record<string, string> {
@@ -89,9 +102,15 @@ function isCommodity(symbol: string): boolean {
     s.includes('OIL') || s.includes('GAS') || s.includes('GOLD') || s.includes('SILVER')
 }
 
-function pipSizeHeuristic(symbol: string, _point?: number): number {
-  // Commodities: 1 pip = $1 price move (e.g., XAUUSD 3040→3041 = 1 pip).
-  // This keeps ATR/SL/TP numbers intuitive for the LLM (~40 pips instead of ~4000).
+function pipSizeHeuristic(symbol: string, point?: number): number {
+  // Primary path: derive from broker point value — no symbol knowledge needed.
+  // MT5 convention: point >= 0.01 → commodity/index/crypto → 1 pip = 1 full price unit.
+  //                 point <  0.01 → forex → 1 pip = point × 10 (standard 10-point pip).
+  // Examples: EURUSD point=0.00001→0.0001, USDJPY point=0.001→0.01, XAUUSD/US500 point=0.01→1.0
+  if (point != null && point > 0) {
+    return point >= 0.01 ? 1.0 : point * 10
+  }
+  // Fallback: broker point unavailable (e.g. no snapshot yet). Use symbol name only as last resort.
   if (isCommodity(symbol)) return 1.0
   if (symbol.toUpperCase().includes('JPY')) return 0.01
   return 0.0001
@@ -239,9 +258,12 @@ export class MT5Adapter implements IMarketAdapter {
   }
 
   private buildUrl(path: string): string {
-    if (!this.accountId) return path
-    const sep = path.includes('?') ? '&' : '?'
-    return `${path}${sep}accountId=${this.accountId}`
+    // MT5 bridge is single-account: all endpoints serve the active account on
+    // parameterless routes. The ?accountId= parameter is not supported — the
+    // bridge returns 404 for every account including the active one when it
+    // receives an accountId query param unless explicitly multi-account configured.
+    // accountId is stored on the adapter for identity purposes only, not routing.
+    return path
   }
 
   async getSnapshot(symbol: string, riskState: RiskState, indicatorCfg?: IndicatorConfig, _candleCfg?: CandleConfig): Promise<MarketSnapshot> {
@@ -420,9 +442,7 @@ export class MT5Adapter implements IMarketAdapter {
   async getOpenOrders(symbol?: string): Promise<Order[]> {
     const sym = symbol ? toMt5Symbol(symbol) : undefined
     const posPath = sym ? `/positions?symbol=${sym}` : '/positions'
-    const ordPath = sym
-      ? `/orders?symbol=${sym}&accountId=${this.accountId ?? ''}`
-      : `/orders?accountId=${this.accountId ?? ''}`
+    const ordPath = sym ? `/orders?symbol=${sym}` : '/orders'
 
     // Fetch both open positions AND pending limit/stop orders in parallel
     const [positions, pendingOrders] = await Promise.all([
@@ -490,8 +510,7 @@ export class MT5Adapter implements IMarketAdapter {
   /** Rich deal history with profit/loss and exit reason (sl, tp, etc.) for LLM reasoning */
   async getDeals(symbol?: string, days = 1, limit = 20): Promise<BridgeDeal[]> {
     const sym = symbol ? `&symbol=${toMt5Symbol(symbol)}` : ''
-    const acct = this.accountId ? `&accountId=${this.accountId}` : ''
-    return mt5Get<BridgeDeal[]>(this.buildUrl(`/history/deals?days=${days}&limit=${limit}${sym}${acct}`))
+    return mt5Get<BridgeDeal[]>(this.buildUrl(`/history/deals?days=${days}&limit=${limit}${sym}`))
   }
 
   async placeOrder(params: OrderParams): Promise<OrderResult> {
@@ -507,8 +526,6 @@ export class MT5Adapter implements IMarketAdapter {
       magic,
       comment: 'wolf-fin',
     }
-
-    if (this.accountId) body.accountId = this.accountId
 
     // MARKET orders must NOT include a price — MT5 executes at best available.
     // Sending a price for MARKET causes error 10015 (Invalid price).
@@ -565,14 +582,14 @@ export class MT5Adapter implements IMarketAdapter {
       type: params.type,
       price: result.price,
       origQty: result.volume,
-      status: 'FILLED',
+      // deal=0 means the order is pending (LIMIT/STOP not yet filled); deal>0 means it executed immediately
+      status: result.deal > 0 ? 'FILLED' : 'NEW',
       transactTime: Date.now(),
     }
   }
 
   async cancelOrder(_symbol: string, orderId: string | number): Promise<void> {
     const body: Record<string, unknown> = { ticket: Number(orderId) }
-    if (this.accountId) body.accountId = this.accountId
     try {
       await mt5Post('/order/cancel', body)
     } catch {
@@ -590,7 +607,6 @@ export class MT5Adapter implements IMarketAdapter {
 
   async closePosition(ticket: number, volume?: number): Promise<{ closed: boolean; ticket: number; dealTicket?: number; alreadyClosed?: boolean }> {
     const body: Record<string, unknown> = { ticket }
-    if (this.accountId) body.accountId = this.accountId
     if (volume != null) body.volume = volume
     try {
       const res = await mt5Post<BridgeOrderResult>('/order/close', body)
@@ -607,7 +623,6 @@ export class MT5Adapter implements IMarketAdapter {
 
   async modifyPosition(ticket: number, sl?: number, tp?: number): Promise<{ ok: boolean; ticket: number; sl?: number; tp?: number }> {
     const body: Record<string, unknown> = { ticket }
-    if (this.accountId) body.accountId = this.accountId
     if (sl != null) body.sl = sl
     if (tp != null) body.tp = tp
     const res = await mt5Post<{ retcode: number; ticket: number; sl?: number; tp?: number }>('/order/modify', body)

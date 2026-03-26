@@ -57,9 +57,12 @@ function NumInput({ value, onChange, min, max, step = 1, disabled }: {
 // ── IndicatorConfigEditor ─────────────────────────────────────────────────────
 
 const IND_DEFAULTS: Required<IndicatorConfig> = {
-  rsiEnabled: true,
-  rsiPeriod: 14, emaFast: 20, emaSlow: 50, atrPeriod: 14,
-  bbPeriod: 20, bbStdDev: 2, vwapEnabled: true, mtfEnabled: true,
+  rsiEnabled: true, rsiPeriod: 14,
+  emaFastEnabled: true, emaFast: 20,
+  emaSlowEnabled: true, emaSlow: 50,
+  atrEnabled: true, atrPeriod: 14,
+  bbEnabled: true, bbPeriod: 20, bbStdDev: 2,
+  vwapEnabled: true, mtfEnabled: true,
   macdEnabled: false, adxEnabled: false, stochEnabled: false,
   psarEnabled: false, ichimokuEnabled: false, cciEnabled: false,
   williamsREnabled: false, obvEnabled: false, mfiEnabled: false, keltnerEnabled: false,
@@ -79,10 +82,51 @@ export function IndicatorConfigEditor({
   return (
     <div>
       <Row
-        label="RSI (14)"
-        hint="Relative Strength Index momentum oscillator. When enabled, RSI is shown in every tick snapshot and the agent uses it for entry confirmation and pyramiding decisions. Disable for pure price-action and structure-based strategies that don't need momentum filtering."
+        label="RSI"
+        hint="Relative Strength Index momentum oscillator. When enabled, RSI is shown in every tick snapshot and the agent uses it for entry confirmation and pyramiding decisions. Disable for pure price-action and structure-based strategies."
       >
-        <Toggle checked={v.rsiEnabled} onChange={val => set('rsiEnabled', val)} disabled={disabled} />
+        <div className="flex items-center gap-3">
+          <Toggle checked={v.rsiEnabled} onChange={val => set('rsiEnabled', val)} disabled={disabled} />
+          <NumInput value={v.rsiPeriod} min={2} max={50} onChange={val => set('rsiPeriod', val)} disabled={disabled || !v.rsiEnabled} />
+        </div>
+      </Row>
+      <Row
+        label="ATR"
+        hint="Average True Range — measures volatility. Used for ATR-based stop sizing and position sizing calculations. Disabling ATR will also remove the automatic position sizing block from tick snapshots."
+      >
+        <div className="flex items-center gap-3">
+          <Toggle checked={v.atrEnabled} onChange={val => set('atrEnabled', val)} disabled={disabled} />
+          <NumInput value={v.atrPeriod} min={2} max={50} onChange={val => set('atrPeriod', val)} disabled={disabled || !v.atrEnabled} />
+        </div>
+      </Row>
+      <Row
+        label="EMA fast"
+        hint="Fast exponential moving average. Crosses above EMA slow signal bullish momentum. Used as the primary trend direction signal."
+      >
+        <div className="flex items-center gap-3">
+          <Toggle checked={v.emaFastEnabled} onChange={val => set('emaFastEnabled', val)} disabled={disabled} />
+          <NumInput value={v.emaFast} min={2} max={200} onChange={val => set('emaFast', val)} disabled={disabled || !v.emaFastEnabled} />
+        </div>
+      </Row>
+      <Row
+        label="EMA slow"
+        hint="Slow EMA — acts as the trend baseline. When price is above EMA slow the broader trend is up. 50 is standard; use 200 for long-term trend following."
+      >
+        <div className="flex items-center gap-3">
+          <Toggle checked={v.emaSlowEnabled} onChange={val => set('emaSlowEnabled', val)} disabled={disabled} />
+          <NumInput value={v.emaSlow} min={2} max={500} onChange={val => set('emaSlow', val)} disabled={disabled || !v.emaSlowEnabled} />
+        </div>
+      </Row>
+      <Row
+        label="Bollinger Bands"
+        hint="BB Width measures the squeeze — a narrow band often precedes a breakout. The agent uses BB Width for volatility context, not the bands directly."
+      >
+        <div className="flex items-center gap-3">
+          <Toggle checked={v.bbEnabled} onChange={val => set('bbEnabled', val)} disabled={disabled} />
+          <NumInput value={v.bbPeriod} min={2} max={100} onChange={val => set('bbPeriod', val)} disabled={disabled || !v.bbEnabled} />
+          <span className="text-muted text-xs">σ</span>
+          <NumInput value={v.bbStdDev} min={1} max={5} step={1} onChange={val => set('bbStdDev', val)} disabled={disabled || !v.bbEnabled} />
+        </div>
       </Row>
       <Row
         label="VWAP"
@@ -157,44 +201,6 @@ export function IndicatorConfigEditor({
         <Toggle checked={v.keltnerEnabled} onChange={val => set('keltnerEnabled', val)} disabled={disabled} />
       </Row>
 
-      <div className="pt-3 grid grid-cols-2 gap-x-6">
-        <Row
-          label="RSI period"
-          hint="Relative Strength Index lookback. 14 is the standard. Lower (e.g. 9) is more reactive and suits scalping; higher (e.g. 21) smooths noise and suits swing trading."
-        >
-          <NumInput value={v.rsiPeriod} min={2} max={50} onChange={val => set('rsiPeriod', val)} disabled={disabled} />
-        </Row>
-        <Row
-          label="ATR period"
-          hint="Average True Range lookback for volatility measurement. 14 is standard. ATR drives stop-loss and take-profit sizing — a wider ATR means wider stops. Keep matched to your RSI period."
-        >
-          <NumInput value={v.atrPeriod} min={2} max={50} onChange={val => set('atrPeriod', val)} disabled={disabled} />
-        </Row>
-        <Row
-          label="EMA fast"
-          hint="Fast exponential moving average. Crosses above EMA slow signal bullish momentum. 20 is the default. Use 9 for scalping or 50 for trend-following on longer timeframes."
-        >
-          <NumInput value={v.emaFast} min={2} max={200} onChange={val => set('emaFast', val)} disabled={disabled} />
-        </Row>
-        <Row
-          label="EMA slow"
-          hint="Slow EMA — acts as the trend baseline. When price is above EMA slow the broader trend is up. 50 is the standard medium-term trend filter. Use 200 for long-term trend-following strategies."
-        >
-          <NumInput value={v.emaSlow} min={2} max={500} onChange={val => set('emaSlow', val)} disabled={disabled} />
-        </Row>
-        <Row
-          label="BB period"
-          hint="Bollinger Bands SMA period. 20 is standard. BB Width measures volatility squeeze — a narrow band (low BB Width) often precedes a breakout move. The agent uses BB Width, not the bands directly."
-        >
-          <NumInput value={v.bbPeriod} min={2} max={100} onChange={val => set('bbPeriod', val)} disabled={disabled} />
-        </Row>
-        <Row
-          label="BB std dev"
-          hint="Standard deviation multiplier for the Bollinger Bands envelope. 2 is the standard (covers ~95% of price action). Increase to 2.5–3 for volatile assets to avoid false squeezes."
-        >
-          <NumInput value={v.bbStdDev} min={1} max={5} step={1} onChange={val => set('bbStdDev', val)} disabled={disabled} />
-        </Row>
-      </div>
     </div>
   )
 }

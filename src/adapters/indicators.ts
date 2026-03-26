@@ -254,12 +254,12 @@ export function computeIndicators(h1Candles: Candle[], cfg: IndicatorConfig = {}
   const bbStd     = cfg.bbStdDev  ?? 2
   const includeVwap = cfg.vwapEnabled !== false
   const result: Indicators = {
-    rsi14:   cfg.rsiEnabled !== false ? rsi(h1Candles, rsiPeriod) : undefined,
-    ema20:   ema(h1Candles, emaFast),
-    ema50:   ema(h1Candles, emaSlow),
-    atr14:   atr(h1Candles, atrPeriod),
+    rsi14:   cfg.rsiEnabled   !== false ? rsi(h1Candles, rsiPeriod)          : undefined,
+    ema20:   cfg.emaFastEnabled !== false ? ema(h1Candles, emaFast)           : undefined,
+    ema50:   cfg.emaSlowEnabled !== false ? ema(h1Candles, emaSlow)           : undefined,
+    atr14:   cfg.atrEnabled   !== false ? atr(h1Candles, atrPeriod)          : undefined,
     vwap:    includeVwap ? vwap(h1Candles) : 0,
-    bbWidth: bbWidth(h1Candles, bbPeriod, bbStd),
+    bbWidth: cfg.bbEnabled    !== false ? bbWidth(h1Candles, bbPeriod, bbStd) : undefined,
   }
   if (cfg.macdEnabled)  result.macd  = computeMacd(h1Candles)
   if (cfg.adxEnabled)   result.adx   = computeAdx(h1Candles)

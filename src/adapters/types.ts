@@ -68,11 +68,11 @@ export interface Trade {
 
 export interface Indicators {
   rsi14?: number
-  ema20: number
-  ema50: number
-  atr14: number
+  ema20?: number
+  ema50?: number
+  atr14?: number
   vwap: number
-  bbWidth: number
+  bbWidth?: number
   /** Multi-timeframe indicator data — optional, present when MTF candles are available */
   mtf?: MTFIndicators
   /** MACD 12/26/9 — optional, present when macdEnabled */

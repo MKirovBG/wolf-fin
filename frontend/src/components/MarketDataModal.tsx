@@ -9,7 +9,7 @@ interface Props {
   onClose: () => void
 }
 
-function fmt(n: number, d = 4) { return n.toFixed(d) }
+function fmt(n: number | undefined, d = 4) { return n != null ? n.toFixed(d) : '—' }
 function pct(n: number) { return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%` }
 
 export function MarketDataModal({ market, symbol, onClose }: Props) {

@@ -744,7 +744,18 @@ Rules:
 
   const dailyTarget = config.dailyTargetUsd ?? 500
   const maxRiskPct  = config.maxRiskPercent ?? 10
-  const rsiEnabled  = config.indicatorConfig?.rsiEnabled !== false
+  const rsiEnabled      = config.indicatorConfig?.rsiEnabled      !== false
+  const emaFastEnabled  = config.indicatorConfig?.emaFastEnabled  !== false
+  const emaSlowEnabled  = config.indicatorConfig?.emaSlowEnabled  !== false
+  const atrEnabled      = config.indicatorConfig?.atrEnabled      !== false
+  const bbEnabled       = config.indicatorConfig?.bbEnabled       !== false
+  const evidenceParts   = [
+    (emaFastEnabled || emaSlowEnabled) ? 'trend (EMA cross)' : null,
+    rsiEnabled   ? 'momentum (RSI)'  : null,
+    atrEnabled   ? 'ATR volatility'  : null,
+    bbEnabled    ? 'BB width'        : null,
+    'key levels',
+  ].filter(Boolean).join(', ')
 
   const riskRulesContent = `RISK RULES (non-negotiable):
 - POSITION SIZING: each tick message contains a "POSITION SIZING" block with a SUGGESTED SIZE computed from your daily target ($${dailyTarget}), account equity, leverage, ATR-based stop distance, and R:R 1.5:1. USE THAT EXACT LOT SIZE. Do not invent your own. The system WILL REJECT orders above 2× the suggested amount.
@@ -816,7 +827,7 @@ PROCESS:
 1. Review your conversation history — you remember every decision made in this session today.
 2. Each tick message includes an auto-fetched market snapshot (price, indicators, positions). Use it directly.
 3. Call get_snapshot if you need candle data or more granular detail not in the summary.
-4. Reason through evidence: trend (EMA cross),${rsiEnabled ? ' momentum (RSI),' : ''} volatility (ATR, BB width), key levels.
+4. Reason through evidence: ${evidenceParts}.
 5. Decide: HOLD / BUY qty @ price / SELL qty @ price / CLOSE ticket / CANCEL orderId.
 6. Execute via place_order, close_position, or cancel_order. Prefer LIMIT orders for better entries.
 ${market === 'mt5' ? '7. MT5: always include stopPips AND tpPips on every new order. SL at structural level, TP at next structural target.\n' : ''}${leverageContent ? `\nACCOUNT CONFIG:\n- ${leverageContent}\n` : ''}

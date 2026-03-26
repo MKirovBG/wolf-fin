@@ -139,9 +139,13 @@ export interface GuardrailsConfig {
 export interface IndicatorConfig {
   rsiEnabled?: boolean
   rsiPeriod?: number
+  emaFastEnabled?: boolean
   emaFast?: number
+  emaSlowEnabled?: boolean
   emaSlow?: number
+  atrEnabled?: boolean
   atrPeriod?: number
+  bbEnabled?: boolean
   bbPeriod?: number
   bbStdDev?: number
   vwapEnabled?: boolean
@@ -267,11 +271,11 @@ export interface StatusResponse {
 
 export interface Indicators {
   rsi14?: number
-  ema20: number
-  ema50: number
-  atr14: number
+  ema20?: number
+  ema50?: number
+  atr14?: number
   vwap: number
-  bbWidth: number
+  bbWidth?: number
   macd?: { macd: number; signal: number; histogram: number }
   adx?: { adx: number; plusDI: number; minusDI: number }
   stoch?: { k: number; d: number }

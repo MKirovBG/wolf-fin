@@ -137,6 +137,7 @@ export interface GuardrailsConfig {
 }
 
 export interface IndicatorConfig {
+  rsiEnabled?: boolean
   rsiPeriod?: number
   emaFast?: number
   emaSlow?: number
@@ -265,7 +266,7 @@ export interface StatusResponse {
 }
 
 export interface Indicators {
-  rsi14: number
+  rsi14?: number
   ema20: number
   ema50: number
   atr14: number

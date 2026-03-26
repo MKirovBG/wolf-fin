@@ -113,7 +113,7 @@ export function MarketDataModal({ market, symbol, onClose }: Props) {
                 <div className="text-muted text-[10px] uppercase tracking-widest mb-2">Technical Indicators</div>
                 <div className="grid grid-cols-3 gap-2">
                   {[
-                    { label: 'RSI 14',   val: data.indicators.rsi14.toFixed(1), color: data.indicators.rsi14 > 70 ? 'text-red' : data.indicators.rsi14 < 30 ? 'text-green' : 'text-text' },
+                    { label: 'RSI 14',   val: data.indicators.rsi14 != null ? data.indicators.rsi14.toFixed(1) : '—', color: data.indicators.rsi14 != null ? (data.indicators.rsi14 > 70 ? 'text-red' : data.indicators.rsi14 < 30 ? 'text-green' : 'text-text') : 'text-muted' },
                     { label: 'EMA 20',   val: fmt(data.indicators.ema20), color: 'text-text' },
                     { label: 'EMA 50',   val: fmt(data.indicators.ema50), color: 'text-text' },
                     { label: 'ATR 14',   val: fmt(data.indicators.atr14), color: 'text-text' },

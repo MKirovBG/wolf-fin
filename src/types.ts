@@ -11,6 +11,7 @@ export interface GuardrailsConfig {
 }
 
 export interface IndicatorConfig {
+  rsiEnabled?: boolean           // Include RSI (default true — set false to disable entirely)
   rsiPeriod?: number             // RSI period (default 14)
   emaFast?: number               // Fast EMA period (default 20)
   emaSlow?: number               // Slow EMA period (default 50)

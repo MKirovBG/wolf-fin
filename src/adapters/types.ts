@@ -67,7 +67,7 @@ export interface Trade {
 }
 
 export interface Indicators {
-  rsi14: number
+  rsi14?: number
   ema20: number
   ema50: number
   atr14: number

@@ -744,6 +744,7 @@ Rules:
 
   const dailyTarget = config.dailyTargetUsd ?? 500
   const maxRiskPct  = config.maxRiskPercent ?? 10
+  const rsiEnabled  = config.indicatorConfig?.rsiEnabled !== false
 
   const riskRulesContent = `RISK RULES (non-negotiable):
 - POSITION SIZING: each tick message contains a "POSITION SIZING" block with a SUGGESTED SIZE computed from your daily target ($${dailyTarget}), account equity, leverage, ATR-based stop distance, and R:R 1.5:1. USE THAT EXACT LOT SIZE. Do not invent your own. The system WILL REJECT orders above 2× the suggested amount.
@@ -752,7 +753,7 @@ Rules:
 - Take profit: place TP at the next structural level in your trade direction (resistance for longs, support for shorts). The reward must be at least 1.5× the risk (distance to SL). If R:R < 1.5, skip the trade.
 - Once a position profits by 1× ATR, call modify_position to move SL to breakeven.
 - Trail stop: as price extends in your favour, trail SL behind structural levels. Do NOT trail so tight that normal retracements stop you out.
-- You MAY add to a winning position (same direction) if RSI confirms and total lots stay within 2× the suggested size.
+- You MAY add to a winning position (same direction)${rsiEnabled ? ' if RSI confirms and' : ' when'} total lots stay within 2× the suggested size.
 - Close losers at your stop — do not widen stops to avoid a loss.
 - Do NOT close a winning trade early out of fear. Let your TP or trailing stop do the work.`
 
@@ -815,7 +816,7 @@ PROCESS:
 1. Review your conversation history — you remember every decision made in this session today.
 2. Each tick message includes an auto-fetched market snapshot (price, indicators, positions). Use it directly.
 3. Call get_snapshot if you need candle data or more granular detail not in the summary.
-4. Reason through evidence: trend (EMA cross), momentum (RSI), volatility (ATR, BB width), key levels.
+4. Reason through evidence: trend (EMA cross),${rsiEnabled ? ' momentum (RSI),' : ''} volatility (ATR, BB width), key levels.
 5. Decide: HOLD / BUY qty @ price / SELL qty @ price / CLOSE ticket / CANCEL orderId.
 6. Execute via place_order, close_position, or cancel_order. Prefer LIMIT orders for better entries.
 ${market === 'mt5' ? '7. MT5: always include stopPips AND tpPips on every new order. SL at structural level, TP at next structural target.\n' : ''}${leverageContent ? `\nACCOUNT CONFIG:\n- ${leverageContent}\n` : ''}

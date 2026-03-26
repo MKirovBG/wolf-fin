@@ -254,7 +254,7 @@ export function computeIndicators(h1Candles: Candle[], cfg: IndicatorConfig = {}
   const bbStd     = cfg.bbStdDev  ?? 2
   const includeVwap = cfg.vwapEnabled !== false
   const result: Indicators = {
-    rsi14:   rsi(h1Candles, rsiPeriod),
+    rsi14:   cfg.rsiEnabled !== false ? rsi(h1Candles, rsiPeriod) : undefined,
     ema20:   ema(h1Candles, emaFast),
     ema50:   ema(h1Candles, emaSlow),
     atr14:   atr(h1Candles, atrPeriod),

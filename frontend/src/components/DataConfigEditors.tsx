@@ -57,6 +57,7 @@ function NumInput({ value, onChange, min, max, step = 1, disabled }: {
 // ── IndicatorConfigEditor ─────────────────────────────────────────────────────
 
 const IND_DEFAULTS: Required<IndicatorConfig> = {
+  rsiEnabled: true,
   rsiPeriod: 14, emaFast: 20, emaSlow: 50, atrPeriod: 14,
   bbPeriod: 20, bbStdDev: 2, vwapEnabled: true, mtfEnabled: true,
   macdEnabled: false, adxEnabled: false, stochEnabled: false,
@@ -77,6 +78,12 @@ export function IndicatorConfigEditor({
 
   return (
     <div>
+      <Row
+        label="RSI (14)"
+        hint="Relative Strength Index momentum oscillator. When enabled, RSI is shown in every tick snapshot and the agent uses it for entry confirmation and pyramiding decisions. Disable for pure price-action and structure-based strategies that don't need momentum filtering."
+      >
+        <Toggle checked={v.rsiEnabled} onChange={val => set('rsiEnabled', val)} disabled={disabled} />
+      </Row>
       <Row
         label="VWAP"
         hint="Volume-Weighted Average Price — anchors intraday price to volume activity. When price is above VWAP the market is broadly bullish for the session; below is bearish. Useful for mean-reversion and entry timing."

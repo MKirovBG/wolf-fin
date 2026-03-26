@@ -113,6 +113,7 @@ export type LogEvent =
   | 'pnl_record' | 'auto_plan'
   | 'quota_error'
   | 'mc_result'
+  | 'ml_signal'
 
 export interface LogEntry {
   id: number

@@ -104,6 +104,7 @@ const EVENT_COLOR: Partial<Record<LogEvent, string>> & { default: string } = {
   auto_execute:       'text-yellow',
   auto_execute_error: 'text-red',
   mc_result:          'text-[#a78bfa]',
+  ml_signal:          'text-[#a78bfa]',
   default:            'text-text',
 }
 
@@ -129,6 +130,7 @@ const EVENT_PREFIX: Partial<Record<LogEvent, string>> & { default: string } = {
   auto_execute:       '⚡ EXEC',
   auto_execute_error: '✗ EXEC',
   mc_result:          '🎲 MC',
+  ml_signal:          '🤖 ML',
   default:            '·',
 }
 

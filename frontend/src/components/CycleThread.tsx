@@ -82,6 +82,7 @@ const EVENT_COLOR: Record<LogEvent, string> = {
   plan_created:       'text-green',
   pnl_record:         'text-green',
   mc_result:          'text-cyan-400',
+  ml_signal:          'text-[#a78bfa]',
 }
 
 const EVENT_PREFIX: Record<LogEvent, string> = {
@@ -109,6 +110,7 @@ const EVENT_PREFIX: Record<LogEvent, string> = {
   plan_created:       '📅 PLAN',
   pnl_record:         '$ P&L',
   mc_result:          '🎲 MC',
+  ml_signal:          '🤖 ML',
 }
 
 // ── Single log line ────────────────────────────────────────────────────────────

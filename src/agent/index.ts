@@ -1267,6 +1267,31 @@ export async function runAgentTick(config: AgentConfig, requestedTickType: 'trad
 
       const summary = formatSnapshotSummary(snap, agentKey, config, mcResult)
 
+      // Log ML signal when enabled so it appears in the Logs panel per tick
+      if (config.contextConfig?.mlSignal) {
+        const snapInds2 = snap.indicators as Parameters<typeof computeMLSignal>[0] | undefined
+        if (snapInds2) {
+          const currentPrice2 = (snap.price as { last?: number } | undefined)?.last
+          const mlResult = computeMLSignal(snapInds2, currentPrice2)
+          if (mlResult.totalActive >= 2) {
+            const dirEmoji = mlResult.direction === 'LONG' ? '📈' : mlResult.direction === 'SHORT' ? '📉' : '➖'
+            logEvent(agentKey, 'info', 'ml_signal',
+              `${dirEmoji} ML: ${mlResult.direction} | Confidence: ${mlResult.confidence}% (${Math.max(mlResult.bullishCount, mlResult.bearishCount)}/${mlResult.totalActive} agree) | Score: ${mlResult.score > 0 ? '+' : ''}${mlResult.score}`,
+              {
+                direction:      mlResult.direction,
+                confidence:     mlResult.confidence,
+                score:          mlResult.score,
+                bullishCount:   mlResult.bullishCount,
+                bearishCount:   mlResult.bearishCount,
+                totalActive:    mlResult.totalActive,
+                bullishFactors: mlResult.bullishFactors,
+                bearishFactors: mlResult.bearishFactors,
+              }
+            )
+          }
+        }
+      }
+
       // Fetch recent forex news (non-blocking, fails silently)
       let newsItems: ForexNewsItem[] | undefined
       if (config.market === 'mt5') {

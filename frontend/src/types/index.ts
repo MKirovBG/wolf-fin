@@ -362,6 +362,7 @@ export type LogEvent =
   | 'memory_write' | 'plan_created'
   | 'pnl_record'
   | 'mc_result'
+  | 'ml_signal'
 
 export interface LogEntry {
   id: number

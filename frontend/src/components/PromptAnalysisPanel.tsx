@@ -140,7 +140,7 @@ function AgentCoreNode({ agent }: { agent: AgentState }) {
 // ── Monte Carlo node ──────────────────────────────────────────────────────────
 
 function MCNode({ mc }: { mc: MCResultData | null }) {
-  const fmt = (v: number) => (v >= 0 ? `+$${v.toFixed(0)}` : `-$${Math.abs(v).toFixed(0)}`)
+  const fmt = (v: number | null) => v == null ? '—' : (v >= 0 ? `+$${v.toFixed(0)}` : `-$${Math.abs(v).toFixed(0)}`)
 
   // If there's a consensus signal use it; otherwise fall back to core recommended
   const signal = mc?.consensus?.signal ?? (mc ? mc.recommended : null)

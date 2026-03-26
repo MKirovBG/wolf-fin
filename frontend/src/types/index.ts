@@ -183,6 +183,8 @@ export interface AgentConfig {
   leverage?: number
   customPrompt?: string
   promptTemplate?: string
+  riskRulesEnabled?: boolean
+  customRiskRules?: string
   guardrails?: Partial<GuardrailsConfig>
   mt5AccountId?: number
   llmProvider?: 'platform' | 'anthropic' | 'anthropic-subscription' | 'openrouter' | 'ollama' | 'openai-subscription'

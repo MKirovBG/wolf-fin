@@ -160,6 +160,8 @@ export function AgentCreate() {
   // Prompt
   const [promptTemplate, setPromptTemplate] = useState('')
   const [customPrompt, setCustomPrompt] = useState('')
+  const [riskRulesEnabled, setRiskRulesEnabled] = useState(true)
+  const [customRiskRules, setCustomRiskRules] = useState('')
 
   // Guardrails
   const [guardrails, setGuardrails] = useState<Partial<GuardrailsConfig>>({})
@@ -237,6 +239,8 @@ export function AgentCreate() {
         maxDailyLossUsd: maxDailyLossUsd !== '' ? Number(maxDailyLossUsd) : undefined,
         customPrompt: customPrompt || undefined,
         promptTemplate: promptTemplate || undefined,
+        riskRulesEnabled: riskRulesEnabled ? undefined : false,
+        customRiskRules: customRiskRules || undefined,
         guardrails: Object.keys(guardrails).length > 0 ? guardrails : undefined,
         llmProvider,
         llmModel: llmModel || undefined,
@@ -582,6 +586,36 @@ export function AgentCreate() {
               className="w-full font-mono text-xs"
             />
           </div>
+        </Section>
+
+        {/* ── 4b. Risk Rules ───────────────────────────────────────────────── */}
+        <Section title="4b · Risk Rules" hint="Control the risk management rules injected into the agent's system prompt. Disable to remove them entirely, or write your own to match your strategy's R:R and sizing logic.">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm text-text font-medium">Include risk rules in prompt</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={riskRulesEnabled}
+              onClick={() => setRiskRulesEnabled(v => !v)}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${riskRulesEnabled ? 'bg-green' : 'bg-border'}`}
+            >
+              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${riskRulesEnabled ? 'translate-x-4' : 'translate-x-1'}`} />
+            </button>
+          </div>
+          {riskRulesEnabled && (
+            <div>
+              <label className="text-xs font-medium text-muted uppercase tracking-wider block mb-2">
+                Custom risk rules <span className="normal-case font-normal">(blank = use Wolf-Fin defaults)</span>
+              </label>
+              <textarea
+                value={customRiskRules}
+                onChange={e => setCustomRiskRules(e.target.value)}
+                placeholder={`Leave blank to use defaults, or write your own rules. Example:\n- R:R must be at least 2:1\n- SL at breakout high/low, TP at 2× SL distance\n- Max 1 trade per day`}
+                rows={6}
+                className="w-full font-mono text-xs"
+              />
+            </div>
+          )}
         </Section>
 
         {/* ── 5. Guardrails ────────────────────────────────────────────────── */}

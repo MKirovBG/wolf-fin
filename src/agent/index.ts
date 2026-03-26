@@ -757,7 +757,7 @@ Rules:
     'key levels',
   ].filter(Boolean).join(', ')
 
-  const riskRulesContent = `RISK RULES (non-negotiable):
+  const defaultRiskRules = `RISK RULES (non-negotiable):
 - POSITION SIZING: each tick message contains a "POSITION SIZING" block with a SUGGESTED SIZE computed from your daily target ($${dailyTarget}), account equity, leverage, ATR-based stop distance, and R:R 1.5:1. USE THAT EXACT LOT SIZE. Do not invent your own. The system WILL REJECT orders above 2× the suggested amount.
 - Max risk per trade: ${maxRiskPct}% of equity. The sizing already accounts for this — just use the suggested lots.
 - Stop placement: place SL at a STRUCTURAL level (recent swing high/low, support/resistance, round number) — not an arbitrary pip distance. Then verify the distance is at LEAST ATR14 × 1.0. If no clear structural level exists within reasonable risk, DO NOT enter the trade.
@@ -767,6 +767,12 @@ Rules:
 - You MAY add to a winning position (same direction)${rsiEnabled ? ' if RSI confirms and' : ' when'} total lots stay within 2× the suggested size.
 - Close losers at your stop — do not widen stops to avoid a loss.
 - Do NOT close a winning trade early out of fear. Let your TP or trailing stop do the work.`
+
+  const riskRulesContent = config.riskRulesEnabled === false
+    ? ''
+    : config.customRiskRules?.trim()
+      ? `RISK RULES:\n${config.customRiskRules.trim()}`
+      : defaultRiskRules
 
   const outputFormatContent = `EXECUTION RULES (mandatory — the DECISION line does NOT trigger a trade by itself):
 - If BUY or SELL: call place_order FIRST, then write the DECISION line.

@@ -57,6 +57,8 @@ export interface AgentConfig {
   leverage?: number              // Account leverage — used in agent context for position sizing
   customPrompt?: string
   promptTemplate?: string        // full system prompt with {{pill}} tokens; if empty uses default
+  riskRulesEnabled?: boolean     // include risk rules block in prompt (default true)
+  customRiskRules?: string       // replaces default risk rules text when set
   guardrails?: Partial<GuardrailsConfig>  // defaults: all true
   mt5AccountId?: number          // Which MT5 account this agent trades with
   llmProvider?: 'platform' | 'anthropic' | 'anthropic-subscription' | 'openrouter' | 'ollama' | 'openai-subscription'  // 'platform' = inherit platform LLM config

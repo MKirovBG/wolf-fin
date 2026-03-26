@@ -340,6 +340,13 @@ export function ContextConfigEditor({
           <Toggle checked={get('forexNews')} onChange={val => set('forexNews', val)} disabled={disabled} />
         </Row>
       )}
+
+      <Row
+        label="ML ensemble signal"
+        hint="GBDT-style indicator ensemble confidence score. Aggregates all enabled indicators into a single directional vote (LONG / SHORT / NEUTRAL) with a confidence %. Injected into the prompt when ON — invisible when OFF. Good for agents that use many indicators and want a synthesised summary."
+      >
+        <Toggle checked={value.mlSignal === true} onChange={val => onChange({ ...value, mlSignal: val || undefined })} disabled={disabled} />
+      </Row>
     </div>
   )
 }

@@ -18,6 +18,7 @@ import { fetchForexNews } from '../adapters/finnhubNews.js'
 import type { ForexNewsItem } from '../adapters/finnhubNews.js'
 import { formatMCBlock } from '../adapters/montecarlo.js'
 import type { MCResult } from '../adapters/montecarlo.js'
+import { computeMLSignal, formatMLSignalBlock } from '../adapters/ml-signal.js'
 import { runEnhancedMonteCarlo, formatEnhancedMCBlock } from '../adapters/mc-orchestrator.js'
 import type { EnhancedMCResult } from '../adapters/mc-types.js'
 import { MC_ENHANCEMENT_DEFAULTS } from '../adapters/mc-types.js'
@@ -518,6 +519,15 @@ function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string,
         const t    = new Date(d.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         lines.push(`  #${d.ticket} ${dir} ${d.volume} @ ${d.price.toFixed(dp)} | P&L: ${pnl}${fees}${exit} at ${t}`)
       }
+    }
+  }
+
+  // ── ML / GBDT-style indicator ensemble signal ───────────────────────────────
+  if (config?.contextConfig?.mlSignal && indicators) {
+    const currentPrice = (snap.price as { last?: number } | undefined)?.last
+    const mlResult = computeMLSignal(indicators, currentPrice)
+    if (mlResult.totalActive >= 2) {
+      lines.push(formatMLSignalBlock(mlResult))
     }
   }
 

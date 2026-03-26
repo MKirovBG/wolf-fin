@@ -47,6 +47,7 @@ export interface ContextConfig {
   cryptoMarket?: boolean         // crypto: BTC dominance / total market cap (default true)
   economicCalendar?: boolean     // both: upcoming high-impact events (default true)
   forexNews?: boolean            // mt5: Finnhub forex news with sentiment (default true)
+  mlSignal?: boolean             // both: GBDT-style indicator ensemble confidence score (default false)
 }
 
 export interface AgentConfig {

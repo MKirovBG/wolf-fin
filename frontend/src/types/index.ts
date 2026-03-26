@@ -173,6 +173,7 @@ export interface ContextConfig {
   cryptoMarket?: boolean
   economicCalendar?: boolean
   forexNews?: boolean
+  mlSignal?: boolean
 }
 
 export interface AgentConfig {

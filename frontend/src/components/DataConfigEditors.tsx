@@ -60,6 +60,8 @@ const IND_DEFAULTS: Required<IndicatorConfig> = {
   rsiPeriod: 14, emaFast: 20, emaSlow: 50, atrPeriod: 14,
   bbPeriod: 20, bbStdDev: 2, vwapEnabled: true, mtfEnabled: true,
   macdEnabled: false, adxEnabled: false, stochEnabled: false,
+  psarEnabled: false, ichimokuEnabled: false, cciEnabled: false,
+  williamsREnabled: false, obvEnabled: false, mfiEnabled: false, keltnerEnabled: false,
 }
 
 export function IndicatorConfigEditor({
@@ -104,6 +106,48 @@ export function IndicatorConfigEditor({
         hint="Stochastic oscillator for overbought/oversold timing. K above 80 = overbought (potential reversal or pullback); K below 20 = oversold. Most useful in ranging markets — combine with ADX to know when to apply it."
       >
         <Toggle checked={v.stochEnabled} onChange={val => set('stochEnabled', val)} disabled={disabled} />
+      </Row>
+      <Row
+        label="Parabolic SAR"
+        hint="Stop-and-Reverse trailing stop system. SAR below price = bullish uptrend; SAR above price = bearish. Provides exact exit/reversal levels and tightens as the trend extends — excellent for stop management."
+      >
+        <Toggle checked={v.psarEnabled} onChange={val => set('psarEnabled', val)} disabled={disabled} />
+      </Row>
+      <Row
+        label="Ichimoku Cloud (9/26/52)"
+        hint="All-in-one indicator: trend direction, momentum, and dynamic support/resistance. Price above cloud = bullish, below = bearish. The cloud itself acts as a support/resistance zone. Conversion/Base crossovers signal momentum shifts."
+      >
+        <Toggle checked={v.ichimokuEnabled} onChange={val => set('ichimokuEnabled', val)} disabled={disabled} />
+      </Row>
+      <Row
+        label="CCI (20)"
+        hint="Commodity Channel Index measures deviation from statistical mean. CCI above +100 = overbought or strong trend; below -100 = oversold or strong downtrend. Useful for detecting cyclical reversals and trend exhaustion."
+      >
+        <Toggle checked={v.cciEnabled} onChange={val => set('cciEnabled', val)} disabled={disabled} />
+      </Row>
+      <Row
+        label="Williams %R (14)"
+        hint="Momentum oscillator similar to Stochastic but inverted (-100 to 0). Above -20 = overbought; below -80 = oversold. Reacts faster than RSI — good for scalping entry/exit timing in combination with trend filters."
+      >
+        <Toggle checked={v.williamsREnabled} onChange={val => set('williamsREnabled', val)} disabled={disabled} />
+      </Row>
+      <Row
+        label="OBV (On Balance Volume)"
+        hint="Accumulates volume based on price direction to confirm trends. Rising OBV = buying pressure supporting the move; falling OBV = selling pressure. Divergence from price (price up, OBV down) warns of weak moves."
+      >
+        <Toggle checked={v.obvEnabled} onChange={val => set('obvEnabled', val)} disabled={disabled} />
+      </Row>
+      <Row
+        label="MFI (14)"
+        hint="Money Flow Index — volume-weighted RSI measuring institutional money flow. MFI above 80 = overbought; below 20 = oversold. More reliable than RSI alone because it requires both price movement AND volume to generate a signal."
+      >
+        <Toggle checked={v.mfiEnabled} onChange={val => set('mfiEnabled', val)} disabled={disabled} />
+      </Row>
+      <Row
+        label="Keltner Channel (20)"
+        hint="ATR-based volatility envelope around a 20-period EMA. Price outside the channel signals breakouts or extremes. Narrowing channels indicate low volatility before a move; works well with Bollinger Bands for confirming squeezes."
+      >
+        <Toggle checked={v.keltnerEnabled} onChange={val => set('keltnerEnabled', val)} disabled={disabled} />
       </Row>
 
       <div className="pt-3 grid grid-cols-2 gap-x-6">

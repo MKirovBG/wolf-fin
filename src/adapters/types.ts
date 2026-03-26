@@ -81,6 +81,20 @@ export interface Indicators {
   adx?: { adx: number; plusDI: number; minusDI: number }
   /** Stochastic 14/3 — optional, present when stochEnabled */
   stoch?: { k: number; d: number }
+  /** Parabolic SAR — present when psarEnabled */
+  psar?: { value: number; bullish: boolean }
+  /** Ichimoku Cloud — present when ichimokuEnabled */
+  ichimoku?: { conversion: number; base: number; spanA: number; spanB: number; aboveCloud: boolean; cloudBullish: boolean }
+  /** CCI(20) — present when cciEnabled */
+  cci?: number
+  /** Williams %R(14) — present when williamsREnabled */
+  williamsR?: number
+  /** OBV — present when obvEnabled */
+  obv?: { value: number; rising: boolean }
+  /** MFI(14) — present when mfiEnabled */
+  mfi?: number
+  /** Keltner Channel(20,2) — present when keltnerEnabled */
+  keltner?: { upper: number; middle: number; lower: number }
 }
 
 /** Per-timeframe indicator subset */

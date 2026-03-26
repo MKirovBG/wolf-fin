@@ -6,6 +6,13 @@ const TI = require('technicalindicators') as {
   MACD: { calculate: (i: { values: number[]; fastPeriod: number; slowPeriod: number; signalPeriod: number; SimpleMAOscillator: boolean; SimpleMASignal: boolean }) => Array<{ MACD: number; signal: number; histogram: number }> }
   ADX:  { calculate: (i: { high: number[]; low: number[]; close: number[]; period: number }) => Array<{ adx: number; pdi: number; mdi: number }> }
   Stochastic: { calculate: (i: { high: number[]; low: number[]; close: number[]; period: number; signalPeriod: number }) => Array<{ k: number; d: number }> }
+  PSAR: { calculate: (i: { step: number; max: number; high: number[]; low: number[] }) => number[] }
+  IchimokuCloud: { calculate: (i: { conversionPeriod: number; basePeriod: number; spanPeriod: number; displacement: number; high: number[]; low: number[] }) => Array<{ conversion: number; base: number; spanA: number; spanB: number }> }
+  CCI:  { calculate: (i: { period: number; high: number[]; low: number[]; close: number[] }) => number[] }
+  WilliamsR: { calculate: (i: { period: number; high: number[]; low: number[]; close: number[] }) => number[] }
+  OBV:  { calculate: (i: { close: number[]; volume: number[] }) => number[] }
+  MFI:  { calculate: (i: { period: number; high: number[]; low: number[]; close: number[]; volume: number[] }) => number[] }
+  KeltnerChannels: { calculate: (i: { period: number; multiplier: number; high: number[]; low: number[]; close: number[] }) => Array<{ upper: number; middle: number; lower: number }> }
 }
 
 import type { Candle } from './types.js'
@@ -155,6 +162,84 @@ export function computeStoch(candles: Candle[], period = 14, signalPeriod = 3): 
   return { k: last.k, d: last.d }
 }
 
+// ── Parabolic SAR ─────────────────────────────────────────────────────────────
+
+export function computePsar(candles: Candle[], step = 0.02, max = 0.2): { value: number; bullish: boolean } | undefined {
+  if (candles.length < 2) return undefined
+  const results = TI.PSAR.calculate({ step, max, high: candles.map(c => c.high), low: candles.map(c => c.low) })
+  const last = results[results.length - 1]
+  if (last == null) return undefined
+  const currentClose = candles[candles.length - 1].close
+  return { value: last, bullish: last < currentClose }
+}
+
+// ── Ichimoku Cloud (9/26/52) ──────────────────────────────────────────────────
+
+export function computeIchimoku(candles: Candle[], conversionPeriod = 9, basePeriod = 26, spanPeriod = 52, displacement = 26): { conversion: number; base: number; spanA: number; spanB: number; aboveCloud: boolean; cloudBullish: boolean } | undefined {
+  if (candles.length < spanPeriod + displacement) return undefined
+  const results = TI.IchimokuCloud.calculate({ conversionPeriod, basePeriod, spanPeriod, displacement, high: candles.map(c => c.high), low: candles.map(c => c.low) })
+  const last = results[results.length - 1]
+  if (!last) return undefined
+  const currentClose = candles[candles.length - 1].close
+  const cloudTop    = Math.max(last.spanA, last.spanB)
+  const cloudBottom = Math.min(last.spanA, last.spanB)
+  return {
+    conversion:   last.conversion,
+    base:         last.base,
+    spanA:        last.spanA,
+    spanB:        last.spanB,
+    aboveCloud:   currentClose > cloudTop,
+    cloudBullish: last.spanA > last.spanB,
+  }
+}
+
+// ── CCI (20) ──────────────────────────────────────────────────────────────────
+
+export function computeCci(candles: Candle[], period = 20): number | undefined {
+  if (candles.length < period) return undefined
+  const results = TI.CCI.calculate({ period, high: candles.map(c => c.high), low: candles.map(c => c.low), close: closes(candles) })
+  const last = results[results.length - 1]
+  return last != null ? last : undefined
+}
+
+// ── Williams %R (14) ──────────────────────────────────────────────────────────
+
+export function computeWilliamsR(candles: Candle[], period = 14): number | undefined {
+  if (candles.length < period) return undefined
+  const results = TI.WilliamsR.calculate({ period, high: candles.map(c => c.high), low: candles.map(c => c.low), close: closes(candles) })
+  const last = results[results.length - 1]
+  return last != null ? last : undefined
+}
+
+// ── OBV (On Balance Volume) ───────────────────────────────────────────────────
+
+export function computeObv(candles: Candle[]): { value: number; rising: boolean } | undefined {
+  if (candles.length < 2) return undefined
+  const results = TI.OBV.calculate({ close: closes(candles), volume: candles.map(c => c.volume) })
+  if (results.length < 2) return undefined
+  const last = results[results.length - 1]
+  const prev = results[results.length - 2]
+  return { value: last, rising: last > prev }
+}
+
+// ── MFI (14) ──────────────────────────────────────────────────────────────────
+
+export function computeMfi(candles: Candle[], period = 14): number | undefined {
+  if (candles.length < period) return undefined
+  const results = TI.MFI.calculate({ period, high: candles.map(c => c.high), low: candles.map(c => c.low), close: closes(candles), volume: candles.map(c => c.volume) })
+  const last = results[results.length - 1]
+  return last != null ? last : undefined
+}
+
+// ── Keltner Channel (20, multiplier 2) ────────────────────────────────────────
+
+export function computeKeltner(candles: Candle[], period = 20, multiplier = 2): { upper: number; middle: number; lower: number } | undefined {
+  if (candles.length < period) return undefined
+  const results = TI.KeltnerChannels.calculate({ period, multiplier, high: candles.map(c => c.high), low: candles.map(c => c.low), close: closes(candles) })
+  const last = results[results.length - 1]
+  return last ?? undefined
+}
+
 // ── Bundle: compute all indicators from 1h candles (primary timeframe) ────────
 
 import type { Indicators, KeyLevel, TFIndicators, MTFIndicators } from './types.js'
@@ -179,6 +264,13 @@ export function computeIndicators(h1Candles: Candle[], cfg: IndicatorConfig = {}
   if (cfg.macdEnabled)  result.macd  = computeMacd(h1Candles)
   if (cfg.adxEnabled)   result.adx   = computeAdx(h1Candles)
   if (cfg.stochEnabled) result.stoch = computeStoch(h1Candles)
+  if (cfg.psarEnabled)      result.psar      = computePsar(h1Candles)
+  if (cfg.ichimokuEnabled)  result.ichimoku  = computeIchimoku(h1Candles)
+  if (cfg.cciEnabled)       result.cci       = computeCci(h1Candles)
+  if (cfg.williamsREnabled) result.williamsR = computeWilliamsR(h1Candles)
+  if (cfg.obvEnabled)       result.obv       = computeObv(h1Candles)
+  if (cfg.mfiEnabled)       result.mfi       = computeMfi(h1Candles)
+  if (cfg.keltnerEnabled)   result.keltner   = computeKeltner(h1Candles)
   return result
 }
 

@@ -148,6 +148,13 @@ export interface IndicatorConfig {
   macdEnabled?: boolean
   adxEnabled?: boolean
   stochEnabled?: boolean
+  psarEnabled?: boolean
+  ichimokuEnabled?: boolean
+  cciEnabled?: boolean
+  williamsREnabled?: boolean
+  obvEnabled?: boolean
+  mfiEnabled?: boolean
+  keltnerEnabled?: boolean
 }
 
 export interface CandleConfig {
@@ -267,6 +274,13 @@ export interface Indicators {
   macd?: { macd: number; signal: number; histogram: number }
   adx?: { adx: number; plusDI: number; minusDI: number }
   stoch?: { k: number; d: number }
+  psar?: { value: number; bullish: boolean }
+  ichimoku?: { conversion: number; base: number; spanA: number; spanB: number; aboveCloud: boolean; cloudBullish: boolean }
+  cci?: number
+  williamsR?: number
+  obv?: { value: number; rising: boolean }
+  mfi?: number
+  keltner?: { upper: number; middle: number; lower: number }
 }
 
 export interface Candle {

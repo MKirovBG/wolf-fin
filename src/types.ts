@@ -22,6 +22,13 @@ export interface IndicatorConfig {
   macdEnabled?: boolean          // MACD 12/26/9 (default false)
   adxEnabled?: boolean           // ADX 14 (default false)
   stochEnabled?: boolean         // Stochastic 14/3 (default false)
+  psarEnabled?: boolean          // Parabolic SAR (default false)
+  ichimokuEnabled?: boolean      // Ichimoku Cloud 9/26/52 (default false)
+  cciEnabled?: boolean           // CCI 20 (default false)
+  williamsREnabled?: boolean     // Williams %R 14 (default false)
+  obvEnabled?: boolean           // On Balance Volume (default false)
+  mfiEnabled?: boolean           // Money Flow Index 14 (default false)
+  keltnerEnabled?: boolean       // Keltner Channel 20 (default false)
 }
 
 export interface CandleConfig {

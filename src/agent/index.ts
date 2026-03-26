@@ -198,7 +198,7 @@ function candleTrendLine(candles: Candle[], count: number, dp: number): string {
 
 function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string, config?: AgentConfig, mc?: MCResult | EnhancedMCResult): string {
   const price = snap.price as { bid?: number; ask?: number; last?: number } | undefined
-  const indicators = snap.indicators as { rsi14?: number; ema20?: number; ema50?: number; atr14?: number; vwap?: number; bbWidth?: number; mtf?: { m15?: { rsi14: number; ema20: number; atr14: number }; h4?: { rsi14: number; ema20: number; ema50?: number; atr14: number }; confluence: number }; macd?: { macd: number; signal: number; histogram: number }; adx?: { adx: number; plusDI: number; minusDI: number }; stoch?: { k: number; d: number } } | undefined
+  const indicators = snap.indicators as { rsi14?: number; ema20?: number; ema50?: number; atr14?: number; vwap?: number; bbWidth?: number; mtf?: { m15?: { rsi14: number; ema20: number; atr14: number }; h4?: { rsi14: number; ema20: number; ema50?: number; atr14: number }; confluence: number }; macd?: { macd: number; signal: number; histogram: number }; adx?: { adx: number; plusDI: number; minusDI: number }; stoch?: { k: number; d: number }; psar?: { value: number; bullish: boolean }; ichimoku?: { conversion: number; base: number; spanA: number; spanB: number; aboveCloud: boolean; cloudBullish: boolean }; cci?: number; williamsR?: number; obv?: { value: number; rising: boolean }; mfi?: number; keltner?: { upper: number; middle: number; lower: number } } | undefined
   const forex = snap.forex as { spread?: number; sessionOpen?: boolean; pipValue?: number; point?: number; pipSize?: number; swapLong?: number; swapShort?: number } | undefined
   const candles = snap.candles as { m1?: Candle[]; m5?: Candle[]; m15?: Candle[]; m30?: Candle[]; h1?: Candle[]; h4?: Candle[] } | undefined
   const positions = snap.positions as Array<{
@@ -317,6 +317,41 @@ function formatSnapshotSummary(snap: Record<string, unknown>, agentKey?: string,
     if (indicators.stoch) {
       const label = indicators.stoch.k >= 80 ? '(overbought)' : indicators.stoch.k <= 20 ? '(oversold)' : ''
       lines.push(`Stoch(14,3): K=${indicators.stoch.k.toFixed(1)} D=${indicators.stoch.d.toFixed(1)} ${label}`)
+    }
+    if (indicators.psar != null) {
+      const dir = indicators.psar.bullish ? 'SAR BELOW price (bullish — uptrend)' : 'SAR ABOVE price (bearish — downtrend)'
+      lines.push(`PSAR: ${indicators.psar.value.toFixed(dp)} | ${dir}`)
+    }
+    if (indicators.ichimoku) {
+      const i = indicators.ichimoku
+      const cloudPos = i.aboveCloud ? 'ABOVE CLOUD (bullish)' : (Math.min(i.spanA, i.spanB) > (typeof (snap.price as {last?: number})?.last === 'number' ? (snap.price as {last: number}).last : 0) ? 'BELOW CLOUD (bearish)' : 'IN CLOUD (neutral)')
+      const cloudType = i.cloudBullish ? 'bullish cloud' : 'bearish cloud'
+      lines.push(`Ichimoku: Conv=${i.conversion.toFixed(dp)} Base=${i.base.toFixed(dp)} | SpanA=${i.spanA.toFixed(dp)} SpanB=${i.spanB.toFixed(dp)} | ${cloudPos} (${cloudType})`)
+    }
+    if (indicators.cci != null) {
+      const cciLabel = indicators.cci > 100 ? '(overbought — strong uptrend or reversal risk)' : indicators.cci < -100 ? '(oversold — strong downtrend or reversal opportunity)' : indicators.cci > 0 ? '(bullish momentum)' : '(bearish momentum)'
+      lines.push(`CCI(20): ${indicators.cci >= 0 ? '+' : ''}${indicators.cci.toFixed(1)} ${cciLabel}`)
+    }
+    if (indicators.williamsR != null) {
+      const wrLabel = indicators.williamsR > -20 ? '(overbought)' : indicators.williamsR < -80 ? '(oversold)' : '(neutral)'
+      lines.push(`Williams %R(14): ${indicators.williamsR.toFixed(1)} ${wrLabel}`)
+    }
+    if (indicators.obv != null) {
+      const obvDir = indicators.obv.rising ? '↑ rising (buying pressure)' : '↓ falling (selling pressure)'
+      lines.push(`OBV: ${indicators.obv.value.toLocaleString('en-US', { maximumFractionDigits: 0 })} ${obvDir}`)
+    }
+    if (indicators.mfi != null) {
+      const mfiLabel = indicators.mfi >= 80 ? '(overbought — potential reversal)' : indicators.mfi <= 20 ? '(oversold — potential bounce)' : indicators.mfi > 50 ? '(bullish money flow)' : '(bearish money flow)'
+      lines.push(`MFI(14): ${indicators.mfi.toFixed(1)} ${mfiLabel}`)
+    }
+    if (indicators.keltner) {
+      const k = indicators.keltner
+      const keltnerPos = typeof (snap.price as {last?: number})?.last === 'number'
+        ? (snap.price as {last: number}).last > k.upper ? '(price ABOVE upper — breakout or overbought)'
+          : (snap.price as {last: number}).last < k.lower ? '(price BELOW lower — breakdown or oversold)'
+          : '(price inside channel)'
+        : ''
+      lines.push(`Keltner(20): Upper=${k.upper.toFixed(dp)} Mid=${k.middle.toFixed(dp)} Lower=${k.lower.toFixed(dp)} ${keltnerPos}`)
     }
   }
 

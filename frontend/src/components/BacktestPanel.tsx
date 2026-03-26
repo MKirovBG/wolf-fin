@@ -470,26 +470,9 @@ interface Props {
 }
 
 export function BacktestPanel({ agentKey, config }: Props) {
-  // Gate: Binance agents cannot use this panel
-  if (config.market !== 'mt5') {
-    return (
-      <div className="flex flex-col items-center justify-center py-20 gap-4 text-center max-w-lg mx-auto">
-        <div className="text-4xl">🚫</div>
-        <h3 className="text-lg font-semibold text-text">Backtesting Unavailable for Binance</h3>
-        <p className="text-sm text-muted leading-relaxed">
-          Backtesting requires reliable historical OHLCV data with precise execution semantics
-          (pip size, pip value, spread). Binance's REST API provides kline data but lacks the
-          broker-level execution model needed for accurate P&amp;L simulation.
-        </p>
-        <p className="text-sm text-muted leading-relaxed">
-          Backtesting is only supported for <span className="text-accent font-medium">MT5 agents</span>,
-          where data is fetched directly from your connected broker's history with exact instrument specs.
-        </p>
-      </div>
-    )
-  }
+  const isMt5 = config.market === 'mt5'
 
-  // ── State ──────────────────────────────────────────────────────────────────
+  // ── State ── (all hooks must come before any conditional return) ────────────
   const [timeframe,        setTimeframe]        = useState<typeof TIMEFRAMES[number]>('H1')
   const [bars,             setBars]             = useState(2000)
   const [slMult,           setSlMult]           = useState(1.0)
@@ -663,6 +646,24 @@ export function BacktestPanel({ agentKey, config }: Props) {
   const curve  = result?.result.equityCurve ?? []
 
   // ── Render ─────────────────────────────────────────────────────────────────
+  if (!isMt5) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 gap-4 text-center max-w-lg mx-auto">
+        <div className="text-4xl">🚫</div>
+        <h3 className="text-lg font-semibold text-text">Backtesting Unavailable for Binance</h3>
+        <p className="text-sm text-muted leading-relaxed">
+          Backtesting requires reliable historical OHLCV data with precise execution semantics
+          (pip size, pip value, spread). Binance's REST API provides kline data but lacks the
+          broker-level execution model needed for accurate P&amp;L simulation.
+        </p>
+        <p className="text-sm text-muted leading-relaxed">
+          Backtesting is only supported for <span className="text-accent font-medium">MT5 agents</span>,
+          where data is fetched directly from your connected broker's history with exact instrument specs.
+        </p>
+      </div>
+    )
+  }
+
   if (restoring) {
     return (
       <div className="flex items-center gap-3 py-12 justify-center text-muted text-sm">

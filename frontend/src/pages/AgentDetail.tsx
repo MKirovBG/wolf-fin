@@ -218,8 +218,8 @@ function Pill({ label, color }: { label: string; color?: string }) {
 }
 
 function MCCard({ mc, time, compact = false }: { mc: MCResultData; time: string; compact?: boolean }) {
-  const fmt    = (v: number) => (v >= 0 ? `+$${v.toFixed(0)}` : `-$${Math.abs(v).toFixed(0)}`)
-  const pct    = (v: number) => `${v.toFixed(1)}%`
+  const fmt    = (v: number | null) => v == null ? '—' : (v >= 0 ? `+$${v.toFixed(0)}` : `-$${Math.abs(v).toFixed(0)}`)
+  const pct    = (v: number | null) => v == null ? '—' : `${v.toFixed(1)}%`
   const relTime = (() => {
     const d = Date.now() - new Date(time).getTime()
     if (d < 60000) return `${Math.floor(d / 1000)}s ago`

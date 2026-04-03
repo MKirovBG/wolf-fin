@@ -20,6 +20,7 @@ import {
   dbCreateAlertRule, dbGetAlertRules, dbToggleAlertRule, dbDeleteAlertRule,
   dbFireAlert, dbGetAlertFirings, dbAcknowledgeAlert, dbGetLatestFeatureHistory,
   dbGetFeaturesForAnalysis,
+  dbGetMigrationStatus, dbCheckIntegrity,
   makeSymbolKey,
 } from '../db/index.js'
 import type { Mt5AccountRow } from '../db/index.js'
@@ -1148,12 +1149,31 @@ export async function startServer(): Promise<void> {
     // Finnhub
     checks.finnhub = await testConnection('finnhub')
 
-    // DB — simple read
+    // DB — integrity + symbol count
     try {
+      const integrity = dbCheckIntegrity()
       const count = dbGetAllSymbols().length
-      checks.db = { ok: true, message: `${count} symbol(s) in watchlist` }
+      const ok = integrity[0] === 'ok'
+      checks.db = {
+        ok,
+        message: ok
+          ? `Healthy — ${count} symbol(s) in watchlist`
+          : `Integrity issues: ${integrity.join('; ')}`,
+      }
     } catch (e) {
       checks.db = { ok: false, message: String(e) }
+    }
+
+    // Schema migrations
+    try {
+      const migrations = dbGetMigrationStatus()
+      const latest = migrations.at(-1)
+      checks.migrations = {
+        ok: migrations.length > 0,
+        message: `${migrations.length} migration(s) applied; latest: ${latest?.name ?? 'none'} (v${latest?.version ?? 0})`,
+      }
+    } catch (e) {
+      checks.migrations = { ok: false, message: String(e) }
     }
 
     const allOk = Object.values(checks).every(c => c.ok)

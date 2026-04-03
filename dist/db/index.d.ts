@@ -2,6 +2,22 @@ import type { WatchSymbol, AnalysisResult, LogEntry } from '../types.js';
 import type { FeatureSnapshot, MarketState } from '../types/market.js';
 export { dbSaveCandidates, dbGetCandidatesForAnalysis, dbGetLatestCandidates, dbSaveStrategyVersion, dbGetStrategyVersions, dbUpdateStrategyDefinition, dbCreateBacktestRun, dbCompleteBacktestRun, dbFailBacktestRun, dbGetBacktestRun, dbSaveBacktestTrades, dbCreateAlertRule, dbGetAlertRules, dbToggleAlertRule, dbDeleteAlertRule, dbFireAlert, dbGetAlertFirings, dbAcknowledgeAlert, dbGetLatestFeatureHistory, } from './phase25.js';
 export declare function initDb(): void;
+/** Expose migration status for the health endpoint. */
+export declare function dbGetMigrationStatus(): {
+    version: number;
+    name: string;
+    appliedAt: string;
+}[];
+/**
+ * Prune old log entries, keeping only the most recent `maxEntries`.
+ * Returns the number of rows deleted.
+ */
+export declare function dbPruneLogs(maxEntries?: number): number;
+/**
+ * Run SQLite integrity_check and return the result lines.
+ * Returns ['ok'] when the database is healthy.
+ */
+export declare function dbCheckIntegrity(): string[];
 export declare function dbGetAllSymbols(): WatchSymbol[];
 export declare function dbGetSymbol(key: string): WatchSymbol | null;
 export declare function dbUpsertSymbol(sym: WatchSymbol): void;

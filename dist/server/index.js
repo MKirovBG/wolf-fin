@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, appendFileSync, readFileSync, writeFileSync } from 'fs';
 import pino from 'pino';
-import { dbGetAllSymbols, dbGetSymbol, dbUpsertSymbol, dbDeleteSymbol, dbGetAnalyses, dbGetLatestAnalysis, dbGetAllRecentAnalyses, dbGetAnalysisById, dbGetAllMt5Accounts, dbUpsertMt5Accounts, dbMarkMt5AccountsGone, dbGetSetting, dbSetSetting, dbGetAllStrategies, dbGetStrategy, dbUpsertStrategy, dbDeleteStrategy, dbGetOutcomes, dbGetOutcomeStats, dbGetPendingOutcomes, dbGetLatestFeatures, dbGetLatestMarketState, dbGetLatestCandidates, dbGetStrategyVersions, dbCreateBacktestRun, dbCompleteBacktestRun, dbFailBacktestRun, dbGetBacktestRun, dbSaveBacktestTrades, dbCreateAlertRule, dbGetAlertRules, dbToggleAlertRule, dbDeleteAlertRule, dbGetAlertFirings, dbAcknowledgeAlert, dbGetLatestFeatureHistory, dbGetFeaturesForAnalysis, makeSymbolKey, } from '../db/index.js';
+import { dbGetAllSymbols, dbGetSymbol, dbUpsertSymbol, dbDeleteSymbol, dbGetAnalyses, dbGetLatestAnalysis, dbGetAllRecentAnalyses, dbGetAnalysisById, dbGetAllMt5Accounts, dbUpsertMt5Accounts, dbMarkMt5AccountsGone, dbGetSetting, dbSetSetting, dbGetAllStrategies, dbGetStrategy, dbUpsertStrategy, dbDeleteStrategy, dbGetOutcomes, dbGetOutcomeStats, dbGetPendingOutcomes, dbGetLatestFeatures, dbGetLatestMarketState, dbGetLatestCandidates, dbGetStrategyVersions, dbCreateBacktestRun, dbCompleteBacktestRun, dbFailBacktestRun, dbGetBacktestRun, dbSaveBacktestTrades, dbCreateAlertRule, dbGetAlertRules, dbToggleAlertRule, dbDeleteAlertRule, dbGetAlertFirings, dbAcknowledgeAlert, dbGetLatestFeatureHistory, dbGetFeaturesForAnalysis, dbGetMigrationStatus, dbCheckIntegrity, makeSymbolKey, } from '../db/index.js';
 import { getLogs, subscribeToLogs, subscribeToAnalyses, broadcastAnalysisUpdate } from './state.js';
 import { runAnalysis, isAnalysisRunning } from '../analyzer/index.js';
 import { syncSchedule, stopSchedule, getScheduledKeys } from '../scheduler/index.js';
@@ -1008,13 +1008,32 @@ export async function startServer() {
         checks.llm = await testConnection(llmProvider);
         // Finnhub
         checks.finnhub = await testConnection('finnhub');
-        // DB — simple read
+        // DB — integrity + symbol count
         try {
+            const integrity = dbCheckIntegrity();
             const count = dbGetAllSymbols().length;
-            checks.db = { ok: true, message: `${count} symbol(s) in watchlist` };
+            const ok = integrity[0] === 'ok';
+            checks.db = {
+                ok,
+                message: ok
+                    ? `Healthy — ${count} symbol(s) in watchlist`
+                    : `Integrity issues: ${integrity.join('; ')}`,
+            };
         }
         catch (e) {
             checks.db = { ok: false, message: String(e) };
+        }
+        // Schema migrations
+        try {
+            const migrations = dbGetMigrationStatus();
+            const latest = migrations.at(-1);
+            checks.migrations = {
+                ok: migrations.length > 0,
+                message: `${migrations.length} migration(s) applied; latest: ${latest?.name ?? 'none'} (v${latest?.version ?? 0})`,
+            };
+        }
+        catch (e) {
+            checks.migrations = { ok: false, message: String(e) };
         }
         const allOk = Object.values(checks).every(c => c.ok);
         return reply.status(allOk ? 200 : 207).send({ ok: allOk, checks });

@@ -1,6 +1,7 @@
 import type { Candle, Indicators } from '../adapters/types.js';
 import type { AnalysisContext, CandlePattern } from '../types.js';
 import type { FeatureSnapshot, MarketState } from '../types/market.js';
+import type { SetupCandidate } from '../types/setup.js';
 export declare function buildAnalysisPrompt(params: {
     symbol: string;
     timeframe: string;
@@ -22,6 +23,7 @@ export declare function buildAnalysisPrompt(params: {
     digits?: number;
     features?: FeatureSnapshot;
     marketState?: MarketState;
+    topCandidates?: SetupCandidate[];
 }): string;
 export declare function buildSystemPrompt(options?: {
     strategyInstructions?: string;

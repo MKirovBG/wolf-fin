@@ -1,0 +1,1 @@
+{"version":3,"file":"sessionReversal.d.ts","sourceRoot":"","sources":["../../src/detectors/sessionReversal.ts"],"names":[],"mappings":"AAGA,OAAO,KAAK,EAAE,aAAa,EAAE,MAAM,gBAAgB,CAAA;AACnD,OAAO,KAAK,EAAE,cAAc,EAAE,MAAM,mBAAmB,CAAA;AAMvD,wBAAgB,qBAAqB,CAAC,KAAK,EAAE,aAAa,GAAG,cAAc,CAwG1E"}

@@ -10,12 +10,15 @@ import type { Candle, KeyLevel as AdapterKeyLevel } from '../adapters/types.js'
 import { getLLMProvider, getModelForConfig } from '../llm/index.js'
 import { buildAnalysisPrompt, buildSystemPrompt } from './prompt.js'
 import { validateProposal } from './validate.js'
-import { dbSaveAnalysis, dbSetLastAnalysisAt, dbGetSymbol, dbGetStrategy, dbCreateOutcome, dbSaveFeatures, dbSaveMarketState } from '../db/index.js'
+import { dbSaveAnalysis, dbSetLastAnalysisAt, dbGetSymbol, dbGetStrategy, dbCreateOutcome, dbSaveFeatures, dbSaveMarketState, dbSaveCandidates, dbGetAlertRules, dbFireAlert } from '../db/index.js'
 import { logEvent } from '../server/state.js'
 import { buildSessionContext } from '../adapters/session.js'
 import { detectPatterns } from '../adapters/patterns.js'
 import { computeFeatures } from '../features/index.js'
 import { classifyMarketState } from '../state/marketState.js'
+import { runDetectors } from '../detectors/index.js'
+import { scoreCandidates } from '../scoring/index.js'
+import { resolveStrategyDefinition } from '../strategies/resolver.js'
 import type { WatchSymbol, AnalysisResult, KeyLevel, TradeProposal, CandleBar, AnalysisContext } from '../types.js'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
@@ -195,6 +198,25 @@ export async function runAnalysis(symbolKey: string): Promise<AnalysisResult> {
     logEvent(symbolKey, 'info', 'features_computed',
       `State: ${marketState.regime} / ${marketState.direction} (${marketState.directionStrength}%) | Vol: ${marketState.volatility} | Session: ${marketState.sessionQuality}`)
 
+    // ── 3c. Detectors + scoring ───────────────────────────────────────────────
+    const strategyDef = resolveStrategyDefinition(sym.strategy)
+    const rawCandidates = runDetectors({
+      candles:    candleSlice,
+      indicators,
+      features,
+      marketState,
+      price:      data.price,
+      point:      data.symbolInfo.point,
+      digits:     data.symbolInfo.digits,
+      strategy:   strategyDef,
+    }, strategyDef?.allowedDetectors)
+    const candidates = scoreCandidates(rawCandidates, features, marketState, strategyDef)
+
+    const validCandidates = candidates.filter(c => c.found && c.tier === 'valid')
+    const topCandidate    = validCandidates[0]
+    logEvent(symbolKey, 'info', 'detectors_run',
+      `Detectors: ${validCandidates.length} valid | top: ${topCandidate ? `${topCandidate.detector} score=${topCandidate.score}` : 'none'}`)
+
     // ── 4. Build prompt & call LLM ────────────────────────────────────────────
     const provider  = getLLMProvider(sym)
     const model     = getModelForConfig(sym)
@@ -215,6 +237,7 @@ export async function runAnalysis(symbolKey: string): Promise<AnalysisResult> {
       digits:        data.symbolInfo.digits,
       features,
       marketState,
+      topCandidates: validCandidates.slice(0, 3),
     })
 
     const stratRow = sym.strategy ? dbGetStrategy(sym.strategy) : null
@@ -379,13 +402,54 @@ export async function runAnalysis(symbolKey: string): Promise<AnalysisResult> {
     const id = dbSaveAnalysis(result)
     dbSetLastAnalysisAt(symbolKey, now)
 
-    // ── Persist feature snapshot and market state ─────────────────────────────
+    // ── Persist features, market state, setup candidates ─────────────────────
     try {
       dbSaveFeatures({ ...features, analysisId: id }, id)
       dbSaveMarketState({ ...marketState, analysisId: id }, id)
+      dbSaveCandidates(candidates.map(c => ({ ...c, analysisId: id })), id)
     } catch (e) {
-      // Non-fatal — analysis is already saved; log and continue
-      log.warn({ err: String(e) }, 'failed to persist features/market state')
+      log.warn({ err: String(e) }, 'failed to persist features/state/candidates')
+    }
+
+    // ── Evaluate alert rules ──────────────────────────────────────────────────
+    try {
+      const rules = dbGetAlertRules(symbolKey).filter(r => r.enabled)
+      for (const rule of rules) {
+        let fired = false
+        let msg = ''
+        if (rule.conditionType === 'setup_score_gte') {
+          const threshold = parseInt(rule.conditionValue, 10)
+          const topValid = validCandidates[0]
+          if (topValid && topValid.score >= threshold) {
+            fired = true
+            msg = `Setup alert: ${topValid.setupType} scored ${topValid.score} (threshold ${threshold})`
+          }
+        } else if (rule.conditionType === 'regime_change') {
+          if (marketState.regime === rule.conditionValue) {
+            fired = true
+            msg = `Regime changed to ${marketState.regime}`
+          }
+        } else if (rule.conditionType === 'direction_change') {
+          if (marketState.direction === rule.conditionValue) {
+            fired = true
+            msg = `Direction: ${marketState.direction}`
+          }
+        } else if (rule.conditionType === 'context_risk_gte') {
+          const riskOrder = ['low', 'moderate', 'elevated', 'avoid']
+          const ruleIdx   = riskOrder.indexOf(rule.conditionValue)
+          const currIdx   = riskOrder.indexOf(marketState.contextRisk)
+          if (currIdx >= ruleIdx && ruleIdx >= 0) {
+            fired = true
+            msg = `Context risk: ${marketState.contextRisk}`
+          }
+        }
+        if (fired) {
+          dbFireAlert(rule.id!, symbolKey, msg, id)
+          logEvent(symbolKey, 'info', 'detectors_run', `Alert fired: ${rule.name} — ${msg}`)
+        }
+      }
+    } catch (e) {
+      log.warn({ err: String(e) }, 'alert evaluation failed')
     }
 
     // ── Create outcome tracking record if a trade was proposed ────────────────

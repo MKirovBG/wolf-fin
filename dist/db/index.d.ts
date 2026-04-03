@@ -1,5 +1,6 @@
 import type { WatchSymbol, AnalysisResult, LogEntry } from '../types.js';
 import type { FeatureSnapshot, MarketState } from '../types/market.js';
+export { dbSaveCandidates, dbGetCandidatesForAnalysis, dbGetLatestCandidates, dbSaveStrategyVersion, dbGetStrategyVersions, dbUpdateStrategyDefinition, dbCreateBacktestRun, dbCompleteBacktestRun, dbFailBacktestRun, dbGetBacktestRun, dbSaveBacktestTrades, dbCreateAlertRule, dbGetAlertRules, dbToggleAlertRule, dbDeleteAlertRule, dbFireAlert, dbGetAlertFirings, dbAcknowledgeAlert, dbGetLatestFeatureHistory, } from './phase25.js';
 export declare function initDb(): void;
 export declare function dbGetAllSymbols(): WatchSymbol[];
 export declare function dbGetSymbol(key: string): WatchSymbol | null;
@@ -34,6 +35,7 @@ export interface StrategyRow {
     name: string;
     description: string | null;
     instructions: string;
+    definition?: string | null;
     isBuiltin: boolean;
     createdAt: string;
 }

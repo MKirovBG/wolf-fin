@@ -146,7 +146,7 @@ export interface CandleBar {
     volume: number;
 }
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
-export type LogEvent = 'analysis_start' | 'analysis_end' | 'analysis_error' | 'analysis_skip' | 'schedule_start' | 'schedule_stop' | 'schedule_tick' | 'llm_request' | 'llm_response' | 'symbol_added' | 'symbol_removed' | 'features_computed';
+export type LogEvent = 'analysis_start' | 'analysis_end' | 'analysis_error' | 'analysis_skip' | 'schedule_start' | 'schedule_stop' | 'schedule_tick' | 'llm_request' | 'llm_response' | 'symbol_added' | 'symbol_removed' | 'features_computed' | 'detectors_run';
 export interface LogEntry {
     id: number;
     time: string;

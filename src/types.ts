@@ -157,7 +157,7 @@ export type LogEvent =
   | 'schedule_start' | 'schedule_stop' | 'schedule_tick'
   | 'llm_request' | 'llm_response'
   | 'symbol_added' | 'symbol_removed'
-  | 'features_computed'
+  | 'features_computed' | 'detectors_run'
 
 export interface LogEntry {
   id: number

@@ -3,6 +3,8 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+export { dbSaveCandidates, dbGetCandidatesForAnalysis, dbGetLatestCandidates, dbSaveStrategyVersion, dbGetStrategyVersions, dbUpdateStrategyDefinition, dbCreateBacktestRun, dbCompleteBacktestRun, dbFailBacktestRun, dbGetBacktestRun, dbSaveBacktestTrades, dbCreateAlertRule, dbGetAlertRules, dbToggleAlertRule, dbDeleteAlertRule, dbFireAlert, dbGetAlertFirings, dbAcknowledgeAlert, dbGetLatestFeatureHistory, } from './phase25.js';
+import { initPhase25 } from './phase25.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_PATH = join(__dirname, '../../data/wolf-fin.db');
 let db;
@@ -11,6 +13,7 @@ export function initDb() {
     db = new Database(DB_PATH);
     db.pragma('journal_mode = WAL');
     db.pragma('busy_timeout = 5000');
+    initPhase25(db);
     db.exec(`
     CREATE TABLE IF NOT EXISTS watch_symbols (
       key                  TEXT PRIMARY KEY,
@@ -160,6 +163,97 @@ export function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_states_analysis_id ON market_states(analysis_id);
     CREATE INDEX IF NOT EXISTS idx_states_symbol_key  ON market_states(symbol_key, captured_at DESC);
+  `);
+    // Phase 2: setup candidates
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS setup_candidates (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      analysis_id INTEGER NOT NULL,
+      symbol_key  TEXT NOT NULL,
+      captured_at TEXT NOT NULL,
+      detector    TEXT NOT NULL,
+      direction   TEXT,
+      found       INTEGER NOT NULL DEFAULT 0,
+      score       INTEGER NOT NULL DEFAULT 0,
+      tier        TEXT NOT NULL DEFAULT 'rejected',
+      data        TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_setups_analysis_id ON setup_candidates(analysis_id);
+    CREATE INDEX IF NOT EXISTS idx_setups_symbol_key  ON setup_candidates(symbol_key, captured_at DESC);
+  `);
+    // Phase 3: strategy definition column + versions table
+    const stratCols = db.prepare('PRAGMA table_info(strategies)').all();
+    if (!stratCols.some(c => c.name === 'definition')) {
+        db.exec(`ALTER TABLE strategies ADD COLUMN definition TEXT`);
+    }
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS strategy_versions (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      strategy_key TEXT NOT NULL,
+      version      TEXT NOT NULL,
+      definition   TEXT NOT NULL,
+      created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+      notes        TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_strat_versions_key ON strategy_versions(strategy_key, created_at DESC);
+  `);
+    // Phase 4: backtest tables
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS backtest_runs (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol_key   TEXT NOT NULL,
+      config       TEXT NOT NULL,
+      status       TEXT NOT NULL DEFAULT 'running',
+      started_at   TEXT NOT NULL,
+      completed_at TEXT,
+      error        TEXT,
+      metrics      TEXT
+    );
+    CREATE TABLE IF NOT EXISTS backtest_trades (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id      INTEGER NOT NULL,
+      symbol_key  TEXT NOT NULL,
+      detector    TEXT NOT NULL,
+      direction   TEXT NOT NULL,
+      entry_bar   INTEGER NOT NULL,
+      entry_time  TEXT NOT NULL,
+      entry_price REAL NOT NULL,
+      stop_loss   REAL NOT NULL,
+      targets     TEXT NOT NULL,
+      score       INTEGER NOT NULL,
+      setup_type  TEXT NOT NULL,
+      tags        TEXT NOT NULL,
+      outcome     TEXT NOT NULL DEFAULT 'not_filled',
+      exit_price  REAL,
+      exit_time   TEXT,
+      bars_held   INTEGER,
+      r_multiple  REAL,
+      mae         REAL,
+      mfe         REAL
+    );
+    CREATE INDEX IF NOT EXISTS idx_bt_trades_run_id ON backtest_trades(run_id);
+  `);
+    // Phase 5: alerts
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS alert_rules (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol_key      TEXT NOT NULL,
+      name            TEXT NOT NULL,
+      condition_type  TEXT NOT NULL,
+      condition_value TEXT NOT NULL,
+      enabled         INTEGER NOT NULL DEFAULT 1,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS alert_firings (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      rule_id         INTEGER NOT NULL,
+      symbol_key      TEXT NOT NULL,
+      analysis_id     INTEGER,
+      fired_at        TEXT NOT NULL,
+      message         TEXT NOT NULL,
+      acknowledged    INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_alert_firings_rule ON alert_firings(rule_id, fired_at DESC);
   `);
     // Strategies table
     db.exec(`
@@ -455,6 +549,7 @@ function rowToStrategy(r) {
         name: r.name,
         description: r.description ?? null,
         instructions: r.instructions,
+        definition: r.definition ?? null,
         isBuiltin: Boolean(r.is_builtin),
         createdAt: r.created_at,
     };

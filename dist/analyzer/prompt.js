@@ -222,6 +222,24 @@ function featureSummaryBlock(f) {
     }
     return lines.join('\n');
 }
+function setupCandidatesBlock(candidates, digits) {
+    if (candidates.length === 0)
+        return '';
+    const lines = ['## Detected Setup Candidates (scored, valid only)'];
+    for (const c of candidates) {
+        lines.push(`\n### ${c.setupType} — ${c.direction ?? 'n/a'} | Score: ${c.score}/100 (${c.tier})`);
+        if (c.entryZone)
+            lines.push(`  Entry zone: ${c.entryZone.low.toFixed(digits)} – ${c.entryZone.high.toFixed(digits)}`);
+        if (c.stopLoss)
+            lines.push(`  Stop:       ${c.stopLoss.toFixed(digits)}`);
+        if (c.targets.length)
+            lines.push(`  Targets:    ${c.targets.map(t => t.toFixed(digits)).join(', ')}  R:R ${c.riskReward.toFixed(2)}`);
+        if (c.invalidationRule)
+            lines.push(`  Invalidated if: ${c.invalidationRule}`);
+        lines.push(`  Reasons: ${c.reasons.slice(0, 3).join(' | ')}`);
+    }
+    return lines.join('\n');
+}
 export function buildAnalysisPrompt(params) {
     const { symbol, timeframe, price, candles, allCandles, indicators, context, patterns = [] } = params;
     const tfLabel = TIMEFRAME_LABELS[timeframe] ?? timeframe.toUpperCase();
@@ -235,6 +253,7 @@ export function buildAnalysisPrompt(params) {
     // Phase 1: structured sections replace the raw 50-candle dump
     const stateSection = params.marketState ? marketStateBlock(params.marketState) : null;
     const featureSection = params.features ? featureSummaryBlock(params.features) : null;
+    const setupsSection = params.topCandidates?.length ? setupCandidatesBlock(params.topCandidates, digits) : null;
     // Limit raw candles to most recent 15 when structured context is available
     const candleLimit = stateSection ? 15 : 50;
     const mtfOverview = allCandles ? multiTfOverview(allCandles, timeframe, digits) : null;
@@ -251,6 +270,7 @@ Last bar:     O:${last?.open.toFixed(digits)} H:${last?.high.toFixed(digits)} L:
 
 ${stateSection ?? ''}
 ${featureSection ?? ''}
+${setupsSection ?? ''}
 ${stateSection ? '' : (mtfOverview ? '\n## Timeframe Overview\n' + mtfOverview + '\n' : '')}
 ## Technical Indicators
 ${indicatorBlock(indicators, params.indicatorCfg)}
@@ -261,7 +281,7 @@ ${patternsText ? '\n## Candlestick Patterns\n' + patternsText : ''}
 ${ctxText ? '\n## Market Context\n' + ctxText : ''}
 
 ## Instructions
-Based on the structured market state and price data above, provide a professional technical analysis. The deterministic features (regime, structure, swing levels) are pre-computed — use them as ground truth. Identify additional key price levels from recent chart structure, determine the overall market bias consistent with the state, and if a high-probability setup exists, propose a specific trade.
+Based on the structured market state and price data above, provide a professional technical analysis. The deterministic features (regime, structure, swing levels) and scored setup candidates are pre-computed — treat them as ground truth. If valid setup candidates are shown above, your trade proposal should align with the highest-scoring one. Identify additional key price levels from recent chart structure, confirm or refine the market bias, and provide narrative explanation of the setup quality.
 
 Return ONLY a JSON code block in this exact format — no text before or after the block:
 

@@ -5,12 +5,12 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, appendFileSync, readFileSync, writeFileSync } from 'fs';
 import pino from 'pino';
-import { dbGetAllSymbols, dbGetSymbol, dbUpsertSymbol, dbDeleteSymbol, dbGetAnalyses, dbGetLatestAnalysis, dbGetAllRecentAnalyses, dbGetAnalysisById, dbGetAllMt5Accounts, dbUpsertMt5Accounts, dbMarkMt5AccountsGone, dbGetSetting, dbSetSetting, dbGetAllStrategies, dbGetStrategy, dbUpsertStrategy, dbDeleteStrategy, dbGetOutcomes, dbGetOutcomeStats, dbGetPendingOutcomes, makeSymbolKey, } from '../db/index.js';
+import { dbGetAllSymbols, dbGetSymbol, dbUpsertSymbol, dbDeleteSymbol, dbGetAnalyses, dbGetLatestAnalysis, dbGetAllRecentAnalyses, dbGetAnalysisById, dbGetAllMt5Accounts, dbUpsertMt5Accounts, dbMarkMt5AccountsGone, dbGetSetting, dbSetSetting, dbGetAllStrategies, dbGetStrategy, dbUpsertStrategy, dbDeleteStrategy, dbGetOutcomes, dbGetOutcomeStats, dbGetPendingOutcomes, dbGetLatestFeatures, dbGetLatestMarketState, dbGetLatestCandidates, dbGetStrategyVersions, dbCreateBacktestRun, dbCompleteBacktestRun, dbFailBacktestRun, dbGetBacktestRun, dbSaveBacktestTrades, dbCreateAlertRule, dbGetAlertRules, dbToggleAlertRule, dbDeleteAlertRule, dbGetAlertFirings, dbAcknowledgeAlert, dbGetLatestFeatureHistory, dbGetFeaturesForAnalysis, makeSymbolKey, } from '../db/index.js';
 import { getLogs, subscribeToLogs, subscribeToAnalyses, broadcastAnalysisUpdate } from './state.js';
 import { runAnalysis, isAnalysisRunning } from '../analyzer/index.js';
 import { syncSchedule, stopSchedule, getScheduledKeys } from '../scheduler/index.js';
 import { setBridgeActiveLogin } from '../adapters/mt5.js';
-import { getPlatformLLMModel, getOpenAITokenStatus } from '../llm/index.js';
+import { getPlatformLLMModel, getPlatformLLMProvider, getOpenAITokenStatus } from '../llm/index.js';
 import { fetchCalendarForDisplay } from '../adapters/calendar.js';
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 const PORT = parseInt(process.env.PORT ?? '3000', 10);
@@ -826,6 +826,198 @@ export async function startServer() {
             }
         }
         return { ok: true };
+    });
+    // ── Phase 2: Feature & market-state snapshots ────────────────────────────────
+    app.get('/api/symbols/:key/features/latest', async (req, reply) => {
+        const { key } = req.params;
+        if (!dbGetSymbol(key))
+            return reply.status(404).send({ error: 'Symbol not found' });
+        const features = dbGetLatestFeatures(key);
+        if (!features)
+            return reply.status(404).send({ error: 'No feature snapshot yet' });
+        return features;
+    });
+    app.get('/api/symbols/:key/state/latest', async (req, reply) => {
+        const { key } = req.params;
+        if (!dbGetSymbol(key))
+            return reply.status(404).send({ error: 'Symbol not found' });
+        const state = dbGetLatestMarketState(key);
+        if (!state)
+            return reply.status(404).send({ error: 'No market state yet' });
+        return state;
+    });
+    app.get('/api/symbols/:key/setups/latest', async (req, reply) => {
+        const { key } = req.params;
+        if (!dbGetSymbol(key))
+            return reply.status(404).send({ error: 'Symbol not found' });
+        return dbGetLatestCandidates(key);
+    });
+    // ── Phase 3: Strategy versioning ─────────────────────────────────────────────
+    app.get('/api/strategies/:key/versions', async (req, reply) => {
+        const { key } = req.params;
+        return reply.send(dbGetStrategyVersions(key));
+    });
+    // ── Phase 4: Backtesting ──────────────────────────────────────────────────────
+    app.post('/api/backtests', async (req, reply) => {
+        const body = req.body;
+        if (!body.symbolKey)
+            return reply.status(400).send({ error: 'symbolKey is required' });
+        const sym = dbGetSymbol(body.symbolKey);
+        if (!sym)
+            return reply.status(404).send({ error: 'Symbol not found' });
+        const config = {
+            timeframe: body.timeframe ?? sym.candleConfig?.primaryTimeframe ?? 'h1',
+            count: body.count ?? 300,
+            strategyKey: body.strategyKey ?? sym.strategy ?? '',
+        };
+        const runId = dbCreateBacktestRun(body.symbolKey, config);
+        (async () => {
+            try {
+                const { runBacktest } = await import('../backtest/engine.js');
+                const { resolveStrategyDefinition } = await import('../strategies/resolver.js');
+                const TF_MAP = {
+                    m1: 'M1', m5: 'M5', m15: 'M15', m30: 'M30', h1: 'H1', h4: 'H4',
+                };
+                const bridgeTf = TF_MAP[config.timeframe] ?? 'H1';
+                const base = `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`;
+                const hdrs = process.env.MT5_BRIDGE_KEY ? { 'X-Bridge-Key': process.env.MT5_BRIDGE_KEY } : {};
+                const r = await fetch(`${base}/candles/${encodeURIComponent(sym.symbol)}?timeframe=${bridgeTf}&count=${config.count}`, { headers: hdrs });
+                if (!r.ok)
+                    throw new Error(`Bridge returned ${r.status}`);
+                const raw = await r.json();
+                const candles = (raw.candles ?? []).map(c => ({
+                    openTime: c.openTime,
+                    open: c.open,
+                    high: c.high,
+                    low: c.low,
+                    close: c.close,
+                    volume: c.volume,
+                    closeTime: c.openTime + 3599000, // approximate 1h close
+                }));
+                const strategy = config.strategyKey ? (resolveStrategyDefinition(config.strategyKey) ?? undefined) : undefined;
+                const fullConfig = {
+                    ...config,
+                    symbolKey: body.symbolKey,
+                    symbol: sym.symbol,
+                    fromDate: candles.length > 0 ? new Date(candles[0].openTime).toISOString() : new Date().toISOString(),
+                    toDate: candles.length > 0 ? new Date(candles[candles.length - 1].openTime).toISOString() : new Date().toISOString(),
+                };
+                const result = runBacktest({ config: fullConfig, candles, strategy, runId });
+                dbSaveBacktestTrades(result.trades);
+                dbCompleteBacktestRun(runId, result.metrics);
+            }
+            catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                dbFailBacktestRun(runId, msg);
+            }
+        })();
+        return reply.status(202).send({ ok: true, runId });
+    });
+    app.get('/api/backtests/:id', async (req, reply) => {
+        const { id } = req.params;
+        const run = dbGetBacktestRun(parseInt(id));
+        if (!run)
+            return reply.status(404).send({ error: 'Backtest run not found' });
+        return run;
+    });
+    // ── Phase 5: Research endpoints ───────────────────────────────────────────────
+    app.get('/api/research/leaderboard', async (req) => {
+        const { symbolKey } = req.query;
+        const { leaderboardByDetector, leaderboardBySession, leaderboardByRegime } = await import('../research/aggregates.js');
+        const symbols = symbolKey ? [dbGetSymbol(symbolKey)].filter(Boolean) : dbGetAllSymbols();
+        const allCandidates = symbols.flatMap(s => s ? dbGetLatestCandidates(s.key) : []);
+        return {
+            byDetector: leaderboardByDetector(allCandidates),
+            bySession: leaderboardBySession(allCandidates),
+            byRegime: leaderboardByRegime(allCandidates),
+        };
+    });
+    app.get('/api/research/similar/:analysisId', async (req, reply) => {
+        const { analysisId } = req.params;
+        const id = parseInt(analysisId);
+        const current = dbGetFeaturesForAnalysis(id);
+        if (!current)
+            return reply.status(404).send({ error: 'No features for this analysis' });
+        const analysis = dbGetAnalysisById(id);
+        if (!analysis)
+            return reply.status(404).send({ error: 'Analysis not found' });
+        const { findSimilarAnalyses } = await import('../research/similarity.js');
+        const historyEntries = dbGetLatestFeatureHistory(analysis.symbolKey, 200);
+        const history = historyEntries
+            .map(h => {
+            const f = dbGetFeaturesForAnalysis(h.analysisId);
+            if (!f)
+                return null;
+            return { analysisId: h.analysisId, symbolKey: analysis.symbolKey, capturedAt: h.capturedAt, features: f };
+        })
+            .filter((h) => h !== null);
+        return findSimilarAnalyses(current, history);
+    });
+    // ── Phase 5: Alert rules ──────────────────────────────────────────────────────
+    app.post('/api/alerts', async (req, reply) => {
+        const body = req.body;
+        if (!body.symbolKey || !body.name || !body.conditionType || body.conditionValue == null) {
+            return reply.status(400).send({ error: 'symbolKey, name, conditionType and conditionValue are required' });
+        }
+        const validTypes = ['setup_score_gte', 'regime_change', 'direction_change', 'context_risk_gte'];
+        if (!validTypes.includes(body.conditionType)) {
+            return reply.status(400).send({ error: `conditionType must be one of: ${validTypes.join(', ')}` });
+        }
+        const id = dbCreateAlertRule({
+            symbolKey: body.symbolKey,
+            name: body.name,
+            conditionType: body.conditionType,
+            conditionValue: body.conditionValue,
+            enabled: body.enabled ?? true,
+        });
+        return reply.status(201).send({ ok: true, id });
+    });
+    app.get('/api/alerts', async (req) => {
+        const { symbolKey } = req.query;
+        return dbGetAlertRules(symbolKey);
+    });
+    app.patch('/api/alerts/:id', async (req, reply) => {
+        const { id } = req.params;
+        const { enabled } = req.body;
+        if (enabled == null)
+            return reply.status(400).send({ error: 'enabled field required' });
+        dbToggleAlertRule(parseInt(id), enabled);
+        return { ok: true };
+    });
+    app.delete('/api/alerts/:id', async (req, reply) => {
+        const { id } = req.params;
+        dbDeleteAlertRule(parseInt(id));
+        return reply.send({ ok: true });
+    });
+    app.get('/api/alerts/firings', async (req) => {
+        const { symbolKey, limit } = req.query;
+        return dbGetAlertFirings(symbolKey, limit ? parseInt(limit) : 50);
+    });
+    app.post('/api/alerts/firings/:id/acknowledge', async (req, reply) => {
+        const { id } = req.params;
+        dbAcknowledgeAlert(parseInt(id));
+        return reply.send({ ok: true });
+    });
+    // ── Phase 6: Deep health check ────────────────────────────────────────────────
+    app.get('/api/system/health/deep', async (_req, reply) => {
+        const checks = {};
+        // MT5 bridge
+        checks.mt5 = await testConnection('mt5');
+        // LLM provider
+        const llmProvider = String(getPlatformLLMProvider());
+        checks.llm = await testConnection(llmProvider);
+        // Finnhub
+        checks.finnhub = await testConnection('finnhub');
+        // DB — simple read
+        try {
+            const count = dbGetAllSymbols().length;
+            checks.db = { ok: true, message: `${count} symbol(s) in watchlist` };
+        }
+        catch (e) {
+            checks.db = { ok: false, message: String(e) };
+        }
+        const allOk = Object.values(checks).every(c => c.ok);
+        return reply.status(allOk ? 200 : 207).send({ ok: allOk, checks });
     });
     // ── Serve React frontend ──────────────────────────────────────────────────────
     const frontendDist = join(__dirname, '../../frontend-dist');

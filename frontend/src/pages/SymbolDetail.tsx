@@ -3,8 +3,10 @@ import { useParams, Link } from 'react-router-dom'
 import {
   getSymbol, getAnalyses, triggerAnalysis, getLiveCandles,
   getLatestMarketState, getLatestSetups, getAlerts, getAlertFirings,
+  getSymbolStrategies, addSymbolStrategy, removeSymbolStrategy,
+  getStrategies, submitFeedback,
 } from '../api/client.ts'
-import type { WatchSymbol, AnalysisResult, CandleBar, MarketState, SetupCandidate, AlertRule, AlertFiring } from '../types/index.ts'
+import type { WatchSymbol, AnalysisResult, CandleBar, MarketState, SetupCandidate, AlertRule, AlertFiring, SymbolStrategy, Strategy } from '../types/index.ts'
 import { CandlestickChart } from '../components/CandlestickChart.tsx'
 import { MarketStatePanel } from '../components/MarketStatePanel.tsx'
 import { SetupCandidatesPanel } from '../components/SetupCandidatesPanel.tsx'
@@ -95,9 +97,14 @@ function AnalysisReport({
   strategy?: string
   onRetry?: () => void
 }) {
-  const { bias, summary, keyLevels, tradeProposal, indicators, context, patterns, validation, error } = analysis
+  const { bias, summary, keyLevels, tradeProposal, indicators, context, patterns, validation, reasoningChain, error } = analysis
   const [showIndicators, setShowIndicators] = useState(true)
   const [showContext, setShowContext]       = useState(true)
+  const [showReasoning, setShowReasoning]   = useState(false)
+  const [showSystemPrompt, setShowSystemPrompt] = useState(false)
+  const [feedbackRating, setFeedbackRating] = useState<number | null>(null)
+  const [feedbackSent, setFeedbackSent]     = useState(false)
+  const toast = useToast()
 
   if (error) {
     return (
@@ -373,18 +380,114 @@ function AnalysisReport({
                   </div>
                 </div>
               )}
+              {context.session && (
+                <div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-muted2 mb-2 border-b border-border/50 pb-1">Trading Session</div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                      context.session.activeSessions.length > 0 ? 'bg-green animate-pulse' : 'bg-muted2'
+                    }`} />
+                    <span className="text-text/80">{context.session.note}</span>
+                    {context.session.isLondonNYOverlap && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-green/10 text-green border border-green/30 font-medium">
+                        London/NY Overlap
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+              {!context.news?.length && !context.calendar?.length && !context.session && (
+                <p className="text-xs text-muted2">No market context data available for this analysis.</p>
+              )}
             </div>
           )}
         </div>
       ) : null}
 
-      {/* ── Footer — LLM info ── */}
+      {/* ── Reasoning chain ── */}
+      {reasoningChain && reasoningChain.length > 0 && (
+        <div className="border border-border rounded-lg overflow-hidden">
+          <button
+            onClick={() => setShowReasoning(r => !r)}
+            className="w-full flex items-center justify-between px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-muted hover:bg-surface2 transition-colors"
+          >
+            <span>Reasoning Chain ({reasoningChain.length} steps)</span>
+            <span className="text-muted2">{showReasoning ? '▼' : '▶'}</span>
+          </button>
+          {showReasoning && (
+            <div className="px-4 pb-4 space-y-2">
+              {reasoningChain.map((step, i) => (
+                <div key={i} className="flex gap-3 items-start">
+                  <div className="flex-shrink-0 w-5 h-5 rounded-full bg-brand/10 border border-brand/30 flex items-center justify-center mt-0.5">
+                    <span className="text-[9px] font-bold text-brand">{i + 1}</span>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-semibold text-text">{step.step}</div>
+                    <div className="text-[11px] text-muted leading-relaxed mt-0.5">{step.detail}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── System prompt (collapsible) ── */}
+      {analysis.systemPrompt && (
+        <div className="border border-border rounded-lg overflow-hidden">
+          <button
+            onClick={() => setShowSystemPrompt(s => !s)}
+            className="w-full flex items-center justify-between px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-muted hover:bg-surface2 transition-colors"
+          >
+            <span>System Prompt</span>
+            <span className="text-muted2">{showSystemPrompt ? '▼' : '▶'}</span>
+          </button>
+          {showSystemPrompt && (
+            <div className="px-4 pb-4">
+              <pre className="text-[11px] text-text/80 leading-relaxed whitespace-pre-wrap font-mono bg-bg rounded-lg p-4 border border-border max-h-[400px] overflow-y-auto">
+                {analysis.systemPrompt}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Footer — LLM info + Feedback ── */}
       <div className="flex items-center justify-between text-[10px] text-muted2 px-1">
         <div className="flex items-center gap-2">
           <span className="bg-surface border border-border rounded px-1.5 py-0.5">{analysis.llmProvider}</span>
           <span className="font-mono">{analysis.llmModel}</span>
         </div>
-        <span>{new Date(analysis.time).toLocaleString()}</span>
+        <div className="flex items-center gap-3">
+          {/* Feedback */}
+          {!feedbackSent ? (
+            <div className="flex items-center gap-1">
+              <span className="text-muted2 mr-1">Rate:</span>
+              {[1, 2, 3, 4, 5].map(n => (
+                <button
+                  key={n}
+                  onClick={async () => {
+                    setFeedbackRating(n)
+                    setFeedbackSent(true)
+                    try {
+                      await submitFeedback(analysis.id, n, null)
+                    } catch { /* silent */ }
+                  }}
+                  className={`w-5 h-5 rounded text-[10px] font-medium transition-colors ${
+                    feedbackRating === n
+                      ? 'bg-brand/20 text-brand border border-brand/40'
+                      : 'bg-surface2 text-muted border border-border hover:text-text hover:border-brand/30'
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <span className="text-brand text-[10px]">Thanks for feedback</span>
+          )}
+          <span>{new Date(analysis.time).toLocaleString()}</span>
+        </div>
       </div>
     </div>
   )
@@ -411,6 +514,11 @@ function HistoryItem({ analysis, active, onClick }: {
         </span>
         <span className="text-[10px] text-muted2">{rel(analysis.time)}</span>
       </div>
+      {analysis.strategyKey && (
+        <div className="text-[10px] text-purple mt-0.5">
+          {STRATEGY_LABELS[analysis.strategyKey] ?? analysis.strategyKey}
+        </div>
+      )}
       {analysis.tradeProposal && (
         <div className={`text-[10px] mt-0.5 font-medium ${analysis.tradeProposal.direction === 'BUY' ? 'text-green' : 'text-red'}`}>
           {analysis.tradeProposal.direction} · {analysis.tradeProposal.riskReward.toFixed(1)}R · {analysis.tradeProposal.confidence}
@@ -447,6 +555,12 @@ export function SymbolDetail() {
   const liveTimer                       = useRef<ReturnType<typeof setInterval> | null>(null)
   const toast                           = useToast()
 
+  // Multi-strategy state
+  const [assignedStrategies, setAssignedStrategies] = useState<SymbolStrategy[]>([])
+  const [allStrategies, setAllStrategies]           = useState<Strategy[]>([])
+  const [showStratPicker, setShowStratPicker]       = useState(false)
+  const [stratFilter, setStratFilter]               = useState<string | null>(null) // filter analyses by strategy
+
   // Phase 2–5 state
   const [activeTab, setActiveTab]       = useState<Tab>('analysis')
   const [marketState, setMarketState]   = useState<MarketState | null>(null)
@@ -471,12 +585,16 @@ export function SymbolDetail() {
   const load = useCallback(async () => {
     if (!decodedKey) return
     try {
-      const [symData, hist] = await Promise.all([
+      const [symData, hist, symStrats, allStrats] = await Promise.all([
         getSymbol(decodedKey),
         getAnalyses(decodedKey, 50),
+        getSymbolStrategies(decodedKey).catch(() => [] as SymbolStrategy[]),
+        getStrategies().catch(() => [] as Strategy[]),
       ])
       setSym(symData)
       setHistory(hist)
+      setAssignedStrategies(symStrats)
+      setAllStrategies(allStrats)
       if (hist.length > 0 && !selected) setSelected(hist[0])
       setChartTf(prev => prev === 'h1' ? (symData.candleConfig?.primaryTimeframe ?? 'h1') : prev)
     } catch (e) {
@@ -529,6 +647,29 @@ export function SymbolDetail() {
     }
     return () => es.close()
   }, [decodedKey, load])
+
+  const handleAddStrategy = async (stratKey: string) => {
+    if (!decodedKey) return
+    try {
+      await addSymbolStrategy(decodedKey, stratKey)
+      setAssignedStrategies(await getSymbolStrategies(decodedKey))
+      setShowStratPicker(false)
+      toast.success(`Strategy added`)
+    } catch (e) {
+      toast.error(String(e))
+    }
+  }
+
+  const handleRemoveStrategy = async (stratKey: string) => {
+    if (!decodedKey) return
+    try {
+      await removeSymbolStrategy(decodedKey, stratKey)
+      setAssignedStrategies(await getSymbolStrategies(decodedKey))
+      if (stratFilter === stratKey) setStratFilter(null)
+    } catch (e) {
+      toast.error(String(e))
+    }
+  }
 
   const handleAnalyze = async () => {
     if (!decodedKey) return
@@ -624,6 +765,75 @@ export function SymbolDetail() {
           </button>
         </div>
       </div>
+
+      {/* ── Strategy bar ── */}
+      {(assignedStrategies.length > 0 || sym.strategy) && (
+        <div className="flex items-center gap-2 px-5 py-2 border-b border-border bg-surface flex-shrink-0 flex-wrap">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted2 flex-shrink-0">Strategies</span>
+
+          {/* Strategy filter chips */}
+          <button
+            onClick={() => setStratFilter(null)}
+            className={`text-[10px] px-2 py-0.5 rounded border font-medium transition-colors ${
+              stratFilter === null
+                ? 'bg-brand/10 text-brand border-brand/30'
+                : 'bg-surface2 text-muted border-border hover:text-text'
+            }`}
+          >
+            All
+          </button>
+          {assignedStrategies.map(s => (
+            <div key={s.strategyKey} className="flex items-center gap-0.5">
+              <button
+                onClick={() => setStratFilter(s.strategyKey)}
+                className={`text-[10px] px-2 py-0.5 rounded-l border font-medium transition-colors ${
+                  stratFilter === s.strategyKey
+                    ? 'bg-purple/10 text-purple border-purple/30'
+                    : 'bg-surface2 text-muted border-border hover:text-text'
+                }`}
+              >
+                {STRATEGY_LABELS[s.strategyKey] ?? s.strategyKey}
+              </button>
+              <button
+                onClick={() => handleRemoveStrategy(s.strategyKey)}
+                className="text-[10px] px-1 py-0.5 rounded-r border border-l-0 border-border text-muted2 hover:text-red hover:bg-red/10 transition-colors"
+                title="Remove strategy"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+
+          {/* Add strategy button */}
+          <div className="relative">
+            <button
+              onClick={() => setShowStratPicker(p => !p)}
+              className="text-[10px] px-2 py-0.5 rounded border border-dashed border-border text-muted hover:text-text hover:border-brand/40 transition-colors"
+            >
+              + Add
+            </button>
+            {showStratPicker && (
+              <div className="absolute top-full left-0 mt-1 w-48 bg-surface2 border border-border rounded-lg shadow-dropdown z-50 overflow-hidden">
+                {allStrategies
+                  .filter(s => !assignedStrategies.some(a => a.strategyKey === s.key))
+                  .map(s => (
+                    <button
+                      key={s.key}
+                      onClick={() => handleAddStrategy(s.key)}
+                      className="w-full text-left px-3 py-2 text-xs text-text hover:bg-surface3 transition-colors border-b border-border/40 last:border-0"
+                    >
+                      <div className="font-medium">{s.name}</div>
+                      {s.description && <div className="text-[10px] text-muted2 mt-0.5 truncate">{s.description}</div>}
+                    </button>
+                  ))}
+                {allStrategies.filter(s => !assignedStrategies.some(a => a.strategyKey === s.key)).length === 0 && (
+                  <div className="px-3 py-2 text-xs text-muted2 text-center">All strategies assigned</div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Body ── */}
       <div className="flex flex-1 overflow-hidden">
@@ -728,9 +938,56 @@ export function SymbolDetail() {
 
           {/* ── Tab content ── */}
 
-          {activeTab === 'analysis' && (
-            selected ? (
-              <AnalysisReport analysis={selected} strategy={sym.strategy} onRetry={handleAnalyze} />
+          {activeTab === 'analysis' && (() => {
+            // When multi-strategy is active and a filter is set, show all analyses for that strategy
+            if (stratFilter && assignedStrategies.length > 0) {
+              const filtered = history.filter(a => a.strategyKey === stratFilter)
+              if (filtered.length === 0) {
+                return (
+                  <Card>
+                    <div className="text-center py-8 text-muted text-sm">
+                      No analyses yet for {STRATEGY_LABELS[stratFilter] ?? stratFilter} — click "▶ Run Analysis"
+                    </div>
+                  </Card>
+                )
+              }
+              return (
+                <div className="space-y-4">
+                  <div className="text-xs text-muted2 font-medium uppercase tracking-wider">
+                    {STRATEGY_LABELS[stratFilter] ?? stratFilter} — {filtered.length} analysis(es)
+                  </div>
+                  <AnalysisReport analysis={filtered[0]} strategy={stratFilter} onRetry={handleAnalyze} />
+                </div>
+              )
+            }
+
+            // When multi-strategy, no filter → show latest per strategy
+            if (assignedStrategies.length > 0 && !stratFilter) {
+              const latestPerStrategy = assignedStrategies.map(s => {
+                const latest = history.find(a => a.strategyKey === s.strategyKey)
+                return { strategyKey: s.strategyKey, analysis: latest }
+              }).filter(x => x.analysis)
+
+              if (latestPerStrategy.length > 0) {
+                return (
+                  <div className="space-y-5">
+                    {latestPerStrategy.map(({ strategyKey, analysis }) => (
+                      <div key={strategyKey}>
+                        <div className="text-xs text-purple font-medium uppercase tracking-wider mb-2 flex items-center gap-2">
+                          <span className="w-1.5 h-1.5 rounded-full bg-purple" />
+                          {STRATEGY_LABELS[strategyKey] ?? strategyKey}
+                        </div>
+                        <AnalysisReport analysis={analysis!} strategy={strategyKey} onRetry={handleAnalyze} />
+                      </div>
+                    ))}
+                  </div>
+                )
+              }
+            }
+
+            // Default: single strategy or no strategies assigned
+            return selected ? (
+              <AnalysisReport analysis={selected} strategy={selected.strategyKey ?? sym.strategy} onRetry={handleAnalyze} />
             ) : (
               <Card>
                 <div className="text-center py-8 text-muted text-sm">
@@ -738,7 +995,7 @@ export function SymbolDetail() {
                 </div>
               </Card>
             )
-          )}
+          })()}
 
           {activeTab === 'setups' && (
             <SetupCandidatesPanel candidates={setups} />
@@ -773,7 +1030,9 @@ export function SymbolDetail() {
               </div>
             </div>
             <div className="overflow-y-auto flex-1">
-              {history.map(a => (
+              {history
+                .filter(a => !stratFilter || a.strategyKey === stratFilter)
+                .map(a => (
                 <HistoryItem
                   key={a.id}
                   analysis={a}

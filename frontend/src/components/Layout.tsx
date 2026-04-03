@@ -1,24 +1,45 @@
 import { useState, useRef, useEffect } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import {
+  LayoutDashboard,
+  LineChart,
+  History,
+  Crosshair,
+  Settings,
+  Wallet,
+  Bell,
+  ChevronDown,
+  Search,
+  UserCircle,
+  Menu,
+  X,
+  Brain,
+  ShieldCheck,
+} from 'lucide-react'
 import { ToastProvider } from './Toast.tsx'
 import { useAccount, buildAccountLabel, entryToSelectedAccount } from '../contexts/AccountContext.tsx'
 import type { AccountEntry } from '../types/index.ts'
 
 const NAV_MAIN = [
-  { to: '/',           label: 'Dashboard'   },
-  { to: '/symbols',    label: 'Watchlist'   },
-  { to: '/history',    label: 'History'     },
-  { to: '/strategies', label: 'Strategies'  },
+  { to: '/',           label: 'Dashboard',  icon: LayoutDashboard },
+  { to: '/symbols',    label: 'Watchlist',  icon: LineChart       },
+  { to: '/history',    label: 'History',    icon: History         },
+  { to: '/strategies', label: 'Strategies', icon: Crosshair       },
+]
+
+const NAV_AGENT = [
+  { to: '/agent/memory', label: 'Memory', icon: Brain       },
+  { to: '/agent/rules',  label: 'Rules',  icon: ShieldCheck  },
 ]
 
 const NAV_TOOLS = [
-  { to: '/config',     label: 'Settings'    },
-  { to: '/account',    label: 'Accounts'    },
+  { to: '/config',  label: 'Settings', icon: Settings },
+  { to: '/account', label: 'Accounts', icon: Wallet   },
 ]
 
-// ── Account selector ──────────────────────────────────────────────────────────
+// ── Account selector (top bar) ────────────────────────────────────────────────
 
-function AccountSelector() {
+function TopAccountSelector() {
   const { selectedAccount, accounts, setSelectedAccount } = useAccount()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -45,30 +66,26 @@ function AccountSelector() {
   }
 
   return (
-    <div ref={ref} className="relative px-3 pb-3">
-      <div className="text-[9px] font-semibold uppercase tracking-widest text-muted2 mb-1.5 px-1">
-        Active Account
-      </div>
+    <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(o => !o)}
-        title={currentLabel ?? 'No account selected'}
-        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-xs transition-all ${
+        className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all ${
           selectedAccount
-            ? 'border-border bg-surface2 text-text hover:border-teal/40'
+            ? 'border-border bg-surface2 text-text hover:border-brand/40'
             : 'border-yellow/40 bg-yellow/5 text-yellow hover:border-yellow/60 animate-pulse'
         }`}
       >
         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-          selectedAccount ? 'bg-teal shadow-[0_0_6px_rgba(0,229,204,0.6)]' : 'bg-yellow'
+          selectedAccount ? 'bg-brand shadow-[0_0_5px_rgba(0,196,173,0.6)]' : 'bg-yellow'
         }`} />
-        <span className="flex-1 text-left truncate font-mono text-[11px]">
+        <span className="font-mono truncate max-w-[140px]">
           {currentLabel ?? 'Select account…'}
         </span>
-        <span className="text-muted text-[10px]">{open ? '▲' : '▼'}</span>
+        <ChevronDown size={12} className="text-muted flex-shrink-0" />
       </button>
 
       {open && (
-        <div className="absolute bottom-full left-3 right-3 mb-1 bg-surface2 border border-border rounded-lg shadow-dropdown z-50 overflow-hidden">
+        <div className="absolute top-full right-0 mt-1.5 w-56 bg-surface2 border border-border rounded-xl shadow-dropdown z-50 overflow-hidden">
           {accounts.length === 0 && (
             <div className="px-3 py-4 text-xs text-muted text-center">
               No accounts found.<br />
@@ -87,16 +104,14 @@ function AccountSelector() {
                 key={entry.id}
                 onClick={() => select(entry)}
                 className={`w-full flex items-center gap-2 px-3 py-2.5 text-xs text-left hover:bg-surface3 transition-colors border-b border-border/60 last:border-0 ${
-                  isSelected ? 'text-teal' : 'text-text'
+                  isSelected ? 'text-brand' : 'text-text'
                 }`}
               >
                 <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                  entry.connected
-                    ? 'bg-teal shadow-[0_0_5px_rgba(0,229,204,0.5)]'
-                    : 'bg-muted2'
+                  entry.connected ? 'bg-brand shadow-[0_0_4px_rgba(0,196,173,0.5)]' : 'bg-muted2'
                 }`} />
                 <span className="flex-1 truncate font-mono">{label}</span>
-                {isSelected && <span className="text-teal text-[10px] flex-shrink-0">✓</span>}
+                {isSelected && <span className="text-brand text-[10px]">✓</span>}
               </button>
             )
           })}
@@ -114,22 +129,37 @@ function AccountSelector() {
   )
 }
 
-// ── Nav link ──────────────────────────────────────────────────────────────────
+// ── Sidebar nav link ───────────────────────────────────────────────────────────
 
-function SidebarLink({ to, label, end }: { to: string; label: string; end?: boolean }) {
+function SidebarLink({
+  to,
+  label,
+  icon: Icon,
+  end,
+}: {
+  to: string
+  label: string
+  icon: React.ElementType
+  end?: boolean
+}) {
   return (
     <NavLink
       to={to}
       end={end}
       className={({ isActive }) =>
-        `relative flex items-center gap-3 px-5 py-2.5 text-sm font-medium transition-all ${
+        `flex items-center gap-3 mx-2 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
           isActive
-            ? 'text-teal bg-teal/8 border-l-2 border-teal'
-            : 'text-muted border-l-2 border-transparent hover:text-text hover:bg-surface2'
+            ? 'bg-surface3 text-text'
+            : 'text-muted hover:text-text hover:bg-surface2'
         }`
       }
     >
-      {label}
+      {({ isActive }) => (
+        <>
+          <Icon size={16} className={isActive ? 'text-brand' : 'text-muted'} strokeWidth={1.75} />
+          {label}
+        </>
+      )}
     </NavLink>
   )
 }
@@ -143,22 +173,21 @@ export function Layout() {
   useEffect(() => { setMenuOpen(false) }, [location.pathname])
 
   const sidebar = (
-    <aside className="w-56 bg-surface flex flex-col flex-shrink-0 h-full" style={{
-      borderRight: '1px solid #1E3352',
-      boxShadow: '1px 0 0 rgba(0,229,204,0.04)',
-    }}>
-
+    <aside
+      className="w-[220px] bg-surface flex flex-col flex-shrink-0 h-full"
+      style={{ borderRight: '1px solid #252D45' }}
+    >
       {/* ── Logo ── */}
-      <div className="px-5 py-4 flex items-center justify-between" style={{
-        borderBottom: '1px solid #1E3352',
-      }}>
+      <div className="px-5 py-4 flex items-center justify-between" style={{ borderBottom: '1px solid #252D45' }}>
         <div className="flex items-center gap-2.5">
-          {/* Teal accent square */}
-          <div className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0" style={{
-            background: 'linear-gradient(135deg, #00E5CC 0%, #009B8A 100%)',
-            boxShadow: '0 0 12px rgba(0,229,204,0.35)',
-          }}>
-            <span className="text-[10px] font-black text-[#08111E]">WF</span>
+          <div
+            className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+            style={{
+              background: 'linear-gradient(135deg, #00C4AD 0%, #007A6E 100%)',
+              boxShadow: '0 0 12px rgba(0,196,173,0.40)',
+            }}
+          >
+            <span className="text-[10px] font-black text-[#0B0E18]">WF</span>
           </div>
           <span className="text-text font-bold text-sm tracking-[1.5px] uppercase">Wolf-Fin</span>
         </div>
@@ -166,31 +195,40 @@ export function Layout() {
           onClick={() => setMenuOpen(false)}
           className="md:hidden text-muted hover:text-text p-1"
           aria-label="Close menu"
-        >✕</button>
+        >
+          <X size={16} />
+        </button>
       </div>
 
       {/* ── Navigation ── */}
-      <nav className="flex-1 overflow-y-auto py-3">
-        <div className="px-5 pb-1.5">
-          <span className="text-[9px] font-semibold uppercase tracking-widest text-muted2">Main</span>
+      <nav className="flex-1 overflow-y-auto py-3 space-y-0.5">
+        <div className="px-5 pb-2 pt-1">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-muted2">Navigation</span>
         </div>
         {NAV_MAIN.map(l => (
-          <SidebarLink key={l.to} to={l.to} label={l.label} end={l.to === '/'} />
+          <SidebarLink key={l.to} to={l.to} label={l.label} icon={l.icon} end={l.to === '/'} />
         ))}
 
-        <div className="px-5 pt-4 pb-1.5">
-          <span className="text-[9px] font-semibold uppercase tracking-widest text-muted2">Tools</span>
+        <div className="px-5 pb-2 pt-4">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-muted2">Agent</span>
+        </div>
+        {NAV_AGENT.map(l => (
+          <SidebarLink key={l.to} to={l.to} label={l.label} icon={l.icon} />
+        ))}
+
+        <div className="px-5 pb-2 pt-4">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-muted2">Tools</span>
         </div>
         {NAV_TOOLS.map(l => (
-          <SidebarLink key={l.to} to={l.to} label={l.label} />
+          <SidebarLink key={l.to} to={l.to} label={l.label} icon={l.icon} />
         ))}
       </nav>
 
-      {/* ── Account footer ── */}
-      <div style={{ borderTop: '1px solid #1E3352' }} className="pt-3">
-        <AccountSelector />
-        <div className="px-5 pb-3">
-          <span className="text-[10px] text-muted2">v1.0.0</span>
+      {/* ── Footer ── */}
+      <div className="pb-4 pt-2 space-y-0.5" style={{ borderTop: '1px solid #252D45' }}>
+        <div className="mx-2 px-3 py-2 flex items-center gap-2 text-xs text-muted2">
+          <span className="w-1.5 h-1.5 rounded-full bg-muted2" />
+          <span className="font-mono">v1.0.0</span>
         </div>
       </div>
     </aside>
@@ -198,7 +236,7 @@ export function Layout() {
 
   return (
     <ToastProvider>
-      <div className="flex min-h-screen bg-bg">
+      <div className="flex h-screen bg-bg overflow-hidden">
 
         {/* Desktop sidebar */}
         <div className="hidden md:flex md:flex-shrink-0">
@@ -215,36 +253,57 @@ export function Layout() {
           </div>
         )}
 
-        {/* Main content */}
+        {/* Main area */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          {/* Mobile top bar */}
-          <div className="md:hidden flex items-center justify-between px-4 py-3 bg-surface flex-shrink-0" style={{ borderBottom: '1px solid #1E3352' }}>
-            <button
-              onClick={() => setMenuOpen(true)}
-              className="text-muted hover:text-text p-1"
-              aria-label="Open menu"
-            >
-              <div className="flex flex-col gap-1.5">
-                <span className="block w-5 h-px bg-current" />
-                <span className="block w-5 h-px bg-current" />
-                <span className="block w-5 h-px bg-current" />
+
+          {/* ── Top bar ── */}
+          <header
+            className="flex-shrink-0 flex items-center justify-between px-5 bg-surface h-14"
+            style={{ borderBottom: '1px solid #252D45' }}
+          >
+            {/* Left: mobile hamburger + search */}
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setMenuOpen(true)}
+                className="md:hidden text-muted hover:text-text p-1"
+                aria-label="Open menu"
+              >
+                <Menu size={18} />
+              </button>
+              <div className="hidden md:flex items-center gap-2 bg-surface2 border border-border rounded-lg px-3 py-1.5 w-52">
+                <Search size={13} className="text-muted flex-shrink-0" />
+                <span className="text-xs text-muted2">Search…</span>
               </div>
-            </button>
-            <div className="flex items-center gap-2">
-              <div className="w-5 h-5 rounded flex items-center justify-center" style={{
-                background: 'linear-gradient(135deg, #00E5CC 0%, #009B8A 100%)',
-              }}>
-                <span className="text-[8px] font-black text-[#08111E]">WF</span>
-              </div>
-              <span className="text-text font-bold text-sm tracking-[1.5px] uppercase">Wolf-Fin</span>
             </div>
-            <div className="w-7" />
-          </div>
+
+            {/* Right: notifications + account + user */}
+            <div className="flex items-center gap-2">
+              {/* Bell */}
+              <button className="relative p-2 rounded-lg hover:bg-surface2 text-muted hover:text-text transition-colors">
+                <Bell size={16} />
+              </button>
+
+              {/* Account selector */}
+              <TopAccountSelector />
+
+              {/* User pill */}
+              <div className="flex items-center gap-2 pl-2 ml-1 border-l border-border">
+                <UserCircle size={26} className="text-muted" strokeWidth={1.5} />
+                <div className="hidden lg:block leading-none">
+                  <div className="text-xs font-medium text-text">Wolf-Fin</div>
+                  <div className="text-[10px] text-muted2 mt-0.5">Trading Agent</div>
+                </div>
+                <ChevronDown size={12} className="text-muted hidden lg:block" />
+              </div>
+            </div>
+          </header>
+
+          {/* Page content */}
           <main className="flex-1 overflow-auto">
             <Outlet />
           </main>
-        </div>
 
+        </div>
       </div>
     </ToastProvider>
   )

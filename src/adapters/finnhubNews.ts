@@ -48,20 +48,40 @@ export async function fetchForexNews(symbol: string): Promise<ForexNewsItem[]> {
   if (!key) return []
 
   try {
-    const url = `https://finnhub.io/api/v1/news?category=forex&token=${key}`
-    const res = await fetch(url, { signal: AbortSignal.timeout(4000) })
-    if (!res.ok) return []
+    // Fetch both forex and general categories for better coverage
+    const categories = ['forex', 'general']
+    const fetches = categories.map(cat =>
+      fetch(`https://finnhub.io/api/v1/news?category=${cat}&token=${key}`, {
+        signal: AbortSignal.timeout(5000),
+      }).then(r => r.ok ? r.json() as Promise<FinnhubArticle[]> : [] as FinnhubArticle[])
+        .catch(() => [] as FinnhubArticle[])
+    )
+    const results = await Promise.all(fetches)
 
-    const articles = await res.json() as FinnhubArticle[]
+    // Deduplicate by headline
+    const seen = new Set<string>()
+    const allArticles: FinnhubArticle[] = []
+    for (const batch of results) {
+      for (const a of batch) {
+        if (!seen.has(a.headline)) {
+          seen.add(a.headline)
+          allArticles.push(a)
+        }
+      }
+    }
+
     const currencies = extractCurrencies(symbol)
 
     // Filter to articles mentioning any of our currencies
-    const relevant = articles.filter(a => {
-      const text = (a.headline + ' ' + a.summary).toUpperCase()
+    const relevant = allArticles.filter(a => {
+      const text = (a.headline + ' ' + (a.summary ?? '')).toUpperCase()
       return currencies.some(c => text.includes(c))
     })
 
-    return relevant.slice(0, 5).map(a => ({
+    // If strict filtering yields too few results, also include all forex-category articles
+    const pool = relevant.length >= 3 ? relevant : [...relevant, ...allArticles.filter(a => !relevant.includes(a))].slice(0, 10)
+
+    return pool.slice(0, 5).map(a => ({
       headline: a.headline,
       sentiment: sentimentTag(a.headline),
       source: a.source,

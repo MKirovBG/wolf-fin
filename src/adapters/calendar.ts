@@ -33,14 +33,13 @@ type FFRawEvent = {
 async function fetchFFCalendar(): Promise<EconomicEvent[]> {
   if (ffCache && Date.now() - ffCache.fetchedAt < FF_TTL_MS) return ffCache.events
   try {
-    const [thisWeek, nextWeek] = await Promise.allSettled([
-      fetch(FF_URLS.thisWeek, { signal: AbortSignal.timeout(8000) }).then(r => r.ok ? r.json() as Promise<FFRawEvent[]> : [] as FFRawEvent[]),
-      fetch(FF_URLS.nextWeek, { signal: AbortSignal.timeout(8000) }).then(r => r.ok ? r.json() as Promise<FFRawEvent[]> : [] as FFRawEvent[]),
-    ])
-    const raw: FFRawEvent[] = [
-      ...(thisWeek.status === 'fulfilled' ? thisWeek.value : []),
-      ...(nextWeek.status === 'fulfilled' ? nextWeek.value : []),
-    ]
+    const fetches = [FF_URLS.thisWeek, FF_URLS.nextWeek].map(url =>
+      fetch(url, { signal: AbortSignal.timeout(8000) })
+        .then(r => r.ok ? r.json() as Promise<FFRawEvent[]> : [] as FFRawEvent[])
+        .catch(() => [] as FFRawEvent[])
+    )
+    const [thisWeek, nextWeek] = await Promise.all(fetches)
+    const raw: FFRawEvent[] = [...thisWeek, ...nextWeek]
     const events: EconomicEvent[] = raw.map(e => ({
       name:     e.title,
       country:  e.country,
@@ -125,11 +124,12 @@ export async function isHighImpactEventSoon(windowMs = 30 * 60 * 1000): Promise<
 export async function fetchCalendarForDisplay(currencies?: string[], daysAhead = 7): Promise<EconomicEvent[]> {
   const ffEvents = await fetchFFCalendar()
   const now = Date.now()
+  const todayStart = new Date().setUTCHours(0, 0, 0, 0)  // Include today's past events
   const cutoff = now + daysAhead * 24 * 60 * 60 * 1000
 
   return ffEvents
     .filter(e => {
-      if (e.time < now || e.time > cutoff) return false
+      if (e.time < todayStart || e.time > cutoff) return false
       if (e.impact !== 'High' && e.impact !== 'Medium') return false
       if (currencies && currencies.length > 0) {
         return currencies.some(c => e.country.toUpperCase() === c.toUpperCase())

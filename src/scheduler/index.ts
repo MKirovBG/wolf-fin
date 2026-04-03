@@ -6,6 +6,7 @@
 
 import pino from 'pino'
 import { runAnalysis, isAnalysisRunning } from '../analyzer/index.js'
+import { runDailyDigest } from '../analyzer/memory.js'
 import { logEvent } from '../server/state.js'
 import type { WatchSymbol } from '../types.js'
 
@@ -98,4 +99,52 @@ export function stopAllSchedules(): void {
 /** Return the keys of all currently scheduled symbols. */
 export function getScheduledKeys(): string[] {
   return [...schedules.keys()]
+}
+
+// ── Daily Digest Timer ────────────────────────────────────────────────────────
+
+let digestTimer: ReturnType<typeof setInterval> | null = null
+
+/**
+ * Start a daily digest timer that runs at ~00:05 UTC each day.
+ * Also runs immediately if called after 00:00 UTC and no digest has run today.
+ */
+export function startDailyDigest(): void {
+  if (digestTimer) return
+
+  // Check every hour; run digest once per day after midnight UTC
+  let lastDigestDate = ''
+
+  const check = async () => {
+    const today = new Date().toISOString().slice(0, 10)
+    const hour = new Date().getUTCHours()
+
+    // Run digest once per day, after midnight UTC (hour >= 0)
+    if (lastDigestDate === today) return
+    if (hour < 0) return // safety
+
+    lastDigestDate = today
+    log.info('running daily memory digest')
+    try {
+      const result = await runDailyDigest()
+      log.info({ ...result }, 'daily digest completed')
+    } catch (err) {
+      log.error({ err: String(err) }, 'daily digest failed')
+      lastDigestDate = '' // allow retry
+    }
+  }
+
+  // Check every hour
+  digestTimer = setInterval(check, 60 * 60 * 1000)
+  // Also do an initial check after 5 seconds (gives server time to boot)
+  setTimeout(check, 5000)
+
+  log.info('daily digest timer started')
+}
+
+export function stopDailyDigest(): void {
+  if (digestTimer) {
+    clearInterval(digestTimer)
+    digestTimer = null
+  }
 }

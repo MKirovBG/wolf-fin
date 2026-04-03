@@ -161,6 +161,15 @@ function AnalysisModal({ analysis, onClose }: { analysis: AnalysisResult; onClos
                 </Section>
               )}
 
+              {/* System Prompt */}
+              {analysis.systemPrompt && (
+                <Section title="System Prompt">
+                  <pre className="text-[11px] font-mono text-text/80 leading-relaxed whitespace-pre-wrap bg-bg border border-border rounded-lg p-4 max-h-64 overflow-y-auto">
+                    {analysis.systemPrompt}
+                  </pre>
+                </Section>
+              )}
+
               {/* News */}
               {analysis.context.news && analysis.context.news.length > 0 && (
                 <Section title={`News Context (${analysis.context.news.length} items)`}>

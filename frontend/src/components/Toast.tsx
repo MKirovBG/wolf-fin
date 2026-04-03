@@ -4,7 +4,7 @@
 //        toast.success('Agent saved')
 //        toast.error('Something went wrong')
 
-import { createContext, useContext, useState, useCallback, useEffect } from 'react'
+import { createContext, useContext, useState, useCallback, useEffect, useMemo } from 'react'
 
 type ToastVariant = 'success' | 'error' | 'info'
 
@@ -41,11 +41,11 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     setTimeout(() => dismiss(id), 3500)
   }, [dismiss])
 
-  const ctx: ToastContextValue = {
+  const ctx = useMemo<ToastContextValue>(() => ({
     success: (msg) => push(msg, 'success'),
     error:   (msg) => push(msg, 'error'),
     info:    (msg) => push(msg, 'info'),
-  }
+  }), [push])
 
   return (
     <ToastContext.Provider value={ctx}>
@@ -76,7 +76,7 @@ function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: 
   const styles: Record<ToastVariant, string> = {
     success: 'border-green/30 bg-surface2 text-green shadow-dropdown',
     error:   'border-red/30   bg-surface2 text-red   shadow-dropdown',
-    info:    'border-teal/30  bg-surface2 text-teal  shadow-dropdown',
+    info:    'border-brand/30  bg-surface2 text-brand  shadow-dropdown',
   }
 
   const icons: Record<ToastVariant, string> = {

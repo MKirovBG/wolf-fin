@@ -10,7 +10,8 @@ import type { Candle, KeyLevel as AdapterKeyLevel } from '../adapters/types.js'
 import { getLLMProvider, getModelForConfig } from '../llm/index.js'
 import { buildAnalysisPrompt, buildSystemPrompt } from './prompt.js'
 import { validateProposal } from './validate.js'
-import { dbSaveAnalysis, dbSetLastAnalysisAt, dbGetSymbol, dbGetStrategy, dbCreateOutcome, dbSaveFeatures, dbSaveMarketState, dbSaveCandidates, dbGetAlertRules, dbFireAlert } from '../db/index.js'
+import { extractAndSaveMemories } from './memory.js'
+import { dbSaveAnalysis, dbSetLastAnalysisAt, dbGetSymbol, dbGetStrategy, dbCreateOutcome, dbSaveFeatures, dbSaveMarketState, dbSaveCandidates, dbGetAlertRules, dbFireAlert, dbGetSymbolStrategies, dbGetActiveRules, dbGetMemories, dbSaveMemory } from '../db/index.js'
 import { logEvent } from '../server/state.js'
 import { buildSessionContext } from '../adapters/session.js'
 import { detectPatterns } from '../adapters/patterns.js'
@@ -20,6 +21,7 @@ import { runDetectors } from '../detectors/index.js'
 import { scoreCandidates } from '../scoring/index.js'
 import { resolveStrategyDefinition } from '../strategies/resolver.js'
 import type { WatchSymbol, AnalysisResult, KeyLevel, TradeProposal, CandleBar, AnalysisContext } from '../types.js'
+import { setAnalyzing, setIdle, setError as setAgentError } from './state.js'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
 
@@ -100,6 +102,7 @@ export async function runAnalysis(symbolKey: string): Promise<AnalysisResult> {
 
   analysisInFlight.add(symbolKey)
   const startTime = Date.now()
+  setAnalyzing(symbolKey, `Analyzing ${sym.symbol}`)
 
   try {
     logEvent(symbolKey, 'info', 'analysis_start', `Starting analysis for ${sym.symbol}`)
@@ -217,91 +220,8 @@ export async function runAnalysis(symbolKey: string): Promise<AnalysisResult> {
     logEvent(symbolKey, 'info', 'detectors_run',
       `Detectors: ${validCandidates.length} valid | top: ${topCandidate ? `${topCandidate.detector} score=${topCandidate.score}` : 'none'}`)
 
-    // ── 4. Build prompt & call LLM ────────────────────────────────────────────
-    const provider  = getLLMProvider(sym)
-    const model     = getModelForConfig(sym)
-    const providerName = sym.llmProvider ?? process.env.PLATFORM_LLM_PROVIDER ?? 'anthropic'
-
-    logEvent(symbolKey, 'info', 'llm_request', `Calling LLM (${providerName} / ${model})`)
-
-    const userMessage = buildAnalysisPrompt({
-      symbol:        sym.symbol,
-      timeframe:     primaryTf,
-      price:         data.price,
-      candles:       candleSlice,
-      allCandles:    data.candles,
-      indicators,
-      context,
-      patterns,
-      indicatorCfg:  { emaFast: indicatorCfg.emaFast, emaSlow: indicatorCfg.emaSlow },
-      digits:        data.symbolInfo.digits,
-      features,
-      marketState,
-      topCandidates: validCandidates.slice(0, 3),
-    })
-
-    const stratRow = sym.strategy ? dbGetStrategy(sym.strategy) : null
-    const response = await provider.createMessage({
-      model,
-      max_tokens: 2048,
-      system: buildSystemPrompt({ strategyInstructions: stratRow?.instructions, customPrompt: sym.systemPrompt }),
-      messages: [{ role: 'user', content: userMessage }],
-    })
-
-    // ── 5. Extract text response + optional thinking block ───────────────────
-    const textContent    = response.content.find(c => c.type === 'text')
-    const thinkingContent = response.content.find(c => (c as { type: string }).type === 'thinking')
-    const rawText     = textContent     && 'text'     in textContent     ? textContent.text         : ''
-    const rawThinking = thinkingContent && 'thinking' in thinkingContent ? (thinkingContent as { thinking: string }).thinking : undefined
-
-    logEvent(symbolKey, 'info', 'llm_response', `LLM responded (${response.usage.output_tokens} tokens)`, {
-      inputTokens: response.usage.input_tokens,
-      outputTokens: response.usage.output_tokens,
-    })
-
-    // ── 6. Parse JSON from response ───────────────────────────────────────────
-    const jsonStr = extractJSON(rawText)
-    if (!jsonStr) {
-      throw new Error(`No JSON block found in LLM response. Raw: ${rawText.slice(0, 300)}`)
-    }
-
-    let parsed: {
-      bias?: string
-      summary?: string
-      keyLevels?: unknown[]
-      tradeProposal?: unknown
-    }
-    try {
-      parsed = JSON.parse(jsonStr) as typeof parsed
-    } catch (e) {
-      throw new Error(`Failed to parse LLM JSON: ${String(e)}. Raw: ${jsonStr.slice(0, 300)}`)
-    }
-
-    // ── 7. Build result ───────────────────────────────────────────────────────
-    const bias = (['bullish', 'bearish', 'neutral'].includes(parsed.bias ?? ''))
-      ? parsed.bias as 'bullish' | 'bearish' | 'neutral'
-      : 'neutral'
-
-    const keyLevels = mapKeyLevels((parsed.keyLevels ?? []) as RawKeyLevel[])
-
-    let tradeProposal: TradeProposal | null = null
-    if (parsed.tradeProposal && typeof parsed.tradeProposal === 'object') {
-      const tp = parsed.tradeProposal as Record<string, unknown>
-      tradeProposal = {
-        direction:    tp.direction as 'BUY' | 'SELL' | null,
-        entryZone:    (tp.entryZone as { low: number; high: number }) ?? { low: 0, high: 0 },
-        stopLoss:     Number(tp.stopLoss ?? 0),
-        takeProfits:  Array.isArray(tp.takeProfits) ? (tp.takeProfits as number[]).map(Number) : [],
-        riskReward:   Number(tp.riskReward ?? 0),
-        reasoning:    String(tp.reasoning ?? ''),
-        confidence:   (['high', 'medium', 'low'].includes(String(tp.confidence)) ? tp.confidence : 'medium') as 'high' | 'medium' | 'low',
-        invalidatedIf: tp.invalidatedIf ? String(tp.invalidatedIf) : undefined,
-      }
-    }
-
-    // Flatten indicators to a simple Record<string, number|string> for storage
+    // ── Flatten indicators (shared across strategies) ─────────────────────────
     const indicatorsFlat: Record<string, number | string> = {}
-    // Scalars
     if (indicators.rsi14   != null) indicatorsFlat['RSI(14)']   = +indicators.rsi14.toFixed(2)
     if (indicators.ema20   != null) indicatorsFlat['EMA Fast']  = +indicators.ema20.toFixed(5)
     if (indicators.ema50   != null) indicatorsFlat['EMA Slow']  = +indicators.ema50.toFixed(5)
@@ -311,7 +231,6 @@ export async function runAnalysis(symbolKey: string): Promise<AnalysisResult> {
     if (indicators.cci     != null) indicatorsFlat['CCI(20)']   = +indicators.cci.toFixed(2)
     if (indicators.williamsR != null) indicatorsFlat['Williams %R'] = +indicators.williamsR.toFixed(2)
     if (indicators.mfi     != null) indicatorsFlat['MFI(14)']   = +indicators.mfi.toFixed(2)
-    // Compound
     if (indicators.macd) {
       indicatorsFlat['MACD']        = +indicators.macd.macd.toFixed(5)
       indicatorsFlat['MACD Signal'] = +indicators.macd.signal.toFixed(5)
@@ -345,7 +264,6 @@ export async function runAnalysis(symbolKey: string): Promise<AnalysisResult> {
       indicatorsFlat['Ichi Cloud']      = indicators.ichimoku.cloudBullish ? 'Bullish' : 'Bearish'
       indicatorsFlat['Ichi Position']   = indicators.ichimoku.aboveCloud ? 'Above' : 'Below'
     }
-    // Multi-timeframe
     if (indicators.mtf) {
       if (indicators.mtf.confluence != null) indicatorsFlat['MTF Score']  = indicators.mtf.confluence
       if (indicators.mtf.m15?.rsi14  != null) indicatorsFlat['M15 RSI']   = +indicators.mtf.m15.rsi14.toFixed(2)
@@ -354,64 +272,205 @@ export async function runAnalysis(symbolKey: string): Promise<AnalysisResult> {
       if (indicators.mtf.h4?.ema20   != null) indicatorsFlat['H4 EMA20']  = +indicators.mtf.h4.ema20.toFixed(5)
       if (indicators.mtf.h4?.ema50   != null) indicatorsFlat['H4 EMA50']  = +indicators.mtf.h4.ema50.toFixed(5)
     }
-
-    // Strip NaN values — JSON.stringify turns NaN → null which pollutes the DB
     for (const k of Object.keys(indicatorsFlat)) {
       const v = indicatorsFlat[k]
       if (typeof v === 'number' && isNaN(v)) delete indicatorsFlat[k]
     }
 
-    // ── Proposal validation ────────────────────────────────────────────────────
-    let validation = undefined
-    if (tradeProposal && tradeProposal.direction) {
-      const atrVal = indicators.atr14 ?? 0
-      const mtfScore = indicators.mtf?.confluence
-      validation = validateProposal({
-        proposal:  tradeProposal,
-        keyLevels,
-        atr:       atrVal,
-        bias,
-        mtfScore,
-      })
-    }
+    // ── 4. Determine strategies to run ───────────────────────────────────────
+    const assignedStrategies = dbGetSymbolStrategies(symbolKey).filter(s => s.enabled)
+    const strategyKeys: (string | null)[] = assignedStrategies.length > 0
+      ? assignedStrategies.map(s => s.strategyKey)
+      : [sym.strategy ?? null]   // fallback to single legacy strategy
 
-    const now = new Date().toISOString()
-    const elapsed = Date.now() - startTime
+    logEvent(symbolKey, 'info', 'llm_request',
+      `Running ${strategyKeys.length} strategy analysis(es): ${strategyKeys.map(k => k ?? 'default').join(', ')}`)
 
-    const result: Omit<AnalysisResult, 'id'> = {
-      symbolKey,
+    const provider     = getLLMProvider(sym)
+    const model        = getModelForConfig(sym)
+    const providerName = sym.llmProvider ?? process.env.PLATFORM_LLM_PROVIDER ?? 'anthropic'
+
+    const userMessage = buildAnalysisPrompt({
       symbol:        sym.symbol,
-      market:        'mt5',
       timeframe:     primaryTf,
-      time:          now,
-      bias,
-      summary:       String(parsed.summary ?? ''),
-      keyLevels,
-      tradeProposal,
-      indicators:    indicatorsFlat,
-      candles:       toChartCandles(candleSlice),
+      price:         data.price,
+      candles:       candleSlice,
+      allCandles:    data.candles,
+      indicators,
       context,
-      patterns:      patterns.length > 0 ? patterns : undefined,
-      validation,
-      llmProvider:   providerName,
-      llmModel:      model,
-      rawResponse:   rawText,
-      llmThinking:   rawThinking,
+      patterns,
+      indicatorCfg:  { emaFast: indicatorCfg.emaFast, emaSlow: indicatorCfg.emaSlow },
+      digits:        data.symbolInfo.digits,
+      features,
+      marketState,
+      topCandidates: validCandidates.slice(0, 3),
+    })
+
+    // ── 5. Run LLM call per strategy (parallel) ─────────────────────────────
+    const chartCandles = toChartCandles(candleSlice)
+
+    const runOneStrategy = async (stratKey: string | null): Promise<AnalysisResult> => {
+      const stratRow = stratKey ? dbGetStrategy(stratKey) : null
+      const stratLabel = stratKey ?? 'default'
+
+      // Fetch active rules and relevant memories for prompt injection
+      const activeRules = dbGetActiveRules(sym.symbol).map(r => r.ruleText)
+      const relevantMemories = dbGetMemories({ symbol: sym.symbol, activeOnly: true })
+        .slice(0, 10)
+        .map(m => `[${m.category}] ${m.content}`)
+
+      logEvent(symbolKey, 'info', 'llm_request', `LLM call for strategy: ${stratLabel} (${providerName} / ${model}) — ${activeRules.length} rules, ${relevantMemories.length} memories`)
+
+      const systemPromptText = buildSystemPrompt({ strategyInstructions: stratRow?.instructions, customPrompt: sym.systemPrompt, rules: activeRules, memories: relevantMemories })
+
+      const response = await provider.createMessage({
+        model,
+        max_tokens: 2048,
+        system: systemPromptText,
+        messages: [{ role: 'user', content: userMessage }],
+      })
+
+      const textContent    = response.content.find(c => c.type === 'text')
+      const thinkingContent = response.content.find(c => (c as { type: string }).type === 'thinking')
+      const rawText     = textContent     && 'text'     in textContent     ? textContent.text         : ''
+      const rawThinking = thinkingContent && 'thinking' in thinkingContent ? (thinkingContent as { thinking: string }).thinking : undefined
+
+      logEvent(symbolKey, 'info', 'llm_response', `[${stratLabel}] LLM responded (${response.usage.output_tokens} tokens)`, {
+        inputTokens: response.usage.input_tokens,
+        outputTokens: response.usage.output_tokens,
+        strategyKey: stratKey,
+      })
+
+      const jsonStr = extractJSON(rawText)
+      if (!jsonStr) {
+        throw new Error(`[${stratLabel}] No JSON block found in LLM response. Raw: ${rawText.slice(0, 300)}`)
+      }
+
+      let parsed: { bias?: string; summary?: string; keyLevels?: unknown[]; tradeProposal?: unknown; reasoningChain?: unknown[] }
+      try {
+        parsed = JSON.parse(jsonStr) as typeof parsed
+      } catch (e) {
+        throw new Error(`[${stratLabel}] Failed to parse LLM JSON: ${String(e)}. Raw: ${jsonStr.slice(0, 300)}`)
+      }
+
+      const bias = (['bullish', 'bearish', 'neutral'].includes(parsed.bias ?? ''))
+        ? parsed.bias as 'bullish' | 'bearish' | 'neutral'
+        : 'neutral'
+
+      const keyLevels = mapKeyLevels((parsed.keyLevels ?? []) as RawKeyLevel[])
+
+      let tradeProposal: TradeProposal | null = null
+      if (parsed.tradeProposal && typeof parsed.tradeProposal === 'object') {
+        const tp = parsed.tradeProposal as Record<string, unknown>
+        tradeProposal = {
+          direction:    tp.direction as 'BUY' | 'SELL' | null,
+          entryZone:    (tp.entryZone as { low: number; high: number }) ?? { low: 0, high: 0 },
+          stopLoss:     Number(tp.stopLoss ?? 0),
+          takeProfits:  Array.isArray(tp.takeProfits) ? (tp.takeProfits as number[]).map(Number) : [],
+          riskReward:   Number(tp.riskReward ?? 0),
+          reasoning:    String(tp.reasoning ?? ''),
+          confidence:   (['high', 'medium', 'low'].includes(String(tp.confidence)) ? tp.confidence : 'medium') as 'high' | 'medium' | 'low',
+          invalidatedIf: tp.invalidatedIf ? String(tp.invalidatedIf) : undefined,
+        }
+      }
+
+      let validation = undefined
+      if (tradeProposal && tradeProposal.direction) {
+        const atrVal = indicators.atr14 ?? 0
+        const mtfScore = indicators.mtf?.confluence
+        validation = validateProposal({ proposal: tradeProposal, keyLevels, atr: atrVal, bias, mtfScore })
+      }
+
+      const now = new Date().toISOString()
+
+      const result: Omit<AnalysisResult, 'id'> = {
+        symbolKey,
+        symbol:        sym.symbol,
+        market:        'mt5',
+        timeframe:     primaryTf,
+        time:          now,
+        bias,
+        summary:       String(parsed.summary ?? ''),
+        keyLevels,
+        tradeProposal,
+        indicators:    indicatorsFlat,
+        candles:       chartCandles,
+        context,
+        patterns:       patterns.length > 0 ? patterns : undefined,
+        validation,
+        strategyKey:    stratKey ?? undefined,
+        reasoningChain: Array.isArray(parsed.reasoningChain)
+          ? (parsed.reasoningChain as Array<{ step?: string; detail?: string }>)
+              .filter(s => s.step && s.detail)
+              .map(s => ({ step: String(s.step), detail: String(s.detail) }))
+          : undefined,
+        llmProvider:   providerName,
+        llmModel:      model,
+        rawResponse:   rawText,
+        llmThinking:   rawThinking,
+        systemPrompt:  systemPromptText,
+      }
+
+      const id = dbSaveAnalysis(result)
+      dbSetLastAnalysisAt(symbolKey, now)
+
+      // Persist features, market state, setup candidates (once per strategy)
+      try {
+        dbSaveFeatures({ ...features, analysisId: id }, id)
+        dbSaveMarketState({ ...marketState, analysisId: id }, id)
+        dbSaveCandidates(candidates.map(c => ({ ...c, analysisId: id })), id)
+      } catch (e) {
+        log.warn({ err: String(e), strategyKey: stratKey }, 'failed to persist features/state/candidates')
+      }
+
+      // Create outcome tracking record
+      if (tradeProposal && tradeProposal.direction) {
+        const tps = tradeProposal.takeProfits ?? []
+        dbCreateOutcome({
+          analysisId: id,
+          symbolKey,
+          direction:  tradeProposal.direction,
+          entryLow:   tradeProposal.entryZone.low,
+          entryHigh:  tradeProposal.entryZone.high,
+          sl:         tradeProposal.stopLoss,
+          tp1:        tps[0] ?? null,
+          tp2:        tps[1] ?? null,
+          tp3:        tps[2] ?? null,
+          status:     'pending',
+          createdAt:  now,
+        })
+      }
+
+      // Layer 1: auto-extract memories from this analysis
+      try { extractAndSaveMemories({ ...result, id }) } catch (_) { /* non-critical */ }
+
+      return { ...result, id }
     }
 
-    const id = dbSaveAnalysis(result)
-    dbSetLastAnalysisAt(symbolKey, now)
+    // Run all strategy analyses in parallel
+    const results = await Promise.allSettled(strategyKeys.map(k => runOneStrategy(k)))
 
-    // ── Persist features, market state, setup candidates ─────────────────────
-    try {
-      dbSaveFeatures({ ...features, analysisId: id }, id)
-      dbSaveMarketState({ ...marketState, analysisId: id }, id)
-      dbSaveCandidates(candidates.map(c => ({ ...c, analysisId: id })), id)
-    } catch (e) {
-      log.warn({ err: String(e) }, 'failed to persist features/state/candidates')
+    // Collect successful results
+    const successResults: AnalysisResult[] = []
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i]
+      const stratLabel = strategyKeys[i] ?? 'default'
+      if (r.status === 'fulfilled') {
+        successResults.push(r.value)
+      } else {
+        log.error({ symbolKey, strategy: stratLabel, err: r.reason?.message ?? String(r.reason) }, 'strategy analysis failed')
+        logEvent(symbolKey, 'error', 'analysis_error', `[${stratLabel}] Strategy analysis failed: ${r.reason?.message ?? String(r.reason)}`)
+      }
     }
 
-    // ── Evaluate alert rules ──────────────────────────────────────────────────
+    if (successResults.length === 0) {
+      throw new Error(`All ${strategyKeys.length} strategy analyses failed`)
+    }
+
+    // Use the first successful result as the primary return value
+    const primaryResult = successResults[0]
+
+    // ── Evaluate alert rules (once per analysis run, using primary result) ───
     try {
       const rules = dbGetAlertRules(symbolKey).filter(r => r.enabled)
       for (const rule of rules) {
@@ -444,7 +503,7 @@ export async function runAnalysis(symbolKey: string): Promise<AnalysisResult> {
           }
         }
         if (fired) {
-          dbFireAlert(rule.id!, symbolKey, msg, id)
+          dbFireAlert(rule.id!, symbolKey, msg, primaryResult.id)
           logEvent(symbolKey, 'info', 'detectors_run', `Alert fired: ${rule.name} — ${msg}`)
         }
       }
@@ -452,35 +511,21 @@ export async function runAnalysis(symbolKey: string): Promise<AnalysisResult> {
       log.warn({ err: String(e) }, 'alert evaluation failed')
     }
 
-    // ── Create outcome tracking record if a trade was proposed ────────────────
-    if (tradeProposal && tradeProposal.direction) {
-      const tps = tradeProposal.takeProfits ?? []
-      dbCreateOutcome({
-        analysisId: id,
-        symbolKey,
-        direction:  tradeProposal.direction,
-        entryLow:   tradeProposal.entryZone.low,
-        entryHigh:  tradeProposal.entryZone.high,
-        sl:         tradeProposal.stopLoss,
-        tp1:        tps[0] ?? null,
-        tp2:        tps[1] ?? null,
-        tp3:        tps[2] ?? null,
-        status:     'pending',
-        createdAt:  now,
-      })
-    }
-
-    logEvent(symbolKey, 'info', 'analysis_end', `Analysis complete in ${elapsed}ms — ${bias} bias`, {
-      bias, keyLevels: keyLevels.length, hasProposal: !!tradeProposal,
+    const elapsed = Date.now() - startTime
+    logEvent(symbolKey, 'info', 'analysis_end',
+      `Analysis complete in ${elapsed}ms — ${successResults.length}/${strategyKeys.length} strategies succeeded`, {
+      strategies: strategyKeys, successCount: successResults.length,
     })
-    log.info({ symbolKey, bias, elapsed }, 'analysis complete')
+    log.info({ symbolKey, strategies: strategyKeys.length, elapsed }, 'analysis complete')
+    setIdle()
 
-    return { ...result, id }
+    return primaryResult
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     log.error({ symbolKey, err: msg }, 'analysis failed')
     logEvent(symbolKey, 'error', 'analysis_error', `Analysis failed: ${msg}`)
+    setAgentError(msg)
 
     // Save error record to DB so UI can show it
     const errorResult: Omit<AnalysisResult, 'id'> = {

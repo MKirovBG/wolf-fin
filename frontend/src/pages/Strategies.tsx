@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
-import { getStrategies, createStrategy, updateStrategy, deleteStrategy } from '../api/client.ts'
-import type { Strategy } from '../types/index.ts'
+import { getStrategies, createStrategy, updateStrategy, deleteStrategy, getAllSymbolStrategies } from '../api/client.ts'
+import type { Strategy, SymbolStrategy } from '../types/index.ts'
 import { useToast } from '../components/Toast.tsx'
 
 // ── Blank form ────────────────────────────────────────────────────────────────
@@ -128,17 +128,22 @@ function StrategyForm({
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function Strategies() {
-  const [strategies, setStrategies] = useState<Strategy[]>([])
-  const [loading, setLoading]       = useState(true)
-  const [editingKey, setEditingKey] = useState<string | null>(null)
-  const [showNew, setShowNew]       = useState(false)
-  const [deleting, setDeleting]     = useState<string | null>(null)
+  const [strategies, setStrategies]       = useState<Strategy[]>([])
+  const [assignments, setAssignments]     = useState<SymbolStrategy[]>([])
+  const [loading, setLoading]             = useState(true)
+  const [editingKey, setEditingKey]       = useState<string | null>(null)
+  const [showNew, setShowNew]             = useState(false)
+  const [deleting, setDeleting]           = useState<string | null>(null)
   const toast = useToast()
 
   const load = useCallback(async () => {
     try {
-      const data = await getStrategies()
+      const [data, assigns] = await Promise.all([
+        getStrategies(),
+        getAllSymbolStrategies().catch(() => [] as SymbolStrategy[]),
+      ])
       setStrategies(data)
+      setAssignments(assigns)
     } catch (e) {
       toast.error(String(e))
     } finally {
@@ -230,6 +235,7 @@ export function Strategies() {
                 strategy={s}
                 editing={editingKey === s.key}
                 deleting={deleting === s.key}
+                usedBySymbols={assignments.filter(a => a.strategyKey === s.key).map(a => a.symbolKey)}
                 onEdit={() => { setEditingKey(s.key); setShowNew(false) }}
                 onSave={form => handleUpdate(s.key, form)}
                 onCancelEdit={() => setEditingKey(null)}
@@ -256,6 +262,7 @@ export function Strategies() {
               strategy={s}
               editing={editingKey === s.key}
               deleting={false}
+              usedBySymbols={assignments.filter(a => a.strategyKey === s.key).map(a => a.symbolKey)}
               onEdit={() => { setEditingKey(s.key); setShowNew(false) }}
               onSave={form => handleUpdate(s.key, form)}
               onCancelEdit={() => setEditingKey(null)}
@@ -272,16 +279,17 @@ export function Strategies() {
 // ── Strategy row ──────────────────────────────────────────────────────────────
 
 function StrategyRow({
-  strategy, editing, deleting,
+  strategy, editing, deleting, usedBySymbols,
   onEdit, onSave, onCancelEdit, onDelete,
 }: {
-  strategy:     Strategy
-  editing:      boolean
-  deleting:     boolean
-  onEdit:       () => void
-  onSave:       (form: StrategyFormData) => Promise<void>
-  onCancelEdit: () => void
-  onDelete:     () => void
+  strategy:       Strategy
+  editing:        boolean
+  deleting:       boolean
+  usedBySymbols:  string[]
+  onEdit:         () => void
+  onSave:         (form: StrategyFormData) => Promise<void>
+  onCancelEdit:   () => void
+  onDelete:       () => void
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
 
@@ -321,6 +329,16 @@ function StrategyRow({
         <p className="text-[11px] text-muted2 mt-1 line-clamp-2 font-mono leading-relaxed">
           {strategy.instructions}
         </p>
+        {usedBySymbols.length > 0 && (
+          <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+            <span className="text-[10px] text-muted2">Used by:</span>
+            {usedBySymbols.map(sk => (
+              <span key={sk} className="text-[10px] font-mono bg-brand/10 text-brand border border-brand/20 rounded px-1.5 py-0.5">
+                {sk.replace(/^mt5:/, '')}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Actions */}

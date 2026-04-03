@@ -4,7 +4,7 @@ import Database from 'better-sqlite3'
 import { mkdirSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import type { WatchSymbol, AnalysisResult, LogEntry, LogLevel, LogEvent, ProposalValidation, CandlePattern } from '../types.js'
+import type { WatchSymbol, AnalysisResult, LogEntry, LogLevel, LogEvent, ProposalValidation, CandlePattern, ReasoningStep } from '../types.js'
 import type { FeatureSnapshot, MarketState } from '../types/market.js'
 import { runMigrations, getMigrationStatus } from './migrations.js'
 
@@ -168,12 +168,12 @@ export function dbSaveAnalysis(result: Omit<AnalysisResult, 'id'>): number {
       symbol_key, symbol, market, timeframe, time,
       bias, summary, key_levels, proposal, indicators, candles, context,
       llm_provider, llm_model, error, raw_response, llm_thinking,
-      patterns, validation
+      patterns, validation, strategy_key, reasoning_chain, system_prompt
     ) VALUES (
       @symbolKey, @symbol, @market, @timeframe, @time,
       @bias, @summary, @keyLevels, @proposal, @indicators, @candles, @context,
       @llmProvider, @llmModel, @error, @rawResponse, @llmThinking,
-      @patterns, @validation
+      @patterns, @validation, @strategyKey, @reasoningChain, @systemPrompt
     )
   `).run({
     symbolKey:   result.symbolKey,
@@ -194,7 +194,10 @@ export function dbSaveAnalysis(result: Omit<AnalysisResult, 'id'>): number {
     rawResponse: result.rawResponse ?? null,
     llmThinking: result.llmThinking ?? null,
     patterns:    result.patterns ? JSON.stringify(result.patterns) : null,
-    validation:  result.validation ? JSON.stringify(result.validation) : null,
+    validation:      result.validation ? JSON.stringify(result.validation) : null,
+    strategyKey:     result.strategyKey ?? null,
+    reasoningChain:  result.reasoningChain ? JSON.stringify(result.reasoningChain) : null,
+    systemPrompt:    result.systemPrompt ?? null,
   })
   return info.lastInsertRowid as number
 }
@@ -245,8 +248,11 @@ function rowToAnalysis(row: Record<string, unknown>): AnalysisResult {
     error:         (row.error as string | null) ?? undefined,
     rawResponse:   (row.raw_response as string | null) ?? undefined,
     llmThinking:   (row.llm_thinking as string | null) ?? undefined,
-    patterns:      row.patterns    ? JSON.parse(row.patterns as string)    as CandlePattern[]      : undefined,
-    validation:    row.validation  ? JSON.parse(row.validation as string)  as ProposalValidation   : undefined,
+    patterns:       row.patterns        ? JSON.parse(row.patterns as string)        as CandlePattern[]      : undefined,
+    validation:     row.validation      ? JSON.parse(row.validation as string)      as ProposalValidation   : undefined,
+    reasoningChain: row.reasoning_chain ? JSON.parse(row.reasoning_chain as string) as ReasoningStep[]      : undefined,
+    strategyKey:    (row.strategy_key as string | null) ?? undefined,
+    systemPrompt:   (row.system_prompt as string | null) ?? undefined,
   }
 }
 
@@ -348,6 +354,191 @@ export function dbGetAllMt5Accounts(): Mt5AccountRow[] {
   }))
 }
 
+// ── Analysis feedback ─────────────────────────────────────────────────────────
+
+export interface AnalysisFeedbackRow {
+  id:         number
+  analysisId: number
+  rating:     number | null
+  comment:    string | null
+  createdAt:  string
+}
+
+export function dbSaveFeedback(analysisId: number, rating: number | null, comment: string | null): number {
+  const info = db.prepare(`
+    INSERT INTO analysis_feedback (analysis_id, rating, comment)
+    VALUES (?, ?, ?)
+  `).run(analysisId, rating, comment)
+  return info.lastInsertRowid as number
+}
+
+export function dbGetFeedback(analysisId: number): AnalysisFeedbackRow[] {
+  const rows = db.prepare(
+    'SELECT * FROM analysis_feedback WHERE analysis_id = ? ORDER BY created_at DESC'
+  ).all(analysisId) as Record<string, unknown>[]
+  return rows.map(r => ({
+    id:         r.id as number,
+    analysisId: r.analysis_id as number,
+    rating:     (r.rating as number | null) ?? null,
+    comment:    (r.comment as string | null) ?? null,
+    createdAt:  r.created_at as string,
+  }))
+}
+
+// ── Agent memories ───────────────────────────────────────────────────────────
+
+export interface AgentMemoryRow {
+  id:               number
+  symbol:           string | null
+  category:         string
+  content:          string
+  confidence:       number
+  sourceAnalysisId: number | null
+  createdAt:        string
+  expiresAt:        string | null
+  active:           boolean
+}
+
+function rowToMemory(r: Record<string, unknown>): AgentMemoryRow {
+  return {
+    id:               r.id as number,
+    symbol:           (r.symbol as string | null) ?? null,
+    category:         r.category as string,
+    content:          r.content as string,
+    confidence:       r.confidence as number,
+    sourceAnalysisId: (r.source_analysis_id as number | null) ?? null,
+    createdAt:        r.created_at as string,
+    expiresAt:        (r.expires_at as string | null) ?? null,
+    active:           Boolean(r.active),
+  }
+}
+
+export function dbGetMemories(opts?: { symbol?: string; category?: string; activeOnly?: boolean }): AgentMemoryRow[] {
+  let sql = 'SELECT * FROM agent_memories'
+  const conditions: string[] = []
+  const params: unknown[] = []
+  if (opts?.symbol)     { conditions.push('symbol = ?'); params.push(opts.symbol) }
+  if (opts?.category)   { conditions.push('category = ?'); params.push(opts.category) }
+  if (opts?.activeOnly !== false) { conditions.push('active = 1') }
+  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
+  sql += ' ORDER BY created_at DESC'
+  return (db.prepare(sql).all(...params) as Record<string, unknown>[]).map(rowToMemory)
+}
+
+export function dbSaveMemory(mem: { symbol?: string; category: string; content: string; confidence?: number; sourceAnalysisId?: number; expiresAt?: string }): number {
+  const info = db.prepare(`
+    INSERT INTO agent_memories (symbol, category, content, confidence, source_analysis_id, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(mem.symbol ?? null, mem.category, mem.content, mem.confidence ?? 0.5, mem.sourceAnalysisId ?? null, mem.expiresAt ?? null)
+  return info.lastInsertRowid as number
+}
+
+export function dbUpdateMemory(id: number, patch: { active?: boolean; content?: string; confidence?: number }): void {
+  const sets: string[] = []
+  const params: unknown[] = []
+  if (patch.active != null)     { sets.push('active = ?'); params.push(patch.active ? 1 : 0) }
+  if (patch.content != null)    { sets.push('content = ?'); params.push(patch.content) }
+  if (patch.confidence != null) { sets.push('confidence = ?'); params.push(patch.confidence) }
+  if (sets.length === 0) return
+  params.push(id)
+  db.prepare(`UPDATE agent_memories SET ${sets.join(', ')} WHERE id = ?`).run(...params)
+}
+
+export function dbDeleteMemory(id: number): void {
+  db.prepare('DELETE FROM agent_memories WHERE id = ?').run(id)
+}
+
+export function dbPurgeExpiredMemories(): number {
+  const now = new Date().toISOString()
+  const info = db.prepare(
+    `UPDATE agent_memories SET active = 0 WHERE expires_at IS NOT NULL AND expires_at < ? AND active = 1`
+  ).run(now)
+  return info.changes
+}
+
+export function dbGetAnalysesSince(since: string): AnalysisResult[] {
+  const rows = db.prepare(
+    'SELECT * FROM analyses WHERE time >= ? AND error IS NULL ORDER BY time ASC'
+  ).all(since) as Record<string, unknown>[]
+  return rows.map(rowToAnalysis)
+}
+
+export function dbCountActiveMemories(symbol?: string): number {
+  if (symbol) {
+    return (db.prepare('SELECT COUNT(*) as cnt FROM agent_memories WHERE active = 1 AND symbol = ?').get(symbol) as { cnt: number }).cnt
+  }
+  return (db.prepare('SELECT COUNT(*) as cnt FROM agent_memories WHERE active = 1').get() as { cnt: number }).cnt
+}
+
+// ── Agent rules ──────────────────────────────────────────────────────────────
+
+export interface AgentRuleRow {
+  id:         number
+  ruleText:   string
+  scope:      string
+  scopeValue: string | null
+  priority:   number
+  enabled:    boolean
+  createdAt:  string
+}
+
+function rowToRule(r: Record<string, unknown>): AgentRuleRow {
+  return {
+    id:         r.id as number,
+    ruleText:   r.rule_text as string,
+    scope:      r.scope as string,
+    scopeValue: (r.scope_value as string | null) ?? null,
+    priority:   r.priority as number,
+    enabled:    Boolean(r.enabled),
+    createdAt:  r.created_at as string,
+  }
+}
+
+export function dbGetRules(opts?: { scope?: string; enabledOnly?: boolean }): AgentRuleRow[] {
+  let sql = 'SELECT * FROM agent_rules'
+  const conditions: string[] = []
+  const params: unknown[] = []
+  if (opts?.scope)      { conditions.push('scope = ?'); params.push(opts.scope) }
+  if (opts?.enabledOnly !== false) { conditions.push('enabled = 1') }
+  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
+  sql += ' ORDER BY priority DESC, created_at ASC'
+  return (db.prepare(sql).all(...params) as Record<string, unknown>[]).map(rowToRule)
+}
+
+export function dbGetActiveRules(symbol?: string): AgentRuleRow[] {
+  const sql = `
+    SELECT * FROM agent_rules
+    WHERE enabled = 1 AND (scope = 'global' OR (scope = 'symbol' AND scope_value = ?))
+    ORDER BY priority DESC, created_at ASC
+  `
+  return (db.prepare(sql).all(symbol ?? null) as Record<string, unknown>[]).map(rowToRule)
+}
+
+export function dbSaveRule(rule: { ruleText: string; scope?: string; scopeValue?: string; priority?: number }): number {
+  const info = db.prepare(`
+    INSERT INTO agent_rules (rule_text, scope, scope_value, priority)
+    VALUES (?, ?, ?, ?)
+  `).run(rule.ruleText, rule.scope ?? 'global', rule.scopeValue ?? null, rule.priority ?? 0)
+  return info.lastInsertRowid as number
+}
+
+export function dbUpdateRule(id: number, patch: { ruleText?: string; scope?: string; scopeValue?: string; priority?: number; enabled?: boolean }): void {
+  const sets: string[] = []
+  const params: unknown[] = []
+  if (patch.ruleText != null)   { sets.push('rule_text = ?'); params.push(patch.ruleText) }
+  if (patch.scope != null)      { sets.push('scope = ?'); params.push(patch.scope) }
+  if (patch.scopeValue != null) { sets.push('scope_value = ?'); params.push(patch.scopeValue) }
+  if (patch.priority != null)   { sets.push('priority = ?'); params.push(patch.priority) }
+  if (patch.enabled != null)    { sets.push('enabled = ?'); params.push(patch.enabled ? 1 : 0) }
+  if (sets.length === 0) return
+  params.push(id)
+  db.prepare(`UPDATE agent_rules SET ${sets.join(', ')} WHERE id = ?`).run(...params)
+}
+
+export function dbDeleteRule(id: number): void {
+  db.prepare('DELETE FROM agent_rules WHERE id = ?').run(id)
+}
+
 // ── Symbol key helper ─────────────────────────────────────────────────────────
 
 export function makeSymbolKey(symbol: string, mt5AccountId?: number): string {
@@ -404,6 +595,54 @@ export function dbUpsertStrategy(s: { key: string; name: string; description?: s
 
 export function dbDeleteStrategy(key: string): void {
   db.prepare('DELETE FROM strategies WHERE key = ? AND is_builtin = 0').run(key)
+}
+
+// ── Symbol strategies (multi-strategy assignment) ────────────────────────────
+
+export interface SymbolStrategyRow {
+  symbolKey:   string
+  strategyKey: string
+  enabled:     boolean
+  addedAt:     string
+}
+
+export function dbGetSymbolStrategies(symbolKey: string): SymbolStrategyRow[] {
+  const rows = db.prepare(
+    'SELECT * FROM symbol_strategies WHERE symbol_key = ? ORDER BY added_at ASC'
+  ).all(symbolKey) as Record<string, unknown>[]
+  return rows.map(r => ({
+    symbolKey:   r.symbol_key as string,
+    strategyKey: r.strategy_key as string,
+    enabled:     Boolean(r.enabled),
+    addedAt:     r.added_at as string,
+  }))
+}
+
+export function dbAddSymbolStrategy(symbolKey: string, strategyKey: string): void {
+  db.prepare(`
+    INSERT OR IGNORE INTO symbol_strategies (symbol_key, strategy_key)
+    VALUES (?, ?)
+  `).run(symbolKey, strategyKey)
+}
+
+export function dbRemoveSymbolStrategy(symbolKey: string, strategyKey: string): void {
+  db.prepare('DELETE FROM symbol_strategies WHERE symbol_key = ? AND strategy_key = ?')
+    .run(symbolKey, strategyKey)
+}
+
+export function dbToggleSymbolStrategy(symbolKey: string, strategyKey: string, enabled: boolean): void {
+  db.prepare('UPDATE symbol_strategies SET enabled = ? WHERE symbol_key = ? AND strategy_key = ?')
+    .run(enabled ? 1 : 0, symbolKey, strategyKey)
+}
+
+export function dbGetAllSymbolStrategies(): SymbolStrategyRow[] {
+  const rows = db.prepare('SELECT * FROM symbol_strategies ORDER BY strategy_key, symbol_key').all() as Record<string, unknown>[]
+  return rows.map(r => ({
+    symbolKey:   r.symbol_key as string,
+    strategyKey: r.strategy_key as string,
+    enabled:     Boolean(r.enabled),
+    addedAt:     r.added_at as string,
+  }))
 }
 
 // ── Proposal outcomes ─────────────────────────────────────────────────────────

@@ -4,7 +4,8 @@ import type {
   LogEntry, EconomicEvent, Mt5Position, AppConfig, Strategy,
   SymbolSummary, ProposalOutcome, OutcomeStats,
   MarketState, SetupCandidate, AlertRule, AlertFiring,
-  BacktestRun, StrategyVersion, DeepHealth,
+  BacktestRun, StrategyVersion, DeepHealth, SymbolStrategy, AnalysisFeedback,
+  AgentMemory, AgentRule, AgentState,
 } from '../types/index.ts'
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
@@ -43,6 +44,12 @@ export const getAnalysisById  = (id: number) =>
   api<AnalysisResult>(`/api/analyses/${id}`)
 export const isRunning        = (key: string) =>
   api<{ running: boolean }>(`/api/symbols/${encodeURIComponent(key)}/running`)
+
+// ── Analysis feedback ────────────────────────────────────────────────────────
+export const submitFeedback = (analysisId: number, rating: number | null, comment: string | null) =>
+  api<{ ok: boolean; id: number }>(`/api/analyses/${analysisId}/feedback`, { method: 'POST', ...json({ rating, comment }) })
+export const getFeedback = (analysisId: number) =>
+  api<AnalysisFeedback[]>(`/api/analyses/${analysisId}/feedback`)
 
 // ── Accounts ──────────────────────────────────────────────────────────────────
 export const getAccounts    = () => api<AccountEntry[]>('/api/accounts')
@@ -121,6 +128,17 @@ export const updateStrategy   = (key: string, patch: { name?: string; descriptio
 export const deleteStrategy   = (key: string) =>
   api<{ ok: boolean }>(`/api/strategies/${encodeURIComponent(key)}`, { method: 'DELETE' })
 
+// ── Symbol strategies (multi-strategy assignment) ────────────────────────────
+export const getAllSymbolStrategies = () => api<SymbolStrategy[]>('/api/symbol-strategies')
+export const getSymbolStrategies = (key: string) =>
+  api<SymbolStrategy[]>(`/api/symbols/${encodeURIComponent(key)}/strategies`)
+export const addSymbolStrategy   = (key: string, strategyKey: string) =>
+  api<{ ok: boolean }>(`/api/symbols/${encodeURIComponent(key)}/strategies`, { method: 'POST', ...json({ strategyKey }) })
+export const removeSymbolStrategy = (key: string, strategyKey: string) =>
+  api<{ ok: boolean }>(`/api/symbols/${encodeURIComponent(key)}/strategies/${encodeURIComponent(strategyKey)}`, { method: 'DELETE' })
+export const toggleSymbolStrategy = (key: string, strategyKey: string, enabled: boolean) =>
+  api<{ ok: boolean }>(`/api/symbols/${encodeURIComponent(key)}/strategies/${encodeURIComponent(strategyKey)}`, { method: 'PATCH', ...json({ enabled }) })
+
 // ── Symbol summary (dashboard heatmap) ───────────────────────────────────────
 export const getSummary = () => api<SymbolSummary[]>('/api/summary')
 
@@ -190,6 +208,37 @@ export const getAlertFirings = (symbolKey?: string, limit?: number) => {
 }
 export const acknowledgeAlert = (id: number) =>
   api<{ ok: boolean }>(`/api/alerts/firings/${id}/acknowledge`, { method: 'POST' })
+
+// ── Agent state ──────────────────────────────────────────────────────────────
+export const getAgentState = () => api<AgentState>('/api/agent/state')
+
+// ── Agent memories ────────────────────────────────────────────────────────────
+export const getAgentMemories = (opts?: { symbol?: string; category?: string }) => {
+  const p = new URLSearchParams()
+  if (opts?.symbol)   p.set('symbol', opts.symbol)
+  if (opts?.category) p.set('category', opts.category)
+  const qs = p.toString()
+  return api<AgentMemory[]>(`/api/agent/memories${qs ? `?${qs}` : ''}`)
+}
+export const createAgentMemory = (mem: { symbol?: string; category: string; content: string; confidence?: number }) =>
+  api<{ ok: boolean; id: number }>('/api/agent/memories', { method: 'POST', ...json(mem) })
+export const updateAgentMemory = (id: number, patch: { active?: boolean; content?: string; confidence?: number }) =>
+  api<{ ok: boolean }>(`/api/agent/memories/${id}`, { method: 'PATCH', ...json(patch) })
+export const deleteAgentMemory = (id: number) =>
+  api<{ ok: boolean }>(`/api/agent/memories/${id}`, { method: 'DELETE' })
+
+// ── Agent digest ─────────────────────────────────────────────────────────────
+export const triggerDigest = () =>
+  api<{ purged: number; memories: number; symbols: string[] }>('/api/agent/digest', { method: 'POST' })
+
+// ── Agent rules ──────────────────────────────────────────────────────────────
+export const getAgentRules = () => api<AgentRule[]>('/api/agent/rules')
+export const createAgentRule = (rule: { ruleText: string; scope?: string; scopeValue?: string; priority?: number }) =>
+  api<{ ok: boolean; id: number }>('/api/agent/rules', { method: 'POST', ...json(rule) })
+export const updateAgentRule = (id: number, patch: { ruleText?: string; scope?: string; scopeValue?: string; priority?: number; enabled?: boolean }) =>
+  api<{ ok: boolean }>(`/api/agent/rules/${id}`, { method: 'PATCH', ...json(patch) })
+export const deleteAgentRule = (id: number) =>
+  api<{ ok: boolean }>(`/api/agent/rules/${id}`, { method: 'DELETE' })
 
 // ── Phase 6: Deep health ──────────────────────────────────────────────────────
 export const getDeepHealth = () => api<DeepHealth>('/api/system/health/deep')

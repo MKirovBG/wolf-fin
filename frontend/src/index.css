@@ -2,14 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;0,9..40,800;1,9..40,400&display=swap');
 
 * { box-sizing: border-box; }
 
 body {
-  background-color: #08111E;
-  color: #DDE6F4;
-  font-family: 'Inter', system-ui, sans-serif;
+  background-color: #0B0E18;
+  color: #E2E8F6;
+  font-family: 'DM Sans', system-ui, sans-serif;
   margin: 0;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
@@ -18,18 +18,18 @@ body {
 
 /* ── Scrollbar ────────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: #08111E; }
-::-webkit-scrollbar-thumb { background: #1E3352; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #2A4A6E; }
+::-webkit-scrollbar-track { background: #0B0E18; }
+::-webkit-scrollbar-thumb { background: #252D45; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #323A58; }
 
 /* ── Inputs & selects ─────────────────────────────────────────────────────── */
 input, select, textarea {
-  background: #152035 !important;
-  border: 1px solid #1E3352 !important;
-  color: #DDE6F4 !important;
+  background: #181D30 !important;
+  border: 1px solid #252D45 !important;
+  color: #E2E8F6 !important;
   border-radius: 8px;
   padding: 9px 12px;
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'DM Sans', system-ui, sans-serif;
   font-size: 13px;
   outline: none;
   width: 100%;
@@ -37,54 +37,54 @@ input, select, textarea {
 }
 
 input:focus, select:focus, textarea:focus {
-  border-color: #00E5CC !important;
-  box-shadow: 0 0 0 3px rgba(0, 229, 204, 0.12) !important;
+  border-color: #00C4AD !important;
+  box-shadow: 0 0 0 3px rgba(0, 196, 173, 0.14) !important;
 }
 
-input::placeholder, textarea::placeholder { color: #374F6B; }
+input::placeholder, textarea::placeholder { color: #373F5E; }
 input[type="password"] { letter-spacing: 2px; }
 textarea { resize: vertical; line-height: 1.6; }
 
 /* Select arrow color fix */
-select option { background: #152035; color: #DDE6F4; }
+select option { background: #181D30; color: #E2E8F6; }
 
 /* ── Button utilities ─────────────────────────────────────────────────────── */
 
-/* Primary — solid teal */
+/* Primary — solid blue */
 .btn-primary {
   padding: 8px 18px;
   font-size: 13px;
   font-weight: 500;
-  border: 1px solid #00E5CC;
-  color: #08111E;
+  border: 1px solid #00C4AD;
+  color: #0B0E18;
   border-radius: 8px;
-  background: #00E5CC;
+  background: #00C4AD;
   cursor: pointer;
   transition: background 0.15s, box-shadow 0.15s, opacity 0.15s;
   white-space: nowrap;
 }
 .btn-primary:hover:not(:disabled) {
-  background: #00CCBA;
-  box-shadow: 0 0 14px rgba(0,229,204,0.30);
+  background: #00A896;
+  box-shadow: 0 0 16px rgba(0,196,173,0.35);
 }
 .btn-primary:disabled { opacity: 0.35; cursor: default; }
 
-/* Accent — teal outline */
+/* Accent — blue outline */
 .btn-accent {
   padding: 8px 18px;
   font-size: 13px;
   font-weight: 500;
-  border: 1px solid #00E5CC;
-  color: #00E5CC;
+  border: 1px solid #00C4AD;
+  color: #00C4AD;
   border-radius: 8px;
-  background: rgba(0,229,204,0.08);
+  background: rgba(63,123,255,0.08);
   cursor: pointer;
   transition: background 0.15s, box-shadow 0.15s, opacity 0.15s;
   white-space: nowrap;
 }
 .btn-accent:hover:not(:disabled) {
-  background: rgba(0,229,204,0.15);
-  box-shadow: 0 0 10px rgba(0,229,204,0.18);
+  background: rgba(63,123,255,0.16);
+  box-shadow: 0 0 10px rgba(63,123,255,0.20);
 }
 .btn-accent:disabled { opacity: 0.35; cursor: default; }
 
@@ -93,15 +93,15 @@ select option { background: #152035; color: #DDE6F4; }
   padding: 8px 18px;
   font-size: 13px;
   font-weight: 500;
-  border: 1px solid #20D68A;
-  color: #20D68A;
+  border: 1px solid #00C07B;
+  color: #00C07B;
   border-radius: 8px;
-  background: rgba(32,214,138,0.08);
+  background: rgba(0,192,123,0.08);
   cursor: pointer;
   transition: background 0.15s, opacity 0.15s;
   white-space: nowrap;
 }
-.btn-green:hover:not(:disabled) { background: rgba(32,214,138,0.15); }
+.btn-green:hover:not(:disabled) { background: rgba(0,192,123,0.16); }
 .btn-green:disabled { opacity: 0.35; cursor: default; }
 
 /* Secondary — neutral */
@@ -109,8 +109,8 @@ select option { background: #152035; color: #DDE6F4; }
   padding: 8px 18px;
   font-size: 13px;
   font-weight: 400;
-  border: 1px solid #1E3352;
-  color: #6B84A0;
+  border: 1px solid #252D45;
+  color: #667099;
   border-radius: 8px;
   background: transparent;
   cursor: pointer;
@@ -118,9 +118,9 @@ select option { background: #152035; color: #DDE6F4; }
   white-space: nowrap;
 }
 .btn-secondary:hover:not(:disabled) {
-  border-color: #2A4A6E;
-  color: #DDE6F4;
-  background: #152035;
+  border-color: #323A58;
+  color: #E2E8F6;
+  background: #181D30;
 }
 .btn-secondary:disabled { opacity: 0.35; cursor: default; }
 
@@ -129,14 +129,20 @@ select option { background: #152035; color: #DDE6F4; }
   font-family: 'JetBrains Mono', Menlo, monospace !important;
 }
 
-/* Teal glow on stat numbers */
+/* Blue glow on stat numbers */
 .teal-glow {
-  text-shadow: 0 0 20px rgba(0,229,204,0.40);
+  text-shadow: 0 0 24px rgba(63,123,255,0.50);
 }
 
 /* Glassmorphism card */
 .glass-card {
-  background: rgba(14, 25, 41, 0.80);
+  background: rgba(18, 22, 39, 0.82);
   backdrop-filter: blur(12px);
-  border: 1px solid rgba(30, 51, 82, 0.80);
+  border: 1px solid rgba(37, 45, 69, 0.85);
+}
+
+/* Hide TradingView lightweight-charts attribution */
+[id^="tv-attr-logo"],
+a[href*="tradingview"] {
+  display: none !important;
 }

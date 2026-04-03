@@ -1,9 +1,11 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { getStatus, getSummary } from '../api/client.ts'
-import type { StatusResponse, AnalysisResult, WatchSymbol, SymbolSummary } from '../types/index.ts'
+import { getStatus, getSummary, getLiveCandles } from '../api/client.ts'
+import type { StatusResponse, SymbolSummary, CandleBar } from '../types/index.ts'
 import { Card } from '../components/Card.tsx'
 import { CalendarWidget } from '../components/CalendarWidget.tsx'
+import { AgentStatePanel } from '../components/AgentStatePanel.tsx'
+import { MiniChart } from '../components/MiniChart.tsx'
 
 const BIAS_COLORS: Record<string, string> = {
   bullish: 'text-green',
@@ -25,129 +27,114 @@ function rel(iso: string) {
   return `${Math.floor(d / 86400000)}d ago`
 }
 
-// ── Recent analysis card ──────────────────────────────────────────────────────
-
-function AnalysisCard({ analysis }: { analysis: AnalysisResult }) {
-  const { bias, summary, tradeProposal, symbol, timeframe, time, error } = analysis
-  return (
-    <Link
-      to={`/symbols/${encodeURIComponent(analysis.symbolKey)}`}
-      className="block bg-surface border border-border rounded-lg p-4 hover:border-muted2 transition-colors"
-    >
-      <div className="flex items-start justify-between gap-3 mb-2">
-        <div className="flex items-center gap-2">
-          <span className="font-mono text-sm font-bold text-text">{symbol}</span>
-          <span className="text-[9px] bg-bg border border-border rounded px-1.5 py-0.5 font-mono text-muted uppercase">
-            {timeframe}
-          </span>
-          {!error && (
-            <span className={`text-xs font-medium ${BIAS_COLORS[bias] ?? 'text-muted'}`}>
-              {BIAS_ICONS[bias]} {bias}
-            </span>
-          )}
-          {error && <span className="text-xs text-red/70">Error</span>}
-        </div>
-        <span className="text-[10px] text-muted2 flex-shrink-0">{rel(time)}</span>
-      </div>
-      {!error && summary && (
-        <p className="text-xs text-text/70 leading-snug line-clamp-2 mb-2">{summary}</p>
-      )}
-      {!error && tradeProposal && (
-        <div className={`inline-flex items-center gap-1.5 text-[10px] font-medium px-2 py-0.5 rounded border ${
-          tradeProposal.direction === 'BUY'
-            ? 'text-green border-green/30 bg-green/10'
-            : 'text-red border-red/30 bg-red/10'
-        }`}>
-          {tradeProposal.direction} · R:R {tradeProposal.riskReward.toFixed(2)} · {tradeProposal.confidence}
-        </div>
-      )}
-    </Link>
-  )
-}
-
-// ── Symbol summary row ────────────────────────────────────────────────────────
-
-function SymbolRow({ sym, scheduled }: { sym: WatchSymbol; scheduled: boolean }) {
-  return (
-    <Link
-      to={`/symbols/${encodeURIComponent(sym.key)}`}
-      className="flex items-center justify-between px-3 py-2.5 hover:bg-surface2 transition-colors border-b border-border last:border-0"
-    >
-      <div className="flex items-center gap-2">
-        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${scheduled ? 'bg-green animate-pulse' : 'bg-muted2'}`} />
-        <span className="font-mono text-sm text-text">{sym.symbol}</span>
-        {sym.displayName && <span className="text-xs text-muted2">{sym.displayName}</span>}
-      </div>
-      <div className="flex items-center gap-2">
-        {sym.lastAnalysisAt && (
-          <span className="text-[10px] text-muted2">{rel(sym.lastAnalysisAt)}</span>
-        )}
-        <span className="text-muted text-xs">→</span>
-      </div>
-    </Link>
-  )
-}
-
-// ── Bias heatmap ──────────────────────────────────────────────────────────────
-
-const BIAS_BG: Record<string, string> = {
-  bullish: 'border-green/40 bg-green/5',
-  bearish: 'border-red/40 bg-red/5',
-  neutral: 'border-yellow/30 bg-yellow/5',
-}
-
 const SCORE_COLOR = (score: number) => {
   if (score >= 70) return 'text-green'
   if (score >= 50) return 'text-yellow'
   return 'text-red'
 }
 
-function BiasCard({ s }: { s: SymbolSummary }) {
-  const biasColor  = BIAS_COLORS[s.bias ?? 'neutral'] ?? 'text-muted'
-  const biasIcon   = BIAS_ICONS[s.bias ?? 'neutral']  ?? '—'
-  const borderCls  = s.error ? 'border-red/30 bg-red/5' : (BIAS_BG[s.bias ?? 'neutral'] ?? 'border-border')
+// ── Watchlist card (grid) ─────────────────────────────────────────────────────
+
+function WatchlistCard({ s }: { s: SymbolSummary }) {
+  const [candles, setCandles] = useState<CandleBar[]>([])
+
+  useEffect(() => {
+    getLiveCandles(s.key, 'h1', 60).then(setCandles).catch(() => {})
+  }, [s.key])
+
+  const biasColor = BIAS_COLORS[s.bias ?? 'neutral'] ?? 'text-muted'
+  const biasIcon  = BIAS_ICONS[s.bias ?? 'neutral']  ?? '—'
 
   return (
-    <Link
-      to={`/symbols/${encodeURIComponent(s.key)}`}
-      className={`block border rounded-lg p-3 hover:opacity-90 transition-opacity ${borderCls}`}
-    >
-      <div className="flex items-start justify-between gap-1 mb-1">
-        <div className="flex items-center gap-1.5 min-w-0">
+    <div className="bg-surface border border-border rounded-xl overflow-hidden hover:border-muted2 transition-colors group">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 pt-3 pb-1">
+        <div className="flex items-center gap-2 min-w-0">
           {s.running && (
             <span className="w-1.5 h-1.5 rounded-full bg-yellow animate-pulse flex-shrink-0" />
           )}
           {!s.running && s.scheduled && (
             <span className="w-1.5 h-1.5 rounded-full bg-green/60 flex-shrink-0" />
           )}
-          <span className="font-mono text-xs font-bold text-text truncate">{s.symbol}</span>
-        </div>
-        {!s.error && s.bias && (
-          <span className={`text-xs font-bold flex-shrink-0 ${biasColor}`}>{biasIcon}</span>
-        )}
-        {s.error && <span className="text-[10px] text-red/70 flex-shrink-0">ERR</span>}
-      </div>
-
-      {!s.error && s.direction && (
-        <div className={`inline-flex items-center gap-1 text-[9px] font-medium px-1.5 py-0.5 rounded border mb-1 ${
-          s.direction === 'BUY'
-            ? 'text-green border-green/30 bg-green/10'
-            : 'text-red border-red/30 bg-red/10'
-        }`}>
-          {s.direction}
-          {s.riskReward != null && ` · ${s.riskReward.toFixed(1)}R`}
-          {s.validationScore != null && (
-            <span className={`ml-1 ${SCORE_COLOR(s.validationScore)}`}>
-              {s.validationScore}
-            </span>
+          <span className="font-mono text-sm font-bold text-text truncate">{s.symbol}</span>
+          {s.displayName && (
+            <span className="text-[10px] text-muted2 truncate hidden sm:inline">{s.displayName}</span>
           )}
         </div>
-      )}
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {!s.error && s.bias && (
+            <span className={`text-xs font-bold ${biasColor}`}>{biasIcon} {s.bias}</span>
+          )}
+          {s.error && <span className="text-[10px] text-red/70">ERR</span>}
+        </div>
+      </div>
 
-      {s.lastAnalysisAt && (
-        <div className="text-[9px] text-muted2">{rel(s.lastAnalysisAt)}</div>
-      )}
-    </Link>
+      {/* Mini chart */}
+      <div className="px-2">
+        <Link to={`/symbols/${encodeURIComponent(s.key)}`}>
+          {candles.length > 0 ? (
+            <MiniChart candles={candles} height={110} />
+          ) : (
+            <div className="h-[110px] flex items-center justify-center text-[10px] text-muted2">
+              {s.error ? 'Chart unavailable' : 'Loading chart...'}
+            </div>
+          )}
+        </Link>
+      </div>
+
+      {/* Analysis summary */}
+      <div className="px-4 py-2.5 space-y-1.5">
+        {!s.error && s.direction && (
+          <div className="flex items-center gap-2">
+            <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded border ${
+              s.direction === 'BUY'
+                ? 'text-green border-green/30 bg-green/10'
+                : 'text-red border-red/30 bg-red/10'
+            }`}>
+              {s.direction}
+              {s.riskReward != null && ` · ${s.riskReward.toFixed(1)}R`}
+            </span>
+            {s.confidence && (
+              <span className={`text-[10px] ${
+                s.confidence === 'high' ? 'text-green' : s.confidence === 'medium' ? 'text-yellow' : 'text-muted'
+              }`}>
+                {s.confidence}
+              </span>
+            )}
+            {s.validationScore != null && (
+              <span className={`text-[10px] font-mono ${SCORE_COLOR(s.validationScore)}`}>
+                {s.validationScore}pts
+              </span>
+            )}
+          </div>
+        )}
+
+        {s.summary && !s.error && (
+          <p className="text-[11px] text-muted leading-snug line-clamp-2">{s.summary}</p>
+        )}
+
+        {/* Footer: timestamp + actions */}
+        <div className="flex items-center justify-between pt-1">
+          <span className="text-[10px] text-muted2">
+            {s.lastAnalysisAt ? rel(s.lastAnalysisAt) : 'No analysis yet'}
+          </span>
+          <div className="flex items-center gap-1.5">
+            <Link
+              to={`/symbols/${encodeURIComponent(s.key)}`}
+              className="text-[10px] px-2 py-0.5 rounded border border-border text-muted hover:text-text hover:bg-surface2 transition-colors"
+            >
+              View
+            </Link>
+            <Link
+              to={`/symbols/${encodeURIComponent(s.key)}/config`}
+              className="text-[10px] px-2 py-0.5 rounded border border-border text-muted hover:text-text hover:bg-surface2 transition-colors"
+            >
+              Edit
+            </Link>
+          </div>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -183,11 +170,9 @@ export function Dashboard() {
   }, [load])
 
   const symbols      = data?.symbols ?? []
-  const analyses     = data?.recentAnalyses ?? []
   const scheduled    = new Set(data?.scheduled ?? [])
-  const bullish      = analyses.filter(a => a.bias === 'bullish' && !a.error).length
-  const bearish      = analyses.filter(a => a.bias === 'bearish' && !a.error).length
-  const withTrades   = analyses.filter(a => a.tradeProposal && !a.error).length
+  const bullish      = summary.filter(s => s.bias === 'bullish' && !s.error).length
+  const withTrades   = summary.filter(s => s.direction && !s.error).length
 
   return (
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
@@ -208,10 +193,10 @@ export function Dashboard() {
       {/* Stats row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: 'Symbols',     value: symbols.length,  color: 'text-text' },
-          { label: 'Scheduled',   value: scheduled.size,  color: 'text-green' },
-          { label: 'Bullish',     value: bullish,         color: 'text-green' },
-          { label: 'Trade Setups', value: withTrades,     color: 'text-yellow' },
+          { label: 'Symbols',      value: symbols.length,  color: 'text-text' },
+          { label: 'Scheduled',    value: scheduled.size,  color: 'text-green' },
+          { label: 'Bullish',      value: bullish,         color: 'text-green' },
+          { label: 'Trade Setups', value: withTrades,      color: 'text-yellow' },
         ].map(s => (
           <Card key={s.label}>
             <div className="text-center">
@@ -222,65 +207,31 @@ export function Dashboard() {
         ))}
       </div>
 
-      {/* Bias heatmap */}
-      {summary.length > 0 && (
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted">Market Bias</span>
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
-            {summary.map(s => <BiasCard key={s.key} s={s} />)}
-          </div>
+      {/* Watchlist grid */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-xs font-semibold uppercase tracking-wider text-muted">Watchlist</span>
+          <Link to="/symbols" className="text-[10px] text-green hover:underline">Manage →</Link>
         </div>
-      )}
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Watchlist */}
-        <div className="lg:col-span-1">
+        {summary.length === 0 ? (
           <Card>
-            <div className="px-1 pb-3 border-b border-border mb-0">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wider text-muted">Watchlist</span>
-                <Link to="/symbols" className="text-[10px] text-green hover:underline">Manage →</Link>
-              </div>
+            <div className="py-10 text-center text-sm text-muted2">
+              No symbols in your watchlist.<br />
+              <Link to="/symbols" className="text-green hover:underline mt-1 inline-block">Add one →</Link>
             </div>
-            {symbols.length === 0 ? (
-              <div className="py-8 text-center text-xs text-muted2">
-                No symbols.<br />
-                <Link to="/symbols" className="text-green hover:underline">Add one →</Link>
-              </div>
-            ) : (
-              <div className="divide-y divide-border">
-                {symbols.map(sym => (
-                  <SymbolRow key={sym.key} sym={sym} scheduled={scheduled.has(sym.key)} />
-                ))}
-              </div>
-            )}
           </Card>
-        </div>
-
-        {/* Recent analyses */}
-        <div className="lg:col-span-2 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted">Recent Analyses</span>
-            <Link to="/reports" className="text-[10px] text-green hover:underline">All reports →</Link>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {summary.map(s => <WatchlistCard key={s.key} s={s} />)}
           </div>
-          {analyses.length === 0 ? (
-            <Card>
-              <div className="py-8 text-center text-xs text-muted2">
-                No analyses yet — run one from the Watchlist
-              </div>
-            </Card>
-          ) : (
-            analyses.slice(0, 6).map(a => (
-              <AnalysisCard key={a.id} analysis={a} />
-            ))
-          )}
-        </div>
+        )}
       </div>
 
-      {/* Calendar */}
-      <CalendarWidget />
+      {/* Agent state + Calendar */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <AgentStatePanel />
+        <CalendarWidget />
+      </div>
     </div>
   )
 }

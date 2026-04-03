@@ -10,6 +10,8 @@ import { Config } from './pages/Config.tsx'
 import { SymbolConfig } from './pages/SymbolConfig.tsx'
 import { Account } from './pages/Account.tsx'
 import { Strategies } from './pages/Strategies.tsx'
+import { AgentMemory } from './pages/AgentMemory.tsx'
+import { AgentRules } from './pages/AgentRules.tsx'
 
 export default function App() {
   return (
@@ -26,6 +28,8 @@ export default function App() {
             <Route path="config" element={<Config />} />
             <Route path="account" element={<Account />} />
             <Route path="strategies" element={<Strategies />} />
+            <Route path="agent/memory" element={<AgentMemory />} />
+            <Route path="agent/rules" element={<AgentRules />} />
           </Route>
         </Routes>
       </AccountProvider>

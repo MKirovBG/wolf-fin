@@ -344,14 +344,22 @@ Return ONLY a JSON code block in this exact format — no text before or after t
     "reasoning": "Why this setup is valid — entry trigger, confluence factors, regime alignment",
     "confidence": "high" | "medium" | "low",
     "invalidatedIf": "What price action would cancel this setup"
-  }
+  },
+  "reasoningChain": [
+    { "step": "Step title", "detail": "Explanation of what was analyzed and concluded" }
+  ]
 }
 \`\`\`
 
-If there is no clear trade setup, set "tradeProposal" to null. Always include at least 3 key levels. Prices must use the same decimal precision as the symbol (${digits} digits).`
+If there is no clear trade setup, set "tradeProposal" to null. Always include at least 3 key levels. Prices must use the same decimal precision as the symbol (${digits} digits). The "reasoningChain" should contain 3-6 steps showing your analytical process (e.g. "Market Structure", "Key Levels", "Momentum Check", "Setup Assessment", "Risk Evaluation").`
 }
 
-export function buildSystemPrompt(options?: { strategyInstructions?: string; customPrompt?: string }): string {
+export function buildSystemPrompt(options?: {
+  strategyInstructions?: string
+  customPrompt?: string
+  rules?: string[]
+  memories?: string[]
+}): string {
   if (options?.customPrompt?.trim()) return options.customPrompt.trim()
 
   const base = `You are a professional forex and CFD technical analyst with expertise in price action, multi-timeframe analysis, and institutional trading concepts. Your analysis is objective, data-driven, and focused on high-probability setups. You identify key structural levels from chart history and only propose trades when there is clear confluence. You always respond with valid JSON exactly as instructed.`
@@ -360,5 +368,13 @@ export function buildSystemPrompt(options?: { strategyInstructions?: string; cus
     ? `\n\nAnalysis approach: ${options.strategyInstructions.trim()}`
     : ''
 
-  return base + strategyNote
+  const rulesNote = options?.rules?.length
+    ? `\n\nTrading rules (you MUST follow these):\n${options.rules.map((r, i) => `${i + 1}. ${r}`).join('\n')}`
+    : ''
+
+  const memoriesNote = options?.memories?.length
+    ? `\n\nRelevant memories from previous analyses:\n${options.memories.map(m => `- ${m}`).join('\n')}`
+    : ''
+
+  return base + strategyNote + rulesNote + memoriesNote
 }

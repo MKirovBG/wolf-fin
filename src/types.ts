@@ -84,6 +84,11 @@ export interface TradeProposal {
   invalidatedIf?: string
 }
 
+export interface ReasoningStep {
+  step: string
+  detail: string
+}
+
 export interface AnalysisResult {
   id: number
   symbolKey: string
@@ -100,11 +105,14 @@ export interface AnalysisResult {
   context: AnalysisContext
   llmProvider: string
   llmModel: string
+  strategyKey?: string                  // which strategy produced this analysis
+  reasoningChain?: ReasoningStep[]      // step-by-step analysis reasoning
   patterns?: CandlePattern[]           // detected candlestick patterns
   validation?: ProposalValidation      // post-analysis proposal quality score
   error?: string
   rawResponse?: string    // full LLM text response
   llmThinking?: string    // extended thinking block (Claude only)
+  systemPrompt?: string   // the system prompt sent to the LLM
 }
 
 export interface AnalysisContext {

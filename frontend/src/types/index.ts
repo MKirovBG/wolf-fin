@@ -126,27 +126,54 @@ export interface ProposalValidation {
   valid: boolean
 }
 
+export interface ReasoningStep {
+  step:   string
+  detail: string
+}
+
 export interface AnalysisResult {
-  id:            number
-  symbolKey:     string
-  symbol:        string
-  market:        'mt5'
-  timeframe:     string
-  time:          string
-  bias:          'bullish' | 'bearish' | 'neutral'
-  summary:       string
-  keyLevels:     KeyLevel[]
-  tradeProposal: TradeProposal | null
-  indicators:    Record<string, number | string>
-  candles:       CandleBar[]
-  context:       AnalysisContext
-  patterns?:     CandlePattern[]
-  validation?:   ProposalValidation
-  llmProvider:   string
-  llmModel:      string
-  error?:        string
-  rawResponse?:  string
-  llmThinking?:  string
+  id:              number
+  symbolKey:       string
+  symbol:          string
+  market:          'mt5'
+  timeframe:       string
+  time:            string
+  bias:            'bullish' | 'bearish' | 'neutral'
+  summary:         string
+  keyLevels:       KeyLevel[]
+  tradeProposal:   TradeProposal | null
+  indicators:      Record<string, number | string>
+  candles:         CandleBar[]
+  context:         AnalysisContext
+  patterns?:       CandlePattern[]
+  validation?:     ProposalValidation
+  strategyKey?:    string
+  reasoningChain?: ReasoningStep[]
+  llmProvider:     string
+  llmModel:        string
+  error?:          string
+  rawResponse?:    string
+  llmThinking?:    string
+  systemPrompt?:   string
+}
+
+// ── Analysis feedback ────────────────────────────────────────────────────────
+
+export interface AnalysisFeedback {
+  id:         number
+  analysisId: number
+  rating:     number | null
+  comment:    string | null
+  createdAt:  string
+}
+
+// ── Symbol strategy assignment ───────────────────────────────────────────────
+
+export interface SymbolStrategy {
+  symbolKey:   string
+  strategyKey: string
+  enabled:     boolean
+  addedAt:     string
 }
 
 // ── Outcomes ──────────────────────────────────────────────────────────────────
@@ -295,6 +322,46 @@ export interface Strategy {
   instructions: string
   isBuiltin:    boolean
   createdAt:    string
+}
+
+// ── Agent state ──────────────────────────────────────────────────────────────
+
+export interface AgentState {
+  status:         'idle' | 'analyzing' | 'error'
+  currentTask:    string | null
+  currentSymbol:  string | null
+  queueDepth:     number
+  lastRunAt:      string | null
+  lastError:      string | null
+  recentErrors:   Array<{ time: string; message: string }>
+  totalRuns:      number
+  totalErrors:    number
+}
+
+// ── Agent memory ─────────────────────────────────────────────────────────────
+
+export interface AgentMemory {
+  id:               number
+  symbol:           string | null
+  category:         string
+  content:          string
+  confidence:       number
+  sourceAnalysisId: number | null
+  createdAt:        string
+  expiresAt:        string | null
+  active:           boolean
+}
+
+// ── Agent rules ──────────────────────────────────────────────────────────────
+
+export interface AgentRule {
+  id:         number
+  ruleText:   string
+  scope:      string
+  scopeValue: string | null
+  priority:   number
+  enabled:    boolean
+  createdAt:  string
 }
 
 // ── App config ───────────────────────────────────────────────────────────────

@@ -158,7 +158,7 @@ export function CandlestickChart({ candles, keyLevels = [], proposal, currentPri
     if (currentPrice) {
       series.createPriceLine({
         price:      currentPrice,
-        color:      '#00E5CC99',
+        color:      '#00C4AD99',
         lineWidth:  1,
         lineStyle:  LineStyle.Solid,
         axisLabelVisible: true,

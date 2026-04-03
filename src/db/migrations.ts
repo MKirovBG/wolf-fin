@@ -329,6 +329,99 @@ const MIGRATIONS: Migration[] = [
     `),
   },
 
+  {
+    version: 13,
+    name: 'symbol_strategies',
+    run: (db) => db.exec(`
+      CREATE TABLE IF NOT EXISTS symbol_strategies (
+        symbol_key   TEXT NOT NULL,
+        strategy_key TEXT NOT NULL,
+        enabled      INTEGER NOT NULL DEFAULT 1,
+        added_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (symbol_key, strategy_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_symbol_strategies_symbol ON symbol_strategies(symbol_key);
+    `),
+  },
+
+  {
+    version: 14,
+    name: 'analyses_strategy_key',
+    run: (db) => {
+      const cols = new Set((db.prepare('PRAGMA table_info(analyses)').all() as Array<{ name: string }>).map(c => c.name))
+      if (!cols.has('strategy_key')) db.exec(`ALTER TABLE analyses ADD COLUMN strategy_key TEXT`)
+    },
+  },
+
+  {
+    version: 15,
+    name: 'analyses_reasoning_chain',
+    run: (db) => {
+      const cols = new Set((db.prepare('PRAGMA table_info(analyses)').all() as Array<{ name: string }>).map(c => c.name))
+      if (!cols.has('reasoning_chain')) db.exec(`ALTER TABLE analyses ADD COLUMN reasoning_chain TEXT`)
+    },
+  },
+
+  {
+    version: 16,
+    name: 'analysis_feedback',
+    run: (db) => db.exec(`
+      CREATE TABLE IF NOT EXISTS analysis_feedback (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        analysis_id INTEGER NOT NULL,
+        rating      INTEGER,
+        comment     TEXT,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_feedback_analysis ON analysis_feedback(analysis_id);
+    `),
+  },
+
+  {
+    version: 17,
+    name: 'agent_memories',
+    run: (db) => db.exec(`
+      DROP TABLE IF EXISTS agent_memories;
+      CREATE TABLE IF NOT EXISTS agent_memories (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol            TEXT,
+        category          TEXT NOT NULL,
+        content           TEXT NOT NULL,
+        confidence        REAL NOT NULL DEFAULT 0.5,
+        source_analysis_id INTEGER,
+        created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+        expires_at        TEXT,
+        active            INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE INDEX IF NOT EXISTS idx_memories_symbol ON agent_memories(symbol, active);
+      CREATE INDEX IF NOT EXISTS idx_memories_category ON agent_memories(category, active);
+    `),
+  },
+
+  {
+    version: 18,
+    name: 'agent_rules',
+    run: (db) => db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_rules (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        rule_text   TEXT NOT NULL,
+        scope       TEXT NOT NULL DEFAULT 'global',
+        scope_value TEXT,
+        priority    INTEGER NOT NULL DEFAULT 0,
+        enabled     INTEGER NOT NULL DEFAULT 1,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `),
+  },
+
+  {
+    version: 19,
+    name: 'analyses_system_prompt',
+    run: (db) => db.exec(`
+      ALTER TABLE analyses ADD COLUMN system_prompt TEXT;
+    `),
+  },
+
 ]
 
 // ── Runner ─────────────────────────────────────────────────────────────────────

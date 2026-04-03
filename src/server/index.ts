@@ -22,11 +22,17 @@ import {
   dbGetFeaturesForAnalysis,
   dbGetMigrationStatus, dbCheckIntegrity,
   makeSymbolKey,
+  dbGetSymbolStrategies, dbAddSymbolStrategy, dbRemoveSymbolStrategy, dbToggleSymbolStrategy, dbGetAllSymbolStrategies,
+  dbSaveFeedback, dbGetFeedback,
+  dbGetMemories, dbSaveMemory, dbUpdateMemory, dbDeleteMemory,
+  dbGetRules, dbGetActiveRules, dbSaveRule, dbUpdateRule, dbDeleteRule,
 } from '../db/index.js'
 import type { Mt5AccountRow } from '../db/index.js'
 import { getLogs, subscribeToLogs, subscribeToAnalyses, broadcastAnalysisUpdate } from './state.js'
 import { runAnalysis, isAnalysisRunning } from '../analyzer/index.js'
-import { syncSchedule, stopSchedule, getScheduledKeys } from '../scheduler/index.js'
+import { getAgentState } from '../analyzer/state.js'
+import { syncSchedule, stopSchedule, getScheduledKeys, startDailyDigest } from '../scheduler/index.js'
+import { runDailyDigest } from '../analyzer/memory.js'
 import { MT5Adapter, setBridgeActiveLogin } from '../adapters/mt5.js'
 import { getPlatformLLMModel, getPlatformLLMProvider, getOpenAITokenStatus, getOpenAIAccessToken } from '../llm/index.js'
 import type { WatchSymbol } from '../types.js'
@@ -322,6 +328,22 @@ export async function startServer(): Promise<void> {
     return result
   })
 
+  // ── Analysis feedback ──────────────────────────────────────────────────────
+
+  app.post('/api/analyses/:id/feedback', async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const body = req.body as { rating?: number; comment?: string }
+    const analysis = dbGetAnalysisById(parseInt(id))
+    if (!analysis) return reply.status(404).send({ error: 'Analysis not found' })
+    const feedbackId = dbSaveFeedback(parseInt(id), body.rating ?? null, body.comment ?? null)
+    return reply.send({ ok: true, id: feedbackId })
+  })
+
+  app.get('/api/analyses/:id/feedback', async (req, reply) => {
+    const { id } = req.params as { id: string }
+    return reply.send(dbGetFeedback(parseInt(id)))
+  })
+
   // Running state
   app.get('/api/symbols/:key/running', async (req) => {
     const { key } = req.params as { key: string }
@@ -381,6 +403,114 @@ export async function startServer(): Promise<void> {
     if (!existing) return reply.status(404).send({ error: 'Strategy not found' })
     if (existing.isBuiltin) return reply.status(403).send({ error: 'Built-in strategies cannot be deleted' })
     dbDeleteStrategy(key)
+    return reply.send({ ok: true })
+  })
+
+  // ── Agent state ──────────────────────────────────────────────────────────────
+
+  app.get('/api/agent/state', async () => {
+    return getAgentState()
+  })
+
+  // ── Agent memories ────────────────────────────────────────────────────────────
+
+  app.get('/api/agent/memories', async (req) => {
+    const { symbol, category } = req.query as { symbol?: string; category?: string }
+    return dbGetMemories({ symbol, category, activeOnly: false })
+  })
+
+  app.post('/api/agent/memories', async (req, reply) => {
+    const body = req.body as { symbol?: string; category?: string; content?: string; confidence?: number; sourceAnalysisId?: number; expiresAt?: string }
+    if (!body.category?.trim() || !body.content?.trim()) return reply.status(400).send({ error: 'category and content are required' })
+    const id = dbSaveMemory({ symbol: body.symbol, category: body.category.trim(), content: body.content.trim(), confidence: body.confidence, sourceAnalysisId: body.sourceAnalysisId, expiresAt: body.expiresAt })
+    return reply.send({ ok: true, id })
+  })
+
+  app.patch('/api/agent/memories/:id', async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const body = req.body as { active?: boolean; content?: string; confidence?: number }
+    dbUpdateMemory(parseInt(id), body)
+    return reply.send({ ok: true })
+  })
+
+  app.delete('/api/agent/memories/:id', async (req, reply) => {
+    const { id } = req.params as { id: string }
+    dbDeleteMemory(parseInt(id))
+    return reply.send({ ok: true })
+  })
+
+  // ── Agent digest (manual trigger) ────────────────────────────────────────────
+
+  app.post('/api/agent/digest', async (_req, reply) => {
+    try {
+      const result = await runDailyDigest()
+      return reply.send(result)
+    } catch (err) {
+      return reply.status(500).send({ error: String(err) })
+    }
+  })
+
+  // ── Agent rules ──────────────────────────────────────────────────────────────
+
+  app.get('/api/agent/rules', async () => {
+    return dbGetRules({ enabledOnly: false })
+  })
+
+  app.post('/api/agent/rules', async (req, reply) => {
+    const body = req.body as { ruleText?: string; scope?: string; scopeValue?: string; priority?: number }
+    if (!body.ruleText?.trim()) return reply.status(400).send({ error: 'ruleText is required' })
+    const id = dbSaveRule({ ruleText: body.ruleText.trim(), scope: body.scope, scopeValue: body.scopeValue, priority: body.priority })
+    return reply.send({ ok: true, id })
+  })
+
+  app.patch('/api/agent/rules/:id', async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const body = req.body as { ruleText?: string; scope?: string; scopeValue?: string; priority?: number; enabled?: boolean }
+    dbUpdateRule(parseInt(id), body)
+    return reply.send({ ok: true })
+  })
+
+  app.delete('/api/agent/rules/:id', async (req, reply) => {
+    const { id } = req.params as { id: string }
+    dbDeleteRule(parseInt(id))
+    return reply.send({ ok: true })
+  })
+
+  // ── Symbol–Strategy assignments ──────────────────────────────────────────────
+
+  app.get('/api/symbol-strategies', async () => {
+    return dbGetAllSymbolStrategies()
+  })
+
+  app.get('/api/symbols/:key/strategies', async (req, reply) => {
+    const { key } = req.params as { key: string }
+    if (!dbGetSymbol(key)) return reply.status(404).send({ error: 'Symbol not found' })
+    return reply.send(dbGetSymbolStrategies(key))
+  })
+
+  app.post('/api/symbols/:key/strategies', async (req, reply) => {
+    const { key } = req.params as { key: string }
+    const body = req.body as { strategyKey?: string }
+    if (!dbGetSymbol(key)) return reply.status(404).send({ error: 'Symbol not found' })
+    if (!body.strategyKey?.trim()) return reply.status(400).send({ error: 'strategyKey is required' })
+    if (!dbGetStrategy(body.strategyKey.trim())) return reply.status(404).send({ error: 'Strategy not found' })
+    dbAddSymbolStrategy(key, body.strategyKey.trim())
+    return reply.send({ ok: true })
+  })
+
+  app.delete('/api/symbols/:key/strategies/:stratKey', async (req, reply) => {
+    const { key, stratKey } = req.params as { key: string; stratKey: string }
+    if (!dbGetSymbol(key)) return reply.status(404).send({ error: 'Symbol not found' })
+    dbRemoveSymbolStrategy(key, stratKey)
+    return reply.send({ ok: true })
+  })
+
+  app.patch('/api/symbols/:key/strategies/:stratKey', async (req, reply) => {
+    const { key, stratKey } = req.params as { key: string; stratKey: string }
+    const body = req.body as { enabled?: boolean }
+    if (!dbGetSymbol(key)) return reply.status(404).send({ error: 'Symbol not found' })
+    if (body.enabled == null) return reply.status(400).send({ error: 'enabled is required' })
+    dbToggleSymbolStrategy(key, stratKey, body.enabled)
     return reply.send({ ok: true })
   })
 
@@ -1203,4 +1333,7 @@ export async function startServer(): Promise<void> {
 
   // Prime MT5 bridge data on startup
   fetchMt5Entries().catch(() => { /* bridge may not be running yet */ })
+
+  // Start daily memory digest timer
+  startDailyDigest()
 }

@@ -11,7 +11,7 @@ export class AnthropicProvider implements LLMProvider {
       model: params.model,
       max_tokens: params.max_tokens,
       system: params.system,
-      ...(params.tools.length > 0 ? { tools: params.tools } : {}),
+      ...((params.tools?.length ?? 0) > 0 ? { tools: params.tools } : {}),
       messages: params.messages,
     })
     return {

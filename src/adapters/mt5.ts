@@ -677,6 +677,76 @@ export class MT5Adapter implements IMarketAdapter {
     const pipVal = info.trade_tick_value ?? 1
     return { pipSize: pipSz, pipValue: pipVal, point: info.point }
   }
+
+  /**
+   * Fetch everything needed for an analysis run: current price, all timeframe candles,
+   * and symbol info. Does not require RiskState — for use by the analyzer module.
+   */
+  async fetchAnalysisData(symbol: string): Promise<{
+    price: { bid: number; ask: number; mid: number; spread: number }
+    candles: { m1: Candle[]; m5: Candle[]; m15: Candle[]; m30: Candle[]; h1: Candle[]; h4: Candle[] }
+    symbolInfo: { point: number; digits: number; volumeMin: number; volumeStep: number; contractSize: number }
+  }> {
+    const snap = await mt5Get<BridgeSnapshot>(this.buildUrl(`/snapshot/${toMt5Symbol(symbol)}`))
+
+    const mapCandles = (arr: BridgeCandle[]): Candle[] =>
+      arr.map(c => ({
+        openTime: c.openTime,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+        closeTime: c.closeTime,
+      }))
+
+    // Some bridge versions omit m5/m30 from snapshot — fetch them separately if empty.
+    const TF_BRIDGE: Record<string, 'M1' | 'M5' | 'M15' | 'M30' | 'H1' | 'H4'> = {
+      m1: 'M1', m5: 'M5', m15: 'M15', m30: 'M30', h1: 'H1', h4: 'H4',
+    }
+    const resolveTf = async (
+      tf: keyof typeof TF_BRIDGE,
+      fromSnap: BridgeCandle[] | undefined,
+      count = 150,
+    ): Promise<Candle[]> => {
+      const mapped = mapCandles(fromSnap ?? [])
+      if (mapped.length > 0) return mapped
+      // Snapshot missing this TF — fetch directly
+      try {
+        return await this.getHistoricalCandles(symbol, TF_BRIDGE[tf], count)
+      } catch {
+        return []
+      }
+    }
+
+    const [m1, m5, m15, m30, h1, h4] = await Promise.all([
+      resolveTf('m1',  snap.candles.m1),
+      resolveTf('m5',  snap.candles.m5),
+      resolveTf('m15', snap.candles.m15),
+      resolveTf('m30', snap.candles.m30),
+      resolveTf('h1',  snap.candles.h1),
+      resolveTf('h4',  snap.candles.h4),
+    ])
+
+    const { bid, ask, last } = snap.price
+    const mid = last || (bid + ask) / 2
+    const info = snap.symbol_info
+    const point = info.point || pipSizeHeuristic(symbol)
+    const pipSz = pipSizeHeuristic(symbol, point)
+    const spread = info.spread * point / pipSz
+
+    return {
+      price: { bid, ask, mid, spread },
+      candles: { m1, m5, m15, m30, h1, h4 },
+      symbolInfo: {
+        point: info.point,
+        digits: info.digits,
+        volumeMin: info.volume_min,
+        volumeStep: info.volume_step,
+        contractSize: info.trade_contract_size || 100_000,
+      },
+    }
+  }
 }
 
 export const mt5Adapter = new MT5Adapter()

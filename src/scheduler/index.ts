@@ -1,173 +1,101 @@
-// Wolf-Fin Scheduler — per-agent continuous loop task management
+// Wolf-Fin Scheduler — per-symbol interval-based analysis trigger
 //
-// Fetch modes:
-//   manual     — Start marks agent as running; each Trigger fires one single tick.
-//   autonomous — Start begins a continuous loop: tick → await completion → tick → …
-//   scheduled  — Same as autonomous; scheduled time defines the active window.
-//                If scheduledStartUtc / scheduledEndUtc are set the loop sleeps
-//                outside that window and resumes when it opens.
-//
-// The loop runs tick-to-tick with no fixed interval between ticks.
-// Trigger always fires one immediate out-of-schedule tick regardless of mode.
+// Each WatchSymbol with scheduleEnabled=true and a scheduleIntervalMs gets
+// a repeating timer. On each tick the scheduler calls runAnalysis(symbolKey)
+// if the current UTC time falls within the optional scheduleStartUtc/scheduleEndUtc window.
 
 import pino from 'pino'
-import { runAgentTick } from '../agent/index.js'
-import { setAgentStatus, getAgent } from '../server/state.js'
-import { makeAgentKey } from '../db/index.js'
-import type { AgentConfig } from '../types.js'
+import { runAnalysis, isAnalysisRunning } from '../analyzer/index.js'
+import { logEvent } from '../server/state.js'
+import type { WatchSymbol } from '../types.js'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
 
-interface LoopSignal { cancelled: boolean }
-
-// Map of agentKey → abort signal for the running loop
-const tasks = new Map<string, LoopSignal>()
-
-// Minimum delay between ticks regardless of decision outcome.
-// Prevents bursting multiple LLM calls per minute and hitting API rate limits.
-// Configurable via AGENT_MIN_TICK_INTERVAL_MS (default: 30s).
-const MIN_TICK_INTERVAL_MS = parseInt(process.env.AGENT_MIN_TICK_INTERVAL_MS ?? '30000', 10)
-
-function agentKey(config: AgentConfig): string {
-  return makeAgentKey(config.market, config.symbol, config.mt5AccountId, config.name)
+interface ScheduleEntry {
+  sym:    WatchSymbol
+  timer:  ReturnType<typeof setInterval>
 }
 
-// ── Scheduled time-window helpers ─────────────────────────────────────────────
+const schedules = new Map<string, ScheduleEntry>()
 
-/** Returns milliseconds until the scheduled window opens (0 if currently inside). */
-function msUntilWindowOpen(startUtc: string, endUtc: string): number {
+// ── Time-window helpers ───────────────────────────────────────────────────────
+
+function isInWindow(startUtc?: string, endUtc?: string): boolean {
+  if (!startUtc || !endUtc) return true  // no window restriction
+
   const [sh, sm] = startUtc.split(':').map(Number)
   const [eh, em] = endUtc.split(':').map(Number)
   const now = new Date()
-  const nowMin = now.getUTCHours() * 60 + now.getUTCMinutes()
+  const nowMin   = now.getUTCHours() * 60 + now.getUTCMinutes()
   const startMin = (sh ?? 0) * 60 + (sm ?? 0)
   const endMin   = (eh ?? 0) * 60 + (em ?? 0)
 
-  // Window spans midnight (e.g. 22:00 → 06:00) when end ≤ start
+  // Window can span midnight (e.g. 22:00 → 06:00) when end ≤ start
   const spansMidnight = endMin <= startMin
-  const inWindow = spansMidnight
+  return spansMidnight
     ? (nowMin >= startMin || nowMin < endMin)
     : (nowMin >= startMin && nowMin < endMin)
-
-  if (inWindow) return 0
-
-  // Minutes until next window open
-  let minsUntil: number
-  if (spansMidnight) {
-    minsUntil = nowMin < startMin ? startMin - nowMin : 24 * 60 - nowMin + startMin
-  } else {
-    minsUntil = nowMin < startMin ? startMin - nowMin : 24 * 60 - nowMin + startMin
-  }
-  return minsUntil * 60 * 1000
 }
 
-/** Sleep in short chunks so signal.cancelled can stop the wait early. */
-async function sleepCancellable(ms: number, signal: LoopSignal): Promise<void> {
-  const chunk = 30_000
-  let remaining = ms
-  while (remaining > 0 && !signal.cancelled) {
-    await new Promise(resolve => setTimeout(resolve, Math.min(remaining, chunk)))
-    remaining -= chunk
-  }
-}
+// ── Start / stop / sync ───────────────────────────────────────────────────────
 
-// ── Scheduler ─────────────────────────────────────────────────────────────────
+export function startSchedule(sym: WatchSymbol): void {
+  if (!sym.scheduleEnabled || !sym.scheduleIntervalMs) return
 
-export function startAgentSchedule(config: AgentConfig): void {
-  const key = agentKey(config)
+  // Stop any existing schedule for this key first
+  stopSchedule(sym.key)
 
-  // Cancel any existing loop first (idempotent restart)
-  const existing = tasks.get(key)
-  if (existing) {
-    existing.cancelled = true
-    tasks.delete(key)
-  }
+  const intervalMs = Math.max(sym.scheduleIntervalMs, 60_000)  // minimum 1 minute
 
-  setAgentStatus(key, 'running')
-
-  // Manual mode: just mark as running — each Trigger button press fires one tick
-  if (config.fetchMode === 'manual') {
-    log.info({ key }, 'agent registered in manual mode — awaiting Trigger')
-    return
-  }
-
-  const signal: LoopSignal = { cancelled: false }
-  tasks.set(key, signal)
-
-  // Continuous loop: each tick awaits completion before the next begins.
-  // No setInterval — no overlap, no drift, no duplicate-trigger skips.
-  ;(async () => {
-    log.info({ key, mode: config.fetchMode }, 'agent continuous loop started')
-    while (!signal.cancelled) {
-
-      // ── Scheduled window gate ────────────────────────────────────────────
-      if (config.scheduledStartUtc && config.scheduledEndUtc) {
-        const delayMs = msUntilWindowOpen(config.scheduledStartUtc, config.scheduledEndUtc)
-        if (delayMs > 0) {
-          const mins = Math.round(delayMs / 60_000)
-          log.info({ key, delayMs }, `outside scheduled window — sleeping ${mins}m`)
-          await sleepCancellable(delayMs, signal)
-          continue
-        }
-      }
-
-      try {
-        await runAgentTick(config)
-      } catch (err) {
-        log.error({ key, err }, 'agent cycle error')
-      }
-
-      // ── Guardrail auto-pause detection ───────────────────────────────────
-      // If a guardrail (daily loss, drawdown) paused the agent from inside a tick,
-      // honour it by stopping the loop — without needing a circular import.
-      if (!signal.cancelled) {
-        const state = getAgent(key)
-        if (state?.status === 'paused') {
-          signal.cancelled = true
-          tasks.delete(key)
-          log.info({ key }, 'loop stopped — agent was paused by a guardrail')
-          continue
-        }
-
-        // ── Inter-tick throttle ────────────────────────────────────────────
-        // Always wait at least MIN_TICK_INTERVAL_MS between ticks to stay
-        // well under API rate limits (Tier 1 = 50 RPM; each tick = 3-8 calls).
-        await sleepCancellable(MIN_TICK_INTERVAL_MS, signal)
-      }
+  const timer = setInterval(async () => {
+    if (!isInWindow(sym.scheduleStartUtc, sym.scheduleEndUtc)) {
+      logEvent(sym.key, 'info', 'schedule_tick', `Skipping — outside schedule window (${sym.scheduleStartUtc}–${sym.scheduleEndUtc} UTC)`)
+      return
     }
-    log.info({ key }, 'agent loop stopped')
-  })()
+    if (isAnalysisRunning(sym.key)) {
+      logEvent(sym.key, 'info', 'schedule_tick', 'Skipping — analysis already in progress')
+      return
+    }
+    logEvent(sym.key, 'info', 'schedule_tick', `Scheduled analysis triggered (interval: ${intervalMs / 60000}min)`)
+    runAnalysis(sym.key).catch(err => {
+      log.error({ symbolKey: sym.key, err }, 'scheduled analysis failed')
+    })
+  }, intervalMs)
+
+  schedules.set(sym.key, { sym, timer })
+  logEvent(sym.key, 'info', 'schedule_start', `Schedule started (every ${intervalMs / 60000}min)`)
+  log.info({ symbolKey: sym.key, intervalMs }, 'schedule started')
 }
 
-export function pauseAgentSchedule(key: string): void {
-  const signal = tasks.get(key)
-  if (signal) {
-    signal.cancelled = true
-    tasks.delete(key)
+export function stopSchedule(symbolKey: string): void {
+  const entry = schedules.get(symbolKey)
+  if (!entry) return
+  clearInterval(entry.timer)
+  schedules.delete(symbolKey)
+  logEvent(symbolKey, 'info', 'schedule_stop', 'Schedule stopped')
+  log.info({ symbolKey }, 'schedule stopped')
+}
+
+/**
+ * Sync a symbol's schedule with the current config.
+ * Call after adding, updating, or removing a symbol.
+ */
+export function syncSchedule(sym: WatchSymbol): void {
+  if (sym.scheduleEnabled && sym.scheduleIntervalMs) {
+    startSchedule(sym)
+  } else {
+    stopSchedule(sym.key)
   }
-  setAgentStatus(key, 'paused')
-  log.info({ key }, 'agent schedule paused')
 }
 
-export function stopAgentSchedule(key: string): void {
-  const signal = tasks.get(key)
-  if (signal) {
-    signal.cancelled = true
-    tasks.delete(key)
-  }
-  setAgentStatus(key, 'idle')
-  log.info({ key }, 'agent schedule stopped')
-}
-
-export function resumeAgentSchedule(config: AgentConfig): void {
-  startAgentSchedule(config)
-}
-
+/** Stop all running schedules (called on server shutdown). */
 export function stopAllSchedules(): void {
-  for (const [key, signal] of tasks) {
-    signal.cancelled = true
-    setAgentStatus(key, 'idle')
+  for (const key of schedules.keys()) {
+    stopSchedule(key)
   }
-  tasks.clear()
-  log.info('all agent schedules stopped')
+}
+
+/** Return the keys of all currently scheduled symbols. */
+export function getScheduledKeys(): string[] {
+  return [...schedules.keys()]
 }

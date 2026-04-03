@@ -55,6 +55,33 @@ export declare class MT5Adapter implements IMarketAdapter {
         pipValue: number;
         point: number;
     }>;
+    /**
+     * Fetch everything needed for an analysis run: current price, all timeframe candles,
+     * and symbol info. Does not require RiskState — for use by the analyzer module.
+     */
+    fetchAnalysisData(symbol: string): Promise<{
+        price: {
+            bid: number;
+            ask: number;
+            mid: number;
+            spread: number;
+        };
+        candles: {
+            m1: Candle[];
+            m5: Candle[];
+            m15: Candle[];
+            m30: Candle[];
+            h1: Candle[];
+            h4: Candle[];
+        };
+        symbolInfo: {
+            point: number;
+            digits: number;
+            volumeMin: number;
+            volumeStep: number;
+            contractSize: number;
+        };
+    }>;
 }
 export declare const mt5Adapter: MT5Adapter;
 export {};

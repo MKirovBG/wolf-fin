@@ -13,7 +13,7 @@ function repairJSON(raw) {
 }
 // ── Translators ───────────────────────────────────────────────────────────────
 export function toOAITools(tools) {
-    return tools.map(t => ({
+    return (tools ?? []).map(t => ({
         type: 'function',
         function: {
             name: t.name,

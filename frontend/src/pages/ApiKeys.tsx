@@ -1,6 +1,8 @@
 import { useEffect, useState, useMemo } from 'react'
-import { getKeys, setKey, testKey, getPlatformLLM, setPlatformLLM, getAnthropicModels, getOpenRouterModels, getOllamaModels, importClaudeFromCli, getClaudeAuthUrl, exchangeClaudeCode, getOpenAIAuthUrl, exchangeOpenAICode, refreshOpenAIToken } from '../api/client.ts'
-import type { KeysResponse, PlatformLLMConfig, AnthropicModel, OpenRouterModel, OllamaModel } from '../types/index.ts'
+import { getKeys, saveKeys, testConn, getPlatformLLM, setPlatformLLM, getAnthropicModels, getOpenRouterModels, getOllamaModels, importClaudeCLI, startClaudeAuth, exchangeClaudeCode, startOpenAIAuth, exchangeOpenAICode, refreshOpenAIToken } from '../api/client.ts'
+import type { PlatformLLMConfig, AnthropicModel, OpenRouterModel, OllamaModel } from '../types/index.ts'
+
+type KeysResponse = Record<string, boolean | undefined>
 import { Card } from '../components/Card.tsx'
 
 interface ServiceRow {
@@ -19,10 +21,7 @@ const SERVICES: ServiceRow[] = [
   { label: 'Claude Session Token', envKey: 'CLAUDE_SESSION_TOKEN', service: 'anthropic-subscription', description: 'Claude.ai subscription token — required when using Anthropic (Subscription) as LLM provider', required: false, placeholder: 'sk-ant-...', secret: true },
   { label: 'OpenRouter', envKey: 'OPENROUTER_API_KEY', service: 'openrouter', description: 'OpenRouter — access 100+ models (GPT-4o, Gemini, Llama, etc.) as LLM provider', required: false, placeholder: 'sk-or-v1-...', secret: true },
   { label: 'Ollama URL', envKey: 'OLLAMA_URL', service: 'ollama', description: 'Local LLM server — default http://localhost:11434', required: false, placeholder: 'http://localhost:11434', secret: false },
-  { label: 'Binance API Key', envKey: 'BINANCE_API_KEY', service: 'binance', description: 'Crypto exchange — required for crypto trading', required: true, placeholder: 'Your Binance key', secret: true },
-  { label: 'Binance Secret', envKey: 'BINANCE_API_SECRET', service: '', description: 'Shown only once at creation', required: true, placeholder: 'Your Binance secret', secret: true },
   { label: 'Finnhub', envKey: 'FINNHUB_KEY', service: 'finnhub', description: 'Economic calendar — optional enrichment', required: false, placeholder: 'Your Finnhub key', secret: true },
-{ label: 'CoinGecko', envKey: 'COINGECKO_KEY', service: 'coingecko', description: 'Crypto market data — leave blank for free tier', required: false, placeholder: 'Optional pro key', secret: true },
 ]
 
 export function ApiKeys() {
@@ -53,7 +52,7 @@ export function ApiKeys() {
   const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([])
 
   useEffect(() => {
-    getKeys().then(setKeys).catch(() => { /* ignore */ })
+    getKeys().then(r => setKeys(r as KeysResponse)).catch(() => { /* ignore */ })
     getPlatformLLM().then(setPlatformLLMState).catch(() => { /* ignore */ })
   }, [])
 
@@ -79,10 +78,10 @@ export function ApiKeys() {
     setTimeout(() => setOpenaiAuthMsg(null), ok ? 5000 : 8000)
   }
 
-  const startOpenAIAuth = async () => {
+  const openOpenAIAuth = async () => {
     setOpenaiAuthMsg(null)
     try {
-      const res = await getOpenAIAuthUrl()
+      const res = await startOpenAIAuth()
       setOpenaiAuthState(res)
       setOpenaiCode('')
       window.open(res.url, '_blank', 'noopener')
@@ -126,7 +125,7 @@ export function ApiKeys() {
     setConnectingClaude(true)
     setClaudeAuthMsg(null)
     try {
-      const res = await importClaudeFromCli()
+      const res = await importClaudeCLI()
       setKeys(prev => prev ? { ...prev, CLAUDE_SESSION_TOKEN: true } : prev)
       showAuthMsg(true, `Connected via Claude Code CLI${res.subscriptionType ? ` (${res.subscriptionType})` : ''}`)
     } catch (e) {
@@ -140,7 +139,7 @@ export function ApiKeys() {
   const startManualAuth = async () => {
     setClaudeAuthMsg(null)
     try {
-      const res = await getClaudeAuthUrl()
+      const res = await startClaudeAuth()
       setManualAuthState(res)
       setManualCode('')
       window.open(res.url, '_blank', 'noopener')
@@ -194,7 +193,7 @@ export function ApiKeys() {
     if (!val?.trim()) return
     setSaving(envKey)
     try {
-      await setKey(envKey, val.trim())
+      await saveKeys({ [envKey]: val.trim() })
       setKeys(prev => prev ? { ...prev, [envKey]: true } : prev)
       setValues(prev => ({ ...prev, [envKey]: '' }))
     } finally {
@@ -206,7 +205,7 @@ export function ApiKeys() {
     if (!service) return
     setTesting(envKey)
     try {
-      const result = await testKey(service)
+      const result = await testConn(service)
       setResults(prev => ({ ...prev, [envKey]: result }))
       setTimeout(() => setResults(prev => { const n = { ...prev }; delete n[envKey]; return n }), 6000)
     } finally {
@@ -267,7 +266,7 @@ export function ApiKeys() {
                     </span>
                   </div>
                   <button
-                    onClick={startOpenAIAuth}
+                    onClick={openOpenAIAuth}
                     className="px-4 py-2 text-sm border border-accent text-accent rounded-lg hover:bg-accent-dim transition-colors font-medium whitespace-nowrap"
                   >
                     {keys?.OPENAI_ACCESS_TOKEN ? '↻ Re-authorize' : '⟶ Connect OpenAI Account'}

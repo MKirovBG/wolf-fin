@@ -1,320 +1,286 @@
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, Cell } from 'recharts'
-import { getStatus } from '../api/client.ts'
-import type { StatusResponse, CycleResult, AgentState } from '../types/index.ts'
+import { getStatus, getSummary } from '../api/client.ts'
+import type { StatusResponse, AnalysisResult, WatchSymbol, SymbolSummary } from '../types/index.ts'
 import { Card } from '../components/Card.tsx'
-import { ThreadedLogsPanel } from '../components/ThreadedLogsPanel.tsx'
-import { Badge, decisionVariant } from '../components/Badge.tsx'
-import { AgentStatusBadge } from '../components/AgentStatusBadge.tsx'
-import { useAccount } from '../contexts/AccountContext.tsx'
 import { CalendarWidget } from '../components/CalendarWidget.tsx'
-import { PortfolioRisk } from '../components/PortfolioRisk.tsx'
+
+const BIAS_COLORS: Record<string, string> = {
+  bullish: 'text-green',
+  bearish: 'text-red',
+  neutral: 'text-yellow',
+}
+
+const BIAS_ICONS: Record<string, string> = {
+  bullish: '▲',
+  bearish: '▼',
+  neutral: '—',
+}
 
 function rel(iso: string) {
   const d = Date.now() - new Date(iso).getTime()
-  if (d < 60000) return `${Math.floor(d / 1000)}s ago`
-  if (d < 3600000) return `${Math.floor(d / 60000)}m ago`
-  return `${Math.floor(d / 3600000)}h ago`
+  if (d < 60000)    return `${Math.floor(d / 1000)}s ago`
+  if (d < 3600000)  return `${Math.floor(d / 60000)}m ago`
+  if (d < 86400000) return `${Math.floor(d / 3600000)}h ago`
+  return `${Math.floor(d / 86400000)}d ago`
 }
 
-function buildActivityData(events: CycleResult[]) {
-  const buckets: Record<string, { time: string; buy: number; sell: number; hold: number }> = {}
-  for (const e of [...events].reverse()) {
-    const t = new Date(e.time)
-    const label = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    if (!buckets[label]) buckets[label] = { time: label, buy: 0, sell: 0, hold: 0 }
-    const d = e.decision.toUpperCase()
-    if (d.startsWith('BUY')) buckets[label].buy++
-    else if (d.startsWith('SELL')) buckets[label].sell++
-    else buckets[label].hold++
-  }
-  return Object.values(buckets).slice(-20)
+// ── Recent analysis card ──────────────────────────────────────────────────────
+
+function AnalysisCard({ analysis }: { analysis: AnalysisResult }) {
+  const { bias, summary, tradeProposal, symbol, timeframe, time, error } = analysis
+  return (
+    <Link
+      to={`/symbols/${encodeURIComponent(analysis.symbolKey)}`}
+      className="block bg-surface border border-border rounded-lg p-4 hover:border-muted2 transition-colors"
+    >
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-sm font-bold text-text">{symbol}</span>
+          <span className="text-[9px] bg-bg border border-border rounded px-1.5 py-0.5 font-mono text-muted uppercase">
+            {timeframe}
+          </span>
+          {!error && (
+            <span className={`text-xs font-medium ${BIAS_COLORS[bias] ?? 'text-muted'}`}>
+              {BIAS_ICONS[bias]} {bias}
+            </span>
+          )}
+          {error && <span className="text-xs text-red/70">Error</span>}
+        </div>
+        <span className="text-[10px] text-muted2 flex-shrink-0">{rel(time)}</span>
+      </div>
+      {!error && summary && (
+        <p className="text-xs text-text/70 leading-snug line-clamp-2 mb-2">{summary}</p>
+      )}
+      {!error && tradeProposal && (
+        <div className={`inline-flex items-center gap-1.5 text-[10px] font-medium px-2 py-0.5 rounded border ${
+          tradeProposal.direction === 'BUY'
+            ? 'text-green border-green/30 bg-green/10'
+            : 'text-red border-red/30 bg-red/10'
+        }`}>
+          {tradeProposal.direction} · R:R {tradeProposal.riskReward.toFixed(2)} · {tradeProposal.confidence}
+        </div>
+      )}
+    </Link>
+  )
 }
 
-// Returns true if an agent belongs to the selected account
-function agentMatchesAccount(agent: AgentState, market: string, accountId: string): boolean {
-  if (agent.config.market !== market) return false
-  if (market === 'mt5' && String(agent.config.mt5AccountId ?? '') !== accountId) return false
-  return true
+// ── Symbol summary row ────────────────────────────────────────────────────────
+
+function SymbolRow({ sym, scheduled }: { sym: WatchSymbol; scheduled: boolean }) {
+  return (
+    <Link
+      to={`/symbols/${encodeURIComponent(sym.key)}`}
+      className="flex items-center justify-between px-3 py-2.5 hover:bg-surface2 transition-colors border-b border-border last:border-0"
+    >
+      <div className="flex items-center gap-2">
+        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${scheduled ? 'bg-green animate-pulse' : 'bg-muted2'}`} />
+        <span className="font-mono text-sm text-text">{sym.symbol}</span>
+        {sym.displayName && <span className="text-xs text-muted2">{sym.displayName}</span>}
+      </div>
+      <div className="flex items-center gap-2">
+        {sym.lastAnalysisAt && (
+          <span className="text-[10px] text-muted2">{rel(sym.lastAnalysisAt)}</span>
+        )}
+        <span className="text-muted text-xs">→</span>
+      </div>
+    </Link>
+  )
 }
+
+// ── Bias heatmap ──────────────────────────────────────────────────────────────
+
+const BIAS_BG: Record<string, string> = {
+  bullish: 'border-green/40 bg-green/5',
+  bearish: 'border-red/40 bg-red/5',
+  neutral: 'border-yellow/30 bg-yellow/5',
+}
+
+const SCORE_COLOR = (score: number) => {
+  if (score >= 70) return 'text-green'
+  if (score >= 50) return 'text-yellow'
+  return 'text-red'
+}
+
+function BiasCard({ s }: { s: SymbolSummary }) {
+  const biasColor  = BIAS_COLORS[s.bias ?? 'neutral'] ?? 'text-muted'
+  const biasIcon   = BIAS_ICONS[s.bias ?? 'neutral']  ?? '—'
+  const borderCls  = s.error ? 'border-red/30 bg-red/5' : (BIAS_BG[s.bias ?? 'neutral'] ?? 'border-border')
+
+  return (
+    <Link
+      to={`/symbols/${encodeURIComponent(s.key)}`}
+      className={`block border rounded-lg p-3 hover:opacity-90 transition-opacity ${borderCls}`}
+    >
+      <div className="flex items-start justify-between gap-1 mb-1">
+        <div className="flex items-center gap-1.5 min-w-0">
+          {s.running && (
+            <span className="w-1.5 h-1.5 rounded-full bg-yellow animate-pulse flex-shrink-0" />
+          )}
+          {!s.running && s.scheduled && (
+            <span className="w-1.5 h-1.5 rounded-full bg-green/60 flex-shrink-0" />
+          )}
+          <span className="font-mono text-xs font-bold text-text truncate">{s.symbol}</span>
+        </div>
+        {!s.error && s.bias && (
+          <span className={`text-xs font-bold flex-shrink-0 ${biasColor}`}>{biasIcon}</span>
+        )}
+        {s.error && <span className="text-[10px] text-red/70 flex-shrink-0">ERR</span>}
+      </div>
+
+      {!s.error && s.direction && (
+        <div className={`inline-flex items-center gap-1 text-[9px] font-medium px-1.5 py-0.5 rounded border mb-1 ${
+          s.direction === 'BUY'
+            ? 'text-green border-green/30 bg-green/10'
+            : 'text-red border-red/30 bg-red/10'
+        }`}>
+          {s.direction}
+          {s.riskReward != null && ` · ${s.riskReward.toFixed(1)}R`}
+          {s.validationScore != null && (
+            <span className={`ml-1 ${SCORE_COLOR(s.validationScore)}`}>
+              {s.validationScore}
+            </span>
+          )}
+        </div>
+      )}
+
+      {s.lastAnalysisAt && (
+        <div className="text-[9px] text-muted2">{rel(s.lastAnalysisAt)}</div>
+      )}
+    </Link>
+  )
+}
+
+// ── Main dashboard ────────────────────────────────────────────────────────────
 
 export function Dashboard() {
-  const [data, setData] = useState<StatusResponse | null>(null)
+  const [data, setData]         = useState<StatusResponse | null>(null)
+  const [summary, setSummary]   = useState<SymbolSummary[]>([])
   const [lastUpdate, setLastUpdate] = useState('')
-  const { selectedAccount } = useAccount()
 
   const load = useCallback(async () => {
     try {
-      setData(await getStatus())
+      const [statusData, summaryData] = await Promise.all([getStatus(), getSummary()])
+      setData(statusData)
+      setSummary(summaryData)
       setLastUpdate(new Date().toLocaleTimeString())
     } catch { /* ignore */ }
   }, [])
 
-  // Initial load
   useEffect(() => { load() }, [load])
 
-  // SSE: apply individual agent updates in real-time, with auto-reconnect on drop
+  // Poll every 30s
   useEffect(() => {
-    let es: EventSource | null = null
-    let closed = false
-
-    const connect = () => {
-      if (closed) return
-      es = new EventSource('/api/events')
-      es.addEventListener('agent', (e: MessageEvent) => {
-        try {
-          const updated = JSON.parse(e.data) as AgentState & { agentKey: string }
-          setLastUpdate(new Date().toLocaleTimeString())
-          setData(prev => {
-            if (!prev) return prev
-            const agents = prev.agents.some(a => a.agentKey === updated.agentKey)
-              ? prev.agents.map(a => a.agentKey === updated.agentKey ? updated : a)
-              : [...prev.agents, updated]
-            const recentEvents = updated.lastCycle
-              ? [updated.lastCycle, ...prev.recentEvents].slice(0, 100)
-              : prev.recentEvents
-            return { ...prev, agents, recentEvents }
-          })
-        } catch { /* ignore */ }
-      })
-      es.onerror = () => {
-        es?.close()
-        if (!closed) {
-          load() // re-sync state from REST on reconnect
-          setTimeout(connect, 3000)
-        }
-      }
-    }
-
-    connect()
-    return () => { closed = true; es?.close() }
+    const t = setInterval(load, 30_000)
+    return () => clearInterval(t)
   }, [load])
 
-  // Filter all data to the selected account
-  const allAgents = data?.agents ?? []
-  const allEvents = data?.recentEvents ?? []
+  // SSE: refresh on new analysis
+  useEffect(() => {
+    const es = new EventSource('/api/analyses/stream')
+    es.onmessage = () => load()
+    return () => es.close()
+  }, [load])
 
-  const agents = useMemo(() => {
-    if (!selectedAccount) return allAgents
-    return allAgents.filter(a => agentMatchesAccount(a, selectedAccount.market, selectedAccount.accountId))
-  }, [allAgents, selectedAccount])
-
-  const agentKeys = useMemo(() => new Set(agents.map(a => a.agentKey)), [agents])
-
-  const events = useMemo(() => {
-    if (!selectedAccount) return allEvents
-    return allEvents.filter(e => !e.agentKey || agentKeys.has(e.agentKey))
-  }, [allEvents, agentKeys, selectedAccount])
-
-  const running = agents.filter(a => a.status === 'running').length
-  const paused  = agents.filter(a => a.status === 'paused').length
-  const idle    = agents.filter(a => a.status === 'idle').length
-  const risk    = data?.risk ?? { dailyPnlUsd: 0, remainingBudgetUsd: 0, positionNotionalUsd: 0 }
-
-  // Compute P&L stats from recent events that have pnlUsd
-  const closedTrades   = events.filter(e => e.pnlUsd != null)
-  const totalPnl       = closedTrades.reduce((s, e) => s + (e.pnlUsd ?? 0), 0)
-  const wins           = closedTrades.filter(e => (e.pnlUsd ?? 0) > 0).length
-  const winRate        = closedTrades.length > 0 ? Math.round(wins / closedTrades.length * 100) : null
-
-  const activityData = buildActivityData(events)
-
-  // Equity curve from recent closed trades
-  const closedChron = [...closedTrades].reverse()
-  let cumPnl = 0
-  const equityCurveData = closedChron.map(e => {
-    cumPnl += e.pnlUsd ?? 0
-    return { time: e.time, cumPnl: parseFloat(cumPnl.toFixed(2)) }
-  })
-
-  const decisionDist = [
-    { name: 'BUY',  count: events.filter(e => e.decision.toUpperCase().startsWith('BUY')).length,  color: '#22c55e' },
-    { name: 'SELL', count: events.filter(e => e.decision.toUpperCase().startsWith('SELL')).length, color: '#ef4444' },
-    { name: 'HOLD', count: events.filter(e => e.decision.toUpperCase().startsWith('HOLD')).length, color: '#f59e0b' },
-  ]
+  const symbols      = data?.symbols ?? []
+  const analyses     = data?.recentAnalyses ?? []
+  const scheduled    = new Set(data?.scheduled ?? [])
+  const bullish      = analyses.filter(a => a.bias === 'bullish' && !a.error).length
+  const bearish      = analyses.filter(a => a.bias === 'bearish' && !a.error).length
+  const withTrades   = analyses.filter(a => a.tradeProposal && !a.error).length
 
   return (
-    <div className="p-4 md:p-6">
+    <div className="p-6 space-y-6 max-w-6xl mx-auto">
       {/* Header */}
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-xl font-bold text-text">Dashboard</h1>
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-muted">Updated {lastUpdate}</span>
-          <div className="flex items-center gap-1.5">
-            <span className="text-[9px] px-1.5 py-0.5 rounded text-green bg-green-dim">● LIVE</span>
-            <button onClick={load} className="px-2.5 py-1 text-xs border border-border text-muted rounded-lg hover:border-muted2 hover:text-text transition-colors">↻</button>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-bold text-text">Dashboard</h1>
+          {lastUpdate && <p className="text-[11px] text-muted2 mt-0.5">Updated {lastUpdate}</p>}
+        </div>
+        <Link
+          to="/symbols"
+          className="px-3 py-1.5 bg-green/10 text-green text-sm font-medium rounded border border-green/30 hover:bg-green/20 transition-colors"
+        >
+          + Add Symbol
+        </Link>
+      </div>
+
+      {/* Stats row */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[
+          { label: 'Symbols',     value: symbols.length,  color: 'text-text' },
+          { label: 'Scheduled',   value: scheduled.size,  color: 'text-green' },
+          { label: 'Bullish',     value: bullish,         color: 'text-green' },
+          { label: 'Trade Setups', value: withTrades,     color: 'text-yellow' },
+        ].map(s => (
+          <Card key={s.label}>
+            <div className="text-center">
+              <div className={`text-2xl font-bold ${s.color}`}>{s.value}</div>
+              <div className="text-xs text-muted mt-1">{s.label}</div>
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      {/* Bias heatmap */}
+      {summary.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted">Market Bias</span>
           </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
+            {summary.map(s => <BiasCard key={s.key} s={s} />)}
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Watchlist */}
+        <div className="lg:col-span-1">
+          <Card>
+            <div className="px-1 pb-3 border-b border-border mb-0">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold uppercase tracking-wider text-muted">Watchlist</span>
+                <Link to="/symbols" className="text-[10px] text-green hover:underline">Manage →</Link>
+              </div>
+            </div>
+            {symbols.length === 0 ? (
+              <div className="py-8 text-center text-xs text-muted2">
+                No symbols.<br />
+                <Link to="/symbols" className="text-green hover:underline">Add one →</Link>
+              </div>
+            ) : (
+              <div className="divide-y divide-border">
+                {symbols.map(sym => (
+                  <SymbolRow key={sym.key} sym={sym} scheduled={scheduled.has(sym.key)} />
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
+
+        {/* Recent analyses */}
+        <div className="lg:col-span-2 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted">Recent Analyses</span>
+            <Link to="/reports" className="text-[10px] text-green hover:underline">All reports →</Link>
+          </div>
+          {analyses.length === 0 ? (
+            <Card>
+              <div className="py-8 text-center text-xs text-muted2">
+                No analyses yet — run one from the Watchlist
+              </div>
+            </Card>
+          ) : (
+            analyses.slice(0, 6).map(a => (
+              <AnalysisCard key={a.id} analysis={a} />
+            ))
+          )}
         </div>
       </div>
 
-      {/* Portfolio Risk strip */}
-      <PortfolioRisk />
-
-      {/* Stat cards */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-4">
-        <Card title="Agents">
-          <div className="flex flex-col gap-2 mt-1">
-            <div className="flex justify-between text-sm"><span className="text-muted">Total</span><span className="text-text font-semibold">{agents.length}</span></div>
-            <div className="flex justify-between text-sm"><span className="text-green">Running</span><span className="text-text font-semibold">{running}</span></div>
-            <div className="flex justify-between text-sm"><span className="text-yellow">Paused</span><span className="text-text font-semibold">{paused}</span></div>
-            <div className="flex justify-between text-sm"><span className="text-muted">Idle</span><span className="text-text font-semibold">{idle}</span></div>
-          </div>
-        </Card>
-
-        <Card title="Closed Trade P&L">
-          <div className="mt-1">
-            <div className={`text-2xl font-bold font-mono ${totalPnl >= 0 ? 'text-green' : 'text-red'}`}>
-              {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
-            </div>
-            <div className="flex gap-3 mt-1.5 text-xs text-muted">
-              <span>{closedTrades.length} closed</span>
-              {winRate !== null && <span className={winRate >= 50 ? 'text-green' : 'text-yellow'}>{winRate}% win rate</span>}
-            </div>
-          </div>
-        </Card>
-
-        <Card title="Open Exposure">
-          <div className="mt-1">
-            <div className="text-xl font-bold font-mono text-text">
-              ${risk.positionNotionalUsd.toFixed(0)}
-            </div>
-            <div className="text-muted text-xs mt-1.5">notional across all positions</div>
-          </div>
-        </Card>
-
-        <Card title="Activity">
-          <div className="flex flex-col gap-2 mt-1">
-            <div className="flex justify-between text-sm"><span className="text-muted">Total Ticks</span><span className="text-text font-semibold">{events.length}</span></div>
-            {decisionDist.map(d => (
-              <div key={d.name} className="flex justify-between text-sm">
-                <span style={{ color: d.color }}>{d.name}</span>
-                <span className="text-text font-semibold">{d.count}</span>
-              </div>
-            ))}
-          </div>
-        </Card>
-      </div>
-
-      {/* Charts row */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-4">
-        <Card title="Cycle Activity (last 20 time buckets)" className="xl:col-span-2">
-          {activityData.length === 0
-            ? <div className="text-muted text-sm py-8 text-center">No cycles run yet — start an agent to see activity here</div>
-            : (
-              <ResponsiveContainer width="100%" height={160}>
-                <AreaChart data={activityData}>
-                  <defs>
-                    <linearGradient id="buyGrad"  x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#22c55e" stopOpacity={0.2} /><stop offset="95%" stopColor="#22c55e" stopOpacity={0} /></linearGradient>
-                    <linearGradient id="sellGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef4444" stopOpacity={0.2} /><stop offset="95%" stopColor="#ef4444" stopOpacity={0} /></linearGradient>
-                    <linearGradient id="holdGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#f59e0b" stopOpacity={0.15} /><stop offset="95%" stopColor="#f59e0b" stopOpacity={0} /></linearGradient>
-                  </defs>
-                  <XAxis dataKey="time" tick={{ fill: '#4b5563', fontSize: 10, fontFamily: 'Inter' }} />
-                  <YAxis tick={{ fill: '#4b5563', fontSize: 10, fontFamily: 'Inter' }} allowDecimals={false} />
-                  <Tooltip contentStyle={{ background: '#1a1a1f', border: '1px solid #2a2a32', borderRadius: 8, fontSize: 12, fontFamily: 'Inter' }} labelStyle={{ color: '#6b7280' }} />
-                  <Area type="monotone" dataKey="buy"  stackId="1" stroke="#22c55e" fill="url(#buyGrad)"  strokeWidth={1.5} dot={false} />
-                  <Area type="monotone" dataKey="sell" stackId="1" stroke="#ef4444" fill="url(#sellGrad)" strokeWidth={1.5} dot={false} />
-                  <Area type="monotone" dataKey="hold" stackId="1" stroke="#f59e0b" fill="url(#holdGrad)" strokeWidth={1.5} dot={false} />
-                </AreaChart>
-              </ResponsiveContainer>
-            )
-          }
-        </Card>
-
-        <Card title="Decision Distribution">
-          {events.length === 0
-            ? <div className="text-muted text-sm py-8 text-center">No data yet</div>
-            : (
-              <ResponsiveContainer width="100%" height={160}>
-                <BarChart data={decisionDist} barCategoryGap="30%">
-                  <XAxis dataKey="name" tick={{ fill: '#6b7280', fontSize: 11, fontFamily: 'Inter' }} />
-                  <YAxis tick={{ fill: '#4b5563', fontSize: 10, fontFamily: 'Inter' }} allowDecimals={false} />
-                  <Tooltip contentStyle={{ background: '#1a1a1f', border: '1px solid #2a2a32', borderRadius: 8, fontSize: 12, fontFamily: 'Inter' }} labelStyle={{ color: '#6b7280' }} cursor={{ fill: 'rgba(255,255,255,0.03)' }} />
-                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                    {decisionDist.map(d => <Cell key={d.name} fill={d.color} />)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            )
-          }
-        </Card>
-      </div>
-
-      {/* Equity curve */}
-      {equityCurveData.length > 1 && (
-        <Card title={`Equity Curve${selectedAccount ? ` — ${selectedAccount.label ?? selectedAccount.accountId}` : ''}`} className="mb-4">
-          <ResponsiveContainer width="100%" height={160}>
-            <AreaChart data={equityCurveData}>
-              <defs>
-                <linearGradient id="eqDashGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor={cumPnl >= 0 ? '#22c55e' : '#ef4444'} stopOpacity={0.2} />
-                  <stop offset="95%" stopColor={cumPnl >= 0 ? '#22c55e' : '#ef4444'} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="time" tick={{ fill: '#4b5563', fontSize: 9 }} tickFormatter={t => t.slice(11, 16)} />
-              <YAxis tick={{ fill: '#4b5563', fontSize: 10 }} tickFormatter={v => `$${(v as number).toFixed(0)}`} />
-              <Tooltip
-                contentStyle={{ background: '#1a1a1f', border: '1px solid #2a2a32', borderRadius: 8, fontSize: 12 }}
-                formatter={(v: number) => [`$${v.toFixed(2)}`, 'Cum P&L']}
-                labelFormatter={t => new Date(t as string).toLocaleString()}
-              />
-              <Area type="monotone" dataKey="cumPnl" stroke={cumPnl >= 0 ? '#22c55e' : '#ef4444'} fill="url(#eqDashGrad)" strokeWidth={2} dot={false} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </Card>
-      )}
-
-      {/* Agent status strip */}
-      {agents.length > 0 && (
-        <Card title="Agent Overview" className="mb-4">
-          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
-            {agents.map(a => {
-              const key = a.agentKey
-              const model = a.config.llmModel ?? (a.config.llmProvider === 'openrouter' ? 'openrouter' : 'claude')
-              const shortModel = model.split('/').pop()?.replace('claude-', '').replace('anthropic/', '') ?? model
-              return (
-                <Link key={key} to={`/agents/k/${encodeURIComponent(key)}`} className="bg-surface2 rounded-lg p-3 flex flex-col gap-1.5 hover:bg-surface transition-colors border border-transparent hover:border-border">
-                  <div className="flex justify-between items-center">
-                    <div>
-                      <span className="text-text text-sm font-bold">{a.config.symbol}</span>
-                      {a.config.name && <span className="text-muted text-xs ml-1.5">({a.config.name})</span>}
-                    </div>
-                    <AgentStatusBadge status={a.status} showLabel={false} />
-                  </div>
-                  <div className="flex gap-1.5 flex-wrap">
-                    <Badge label={a.config.market.toUpperCase()} variant={a.config.market} />
-                    <span className="text-[10px] text-muted border border-border rounded px-1 py-0.5">{shortModel}</span>
-                  </div>
-                  {a.lastCycle && (
-                    <div className="flex items-center gap-1.5 mt-0.5">
-                      <Badge label={a.lastCycle.decision.split(' ')[0]} variant={decisionVariant(a.lastCycle.decision)} />
-                      <span className="text-muted text-xs">{rel(a.lastCycle.time)}</span>
-                      {a.lastCycle.pnlUsd != null && (
-                        <span className={`text-xs font-mono ml-auto ${a.lastCycle.pnlUsd >= 0 ? 'text-green' : 'text-red'}`}>
-                          {a.lastCycle.pnlUsd >= 0 ? '+' : ''}${a.lastCycle.pnlUsd.toFixed(2)}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                  <div className="text-muted text-xs">{a.cycleCount} ticks · {a.config.fetchMode}</div>
-                </Link>
-              )
-            })}
-          </div>
-        </Card>
-      )}
-
-      {/* Economic Calendar */}
-      <CalendarWidget compact={true} maxEvents={5} />
-
-      {/* Live threaded logs — filtered to selected account's agents only */}
-      <div className="mb-4">
-        <ThreadedLogsPanel
-          agentKeys={agentKeys.size > 0 ? agentKeys : undefined}
-          maxThreads={10}
-        />
-      </div>
-
+      {/* Calendar */}
+      <CalendarWidget />
     </div>
   )
 }

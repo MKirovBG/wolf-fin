@@ -42,7 +42,7 @@ export interface OAIResponse {
         completion_tokens: number;
     };
 }
-export declare function toOAITools(tools: Anthropic.Tool[]): OAITool[];
+export declare function toOAITools(tools: Anthropic.Tool[] | undefined): OAITool[];
 export declare function toOAIMessages(system: string, messages: Anthropic.MessageParam[]): OAIMessage[];
 export declare function fromOAIResponse(res: OAIResponse): LLMResponse;
 //# sourceMappingURL=oai-compat.d.ts.map

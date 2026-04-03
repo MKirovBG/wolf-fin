@@ -5,11 +5,11 @@ import { useAccount, buildAccountLabel, entryToSelectedAccount } from '../contex
 import type { AccountEntry } from '../types/index.ts'
 
 const links = [
-  { to: '/',          label: 'Dashboard'    },
-  { to: '/agents',    label: 'Agents'       },
-  { to: '/keys',      label: 'Integrations' },
-  { to: '/reports',   label: 'Reports'      },
-  { to: '/analytics', label: 'Analytics'    },
+  { to: '/',           label: 'Dashboard'  },
+  { to: '/symbols',    label: 'Watchlist'  },
+  { to: '/history',    label: 'History'    },
+  { to: '/strategies', label: 'Strategies' },
+  { to: '/config',     label: 'Settings'   },
 ]
 
 // ── Account selector ──────────────────────────────────────────────────────────

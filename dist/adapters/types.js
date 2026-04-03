@@ -1,3 +1,3 @@
-// Wolf-Fin Adapter Types — shared domain types for the trading agent
+// Wolf-Fin Adapter Types
 export {};
 //# sourceMappingURL=types.js.map

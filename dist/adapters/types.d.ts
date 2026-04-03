@@ -7,6 +7,70 @@ export interface Candle {
     volume: number;
     closeTime: number;
 }
+export interface Indicators {
+    rsi14?: number;
+    ema20?: number;
+    ema50?: number;
+    atr14?: number;
+    vwap: number;
+    bbWidth?: number;
+    mtf?: MTFIndicators;
+    macd?: {
+        macd: number;
+        signal: number;
+        histogram: number;
+    };
+    adx?: {
+        adx: number;
+        plusDI: number;
+        minusDI: number;
+    };
+    stoch?: {
+        k: number;
+        d: number;
+    };
+    psar?: {
+        value: number;
+        bullish: boolean;
+    };
+    ichimoku?: {
+        conversion: number;
+        base: number;
+        spanA: number;
+        spanB: number;
+        aboveCloud: boolean;
+        cloudBullish: boolean;
+    };
+    cci?: number;
+    williamsR?: number;
+    obv?: {
+        value: number;
+        rising: boolean;
+    };
+    mfi?: number;
+    keltner?: {
+        upper: number;
+        middle: number;
+        lower: number;
+    };
+}
+export interface TFIndicators {
+    rsi14: number;
+    ema20: number;
+    ema50?: number;
+    atr14: number;
+}
+export interface MTFIndicators {
+    m15?: TFIndicators;
+    h4?: TFIndicators;
+    confluence: number;
+}
+export interface KeyLevel {
+    price: number;
+    type: 'resistance' | 'support' | 'pivot' | 'swing_high' | 'swing_low';
+    source: string;
+    strength: number;
+}
 export interface Balance {
     asset: string;
     free: number;
@@ -25,11 +89,7 @@ export interface Order {
     timeInForce: string;
     time: number;
     updateTime: number;
-    profit?: number;
-    swap?: number;
-    sl?: number;
-    tp?: number;
-    priceCurrent?: number;
+    [key: string]: unknown;
 }
 export interface Fill {
     symbol: string;
@@ -44,12 +104,6 @@ export interface Fill {
     isBuyer: boolean;
     isMaker: boolean;
 }
-export interface OrderBook {
-    symbol: string;
-    bids: [number, number][];
-    asks: [number, number][];
-    timestamp: number;
-}
 export interface Trade {
     id: number;
     price: number;
@@ -57,94 +111,22 @@ export interface Trade {
     time: number;
     isBuyerMaker: boolean;
 }
-export interface Indicators {
-    rsi14: number;
-    ema20: number;
-    ema50: number;
-    atr14: number;
-    vwap: number;
-    bbWidth: number;
-    /** Multi-timeframe indicator data — optional, present when MTF candles are available */
-    mtf?: MTFIndicators;
-    /** MACD 12/26/9 — optional, present when macdEnabled */
-    macd?: {
-        macd: number;
-        signal: number;
-        histogram: number;
-    };
-    /** ADX 14 — optional, present when adxEnabled */
-    adx?: {
-        adx: number;
-        plusDI: number;
-        minusDI: number;
-    };
-    /** Stochastic 14/3 — optional, present when stochEnabled */
-    stoch?: {
-        k: number;
-        d: number;
-    };
-}
-/** Per-timeframe indicator subset */
-export interface TFIndicators {
-    rsi14: number;
-    ema20: number;
-    ema50?: number;
-    atr14: number;
-}
-/** Multi-timeframe indicator bundle */
-export interface MTFIndicators {
-    m15?: TFIndicators;
-    h4?: TFIndicators;
-    /** Confluence score: -3 (all bearish) to +3 (all bullish). Each TF contributes ±1. */
-    confluence: number;
+export interface OrderBook {
+    symbol: string;
+    bids: [number, number][];
+    asks: [number, number][];
+    timestamp: number;
 }
 export interface RiskState {
     dailyPnlUsd: number;
     remainingBudgetUsd: number;
-    positionNotionalUsd: number;
-}
-export interface KeyLevel {
-    price: number;
-    type: 'resistance' | 'support' | 'pivot' | 'swing_high' | 'swing_low';
-    source: string;
-    strength: number;
-}
-export interface MarketContext {
-    /** Crypto sentiment index 0-100, only present for crypto market */
-    fearGreed?: {
-        value: number;
-        classification: string;
-    };
-    /** Top news headlines for the symbol from CryptoPanic */
-    news?: {
-        headline: string;
-        votes: number;
-        url: string;
-    }[];
-    /** Upcoming high-impact economic events within the next 2 hours */
-    upcomingEvents?: {
-        name: string;
-        country: string;
-        impact: string;
-        time: number;
-    }[];
-    /** Macro crypto market data from CoinGecko */
-    cryptoMarket?: {
-        btcDominance: number;
-        totalMarketCapUsd: number;
-    };
-    /** Recent forex news headlines with sentiment tags — only present for mt5 market */
-    forexNews?: {
-        headline: string;
-        sentiment: 'bullish' | 'bearish' | 'neutral';
-        source: string;
-        url: string;
-    }[];
+    openPositionCount: number;
+    openPositionValue: number;
 }
 export interface MarketSnapshot {
     symbol: string;
     timestamp: number;
-    market: 'crypto' | 'mt5';
+    market: string;
     price: {
         bid: number;
         ask: number;
@@ -164,38 +146,23 @@ export interface MarketSnapshot {
         h1: Candle[];
         h4: Candle[];
     };
-    indicators: Indicators;
+    indicators: Record<string, unknown>;
     account: {
         balances: Balance[];
         openOrders: Order[];
     };
+    positions?: unknown[];
+    pendingOrders?: unknown[];
     risk: RiskState;
-    /** Enrichment signals assembled by context.ts */
-    context?: MarketContext;
-    /** Forex-specific fields — only present when market === 'mt5' */
-    forex?: {
-        spread: number;
-        pipValue: number;
-        point: number;
-        pipSize: number;
-        sessionOpen: boolean;
-        swapLong: number;
-        swapShort: number;
-    };
-    /** MT5-specific: rich open position details (sl, tp, profit, swap, priceCurrent) */
-    positions?: Record<string, unknown>[];
-    /** MT5-specific: pending limit/stop orders not yet filled */
-    pendingOrders?: Record<string, unknown>[];
-    /** MT5-specific: live account financials (balance, equity, margin, leverage) */
-    accountInfo?: {
+    accountInfo: {
         balance: number;
         equity: number;
         freeMargin: number;
         usedMargin: number;
         leverage: number;
     };
-    /** Auto-computed support/resistance/pivot levels — sorted by proximity to current price */
-    keyLevels?: KeyLevel[];
+    forex?: Record<string, unknown>;
+    keyLevels: KeyLevel[];
 }
 export interface OrderParams {
     symbol: string;

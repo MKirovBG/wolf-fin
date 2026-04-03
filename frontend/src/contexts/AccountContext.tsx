@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react'
 import { getAccounts, getSelectedAccount as apiGetSelected, setSelectedAccount as apiSetSelected } from '../api/client.ts'
-import type { AccountEntry, Mt5AccountEntry, BinanceAccountEntry, SelectedAccount } from '../types/index.ts'
+import type { AccountEntry, SelectedAccount } from '../types/index.ts'
 
 interface AccountContextValue {
   selectedAccount: SelectedAccount | null
@@ -19,29 +19,16 @@ const AccountContext = createContext<AccountContextValue>({
 })
 
 export function buildAccountLabel(entry: AccountEntry): string {
-  if (entry.exchange === 'mt5') {
-    const mt5 = entry as Mt5AccountEntry
-    const login = mt5.summary?.login ?? entry.id.replace('mt5-', '')
-    const server = mt5.summary?.server ? ` @ ${mt5.summary.server}` : ''
-    return `MT5 · #${login}${server}`
-  }
-  const bin = entry as BinanceAccountEntry
-  return `Binance · ${bin.mode}`
+  const login = entry.summary?.login ?? entry.id.replace('mt5-', '')
+  const server = entry.summary?.server ? ` @ ${entry.summary.server}` : ''
+  return `MT5 · #${login}${server}`
 }
 
 export function entryToSelectedAccount(entry: AccountEntry): SelectedAccount {
-  if (entry.exchange === 'mt5') {
-    const mt5 = entry as Mt5AccountEntry
-    const login = mt5.summary?.login ?? parseInt(entry.id.replace('mt5-', ''), 10)
-    return {
-      market: 'mt5',
-      accountId: String(login),
-      label: buildAccountLabel(entry),
-    }
-  }
+  const login = entry.summary?.login ?? parseInt(entry.id.replace('mt5-', ''), 10)
   return {
-    market: 'crypto',
-    accountId: 'binance',
+    market: 'mt5',
+    accountId: String(login),
     label: buildAccountLabel(entry),
   }
 }

@@ -1,7 +1,7 @@
 // Wolf-Fin CalendarWidget — upcoming economic events from the free FF feed
 
 import { useEffect, useState, useRef } from 'react'
-import { getEconomicCalendar } from '../api/client.ts'
+import { getCalendar } from '../api/client.ts'
 import type { EconomicEvent } from '../types/index.ts'
 
 interface CalendarWidgetProps {
@@ -34,7 +34,7 @@ function dayLabel(time: number): string {
   return d.toLocaleDateString([], { weekday: 'long' })
 }
 
-function ImpactBadge({ impact }: { impact: 'High' | 'Medium' | 'Low' }) {
+function ImpactBadge({ impact }: { impact: string }) {
   const cls = impact === 'High'   ? 'bg-red/20 text-red border-red/40'
             : impact === 'Medium' ? 'bg-yellow/20 text-yellow border-yellow/40'
             : 'bg-muted/20 text-muted border-border'
@@ -52,8 +52,8 @@ export function CalendarWidget({ currencies, maxEvents = 10, compact = false }: 
 
   const load = async () => {
     try {
-      const res = await getEconomicCalendar(currencies?.join(','), 3)
-      setEvents(res.events.slice(0, maxEvents))
+      const res = await getCalendar()
+      setEvents(res.slice(0, maxEvents))
     } catch { /* stay empty */ }
   }
 

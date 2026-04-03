@@ -6,7 +6,7 @@ export class OllamaProvider {
         this.baseUrl = baseUrl;
     }
     async createMessage(params) {
-        const hasTools = params.tools.length > 0;
+        const hasTools = (params.tools?.length ?? 0) > 0;
         const body = {
             model: params.model,
             max_tokens: params.max_tokens,

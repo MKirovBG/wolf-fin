@@ -112,8 +112,8 @@ function toResponsesAPIInput(messages: Anthropic.MessageParam[]): ResponsesAPIIn
 }
 
 // Tool definitions: Anthropic input_schema → Responses API function format
-function toResponsesAPITools(tools: Anthropic.Tool[]) {
-  return tools.map(t => ({
+function toResponsesAPITools(tools: Anthropic.Tool[] | undefined) {
+  return (tools ?? []).map(t => ({
     type: 'function',
     name: t.name,
     description: t.description,
@@ -270,7 +270,7 @@ export class OpenAISubscriptionProvider implements LLMProvider {
       input:        toResponsesAPIInput(params.messages),
       text:         { verbosity: 'medium' },
     }
-    if (params.tools.length > 0) {
+    if ((params.tools?.length ?? 0) > 0) {
       body.tools        = toResponsesAPITools(params.tools)
       body.tool_choice  = 'auto'
       // parallel_tool_calls disabled: prevents two order/close calls firing before

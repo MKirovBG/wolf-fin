@@ -129,6 +129,80 @@ export function computeStoch(candles, period = 14, signalPeriod = 3) {
         return undefined;
     return { k: last.k, d: last.d };
 }
+// ── Parabolic SAR ─────────────────────────────────────────────────────────────
+export function computePsar(candles, step = 0.02, max = 0.2) {
+    if (candles.length < 2)
+        return undefined;
+    const results = TI.PSAR.calculate({ step, max, high: candles.map(c => c.high), low: candles.map(c => c.low) });
+    const last = results[results.length - 1];
+    if (last == null)
+        return undefined;
+    const currentClose = candles[candles.length - 1].close;
+    return { value: last, bullish: last < currentClose };
+}
+// ── Ichimoku Cloud (9/26/52) ──────────────────────────────────────────────────
+export function computeIchimoku(candles, conversionPeriod = 9, basePeriod = 26, spanPeriod = 52, displacement = 26) {
+    if (candles.length < spanPeriod + displacement)
+        return undefined;
+    const results = TI.IchimokuCloud.calculate({ conversionPeriod, basePeriod, spanPeriod, displacement, high: candles.map(c => c.high), low: candles.map(c => c.low) });
+    const last = results[results.length - 1];
+    if (!last)
+        return undefined;
+    const currentClose = candles[candles.length - 1].close;
+    const cloudTop = Math.max(last.spanA, last.spanB);
+    const cloudBottom = Math.min(last.spanA, last.spanB);
+    return {
+        conversion: last.conversion,
+        base: last.base,
+        spanA: last.spanA,
+        spanB: last.spanB,
+        aboveCloud: currentClose > cloudTop,
+        cloudBullish: last.spanA > last.spanB,
+    };
+}
+// ── CCI (20) ──────────────────────────────────────────────────────────────────
+export function computeCci(candles, period = 20) {
+    if (candles.length < period)
+        return undefined;
+    const results = TI.CCI.calculate({ period, high: candles.map(c => c.high), low: candles.map(c => c.low), close: closes(candles) });
+    const last = results[results.length - 1];
+    return last != null ? last : undefined;
+}
+// ── Williams %R (14) ──────────────────────────────────────────────────────────
+export function computeWilliamsR(candles, period = 14) {
+    if (candles.length < period)
+        return undefined;
+    const results = TI.WilliamsR.calculate({ period, high: candles.map(c => c.high), low: candles.map(c => c.low), close: closes(candles) });
+    const last = results[results.length - 1];
+    return last != null ? last : undefined;
+}
+// ── OBV (On Balance Volume) ───────────────────────────────────────────────────
+export function computeObv(candles) {
+    if (candles.length < 2)
+        return undefined;
+    const results = TI.OBV.calculate({ close: closes(candles), volume: candles.map(c => c.volume) });
+    if (results.length < 2)
+        return undefined;
+    const last = results[results.length - 1];
+    const prev = results[results.length - 2];
+    return { value: last, rising: last > prev };
+}
+// ── MFI (14) ──────────────────────────────────────────────────────────────────
+export function computeMfi(candles, period = 14) {
+    if (candles.length < period)
+        return undefined;
+    const results = TI.MFI.calculate({ period, high: candles.map(c => c.high), low: candles.map(c => c.low), close: closes(candles), volume: candles.map(c => c.volume) });
+    const last = results[results.length - 1];
+    return last != null ? last : undefined;
+}
+// ── Keltner Channel (20, multiplier 2) ────────────────────────────────────────
+export function computeKeltner(candles, period = 20, multiplier = 2) {
+    if (candles.length < period)
+        return undefined;
+    const results = TI.KeltnerChannels.calculate({ period, multiplier, high: candles.map(c => c.high), low: candles.map(c => c.low), close: closes(candles) });
+    const last = results[results.length - 1];
+    return last ?? undefined;
+}
 export function computeIndicators(h1Candles, cfg = {}) {
     const rsiPeriod = cfg.rsiPeriod ?? 14;
     const emaFast = cfg.emaFast ?? 20;
@@ -138,12 +212,12 @@ export function computeIndicators(h1Candles, cfg = {}) {
     const bbStd = cfg.bbStdDev ?? 2;
     const includeVwap = cfg.vwapEnabled !== false;
     const result = {
-        rsi14: rsi(h1Candles, rsiPeriod),
-        ema20: ema(h1Candles, emaFast),
-        ema50: ema(h1Candles, emaSlow),
-        atr14: atr(h1Candles, atrPeriod),
+        rsi14: cfg.rsiEnabled !== false ? rsi(h1Candles, rsiPeriod) : undefined,
+        ema20: cfg.emaFastEnabled !== false ? ema(h1Candles, emaFast) : undefined,
+        ema50: cfg.emaSlowEnabled !== false ? ema(h1Candles, emaSlow) : undefined,
+        atr14: cfg.atrEnabled !== false ? atr(h1Candles, atrPeriod) : undefined,
         vwap: includeVwap ? vwap(h1Candles) : 0,
-        bbWidth: bbWidth(h1Candles, bbPeriod, bbStd),
+        bbWidth: cfg.bbEnabled !== false ? bbWidth(h1Candles, bbPeriod, bbStd) : undefined,
     };
     if (cfg.macdEnabled)
         result.macd = computeMacd(h1Candles);
@@ -151,6 +225,20 @@ export function computeIndicators(h1Candles, cfg = {}) {
         result.adx = computeAdx(h1Candles);
     if (cfg.stochEnabled)
         result.stoch = computeStoch(h1Candles);
+    if (cfg.psarEnabled)
+        result.psar = computePsar(h1Candles);
+    if (cfg.ichimokuEnabled)
+        result.ichimoku = computeIchimoku(h1Candles);
+    if (cfg.cciEnabled)
+        result.cci = computeCci(h1Candles);
+    if (cfg.williamsREnabled)
+        result.williamsR = computeWilliamsR(h1Candles);
+    if (cfg.obvEnabled)
+        result.obv = computeObv(h1Candles);
+    if (cfg.mfiEnabled)
+        result.mfi = computeMfi(h1Candles);
+    if (cfg.keltnerEnabled)
+        result.keltner = computeKeltner(h1Candles);
     return result;
 }
 // ── Multi-Timeframe Indicators ───────────────────────────────────────────────

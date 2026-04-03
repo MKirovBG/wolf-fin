@@ -1,6 +1,6 @@
 // Wolf-Fin — LLM provider factory
 
-import type { AgentConfig } from '../types.js'
+import type { WatchSymbol } from '../types.js'
 import type { LLMProvider } from './types.js'
 import { AnthropicProvider } from './anthropic.js'
 import { ClaudeSubscriptionProvider } from './claude-subscription.js'
@@ -8,7 +8,7 @@ import { OpenRouterProvider } from './openrouter.js'
 import { OllamaProvider } from './ollama.js'
 import { OpenAISubscriptionProvider } from './openai-subscription.js'
 
-export function getLLMProvider(config: AgentConfig): LLMProvider {
+export function getLLMProvider(config: WatchSymbol): LLMProvider {
   if (!config.llmProvider || config.llmProvider === 'platform') {
     return getPlatformLLMProvider()
   }
@@ -88,7 +88,7 @@ export function getPlatformLLMModel(): string {
   return process.env.CLAUDE_MODEL ?? 'claude-sonnet-4-6'
 }
 
-export function getModelForConfig(config: AgentConfig): string {
+export function getModelForConfig(config: WatchSymbol): string {
   if (!config.llmProvider || config.llmProvider === 'platform') {
     return getPlatformLLMModel()
   }

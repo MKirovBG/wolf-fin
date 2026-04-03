@@ -19,7 +19,7 @@ export class OpenRouterProvider implements LLMProvider {
   constructor(private readonly apiKey: string) {}
 
   async createMessage(params: LLMCreateParams): Promise<LLMResponse> {
-    const hasTools = params.tools.length > 0
+    const hasTools = (params.tools?.length ?? 0) > 0
     const body = {
       model: params.model,
       max_tokens: params.max_tokens,

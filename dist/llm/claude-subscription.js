@@ -15,7 +15,7 @@ export class ClaudeSubscriptionProvider {
             system: params.system,
             messages: params.messages,
         };
-        if (params.tools.length > 0)
+        if ((params.tools?.length ?? 0) > 0)
             body.tools = params.tools;
         const res = await fetch(ANTHROPIC_API_URL, {
             method: 'POST',

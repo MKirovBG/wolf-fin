@@ -13,7 +13,7 @@ export interface LLMCreateParams {
   model: string
   max_tokens: number
   system: string
-  tools: Anthropic.Tool[]
+  tools?: Anthropic.Tool[]
   messages: Anthropic.MessageParam[]
 }
 

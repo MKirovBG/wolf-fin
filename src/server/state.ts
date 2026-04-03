@@ -1,54 +1,11 @@
-// Wolf-Fin — shared in-memory state (with SQLite persistence)
+// Wolf-Fin — shared in-memory state
 
-import type { AgentState, AgentStatus, CycleResult } from '../types.js'
-
-// Re-export for modules that used to import CycleResult from here
-export type { CycleResult } from '../types.js'
 import type { LogEntry, LogLevel, LogEvent } from '../types.js'
-import {
-  dbUpsertAgent,
-  dbRemoveAgent,
-  dbUpdateAgentStatus,
-  dbRecordCycle,
-  dbLogEvent,
-  dbGetLogs,
-  dbGetMaxLogId,
-  makeAgentKey,
-} from '../db/index.js'
-
-// ── Cycle in-flight lock — prevents concurrent runs for the same agent ────────
-
-const cyclesInFlight = new Set<string>()
-
-export function tryAcquireCycleLock(agentKey: string): boolean {
-  if (cyclesInFlight.has(agentKey)) return false
-  cyclesInFlight.add(agentKey)
-  return true
-}
-
-export function releaseCycleLock(agentKey: string): void {
-  cyclesInFlight.delete(agentKey)
-}
-
-// ── Queued planning requests — allows Plan button to work while agent is running ──
-
-const pendingPlanRequests = new Set<string>()
-
-export function queuePlanRequest(agentKey: string): void {
-  pendingPlanRequests.add(agentKey)
-}
-
-export function consumePlanRequest(agentKey: string): boolean {
-  if (pendingPlanRequests.has(agentKey)) {
-    pendingPlanRequests.delete(agentKey)
-    return true
-  }
-  return false
-}
+import { dbLogEvent, dbGetLogs, dbGetMaxLogId } from '../db/index.js'
 
 // ── Log buffer ────────────────────────────────────────────────────────────────
 
-// Initialized lazily on first use so it reads from DB after initDb() has run
+// Lazy-init from DB max ID to prevent duplicate IDs on restart
 let logSeq = -1
 function nextLogId(): number {
   if (logSeq === -1) logSeq = dbGetMaxLogId()
@@ -56,7 +13,7 @@ function nextLogId(): number {
 }
 const logBuffer: LogEntry[] = []
 
-// ── SSE subscriber registries ─────────────────────────────────────────────────
+// ── SSE subscribers ───────────────────────────────────────────────────────────
 
 type LogSubscriber = (entry: LogEntry) => void
 const logSubscribers = new Set<LogSubscriber>()
@@ -66,121 +23,55 @@ export function subscribeToLogs(cb: LogSubscriber): () => void {
   return () => logSubscribers.delete(cb)
 }
 
-export interface AgentStatusEvent {
-  type: 'agent_update'
-  agentKey: string
-  agent: AgentState
+// ── Analysis update events (broadcast when a new analysis completes) ──────────
+
+export interface AnalysisEvent {
+  type: 'analysis_update'
+  symbolKey: string
+  analysisId: number
 }
 
-type AgentStatusSubscriber = (event: AgentStatusEvent) => void
-const agentStatusSubscribers = new Set<AgentStatusSubscriber>()
+type AnalysisSubscriber = (event: AnalysisEvent) => void
+const analysisSubscribers = new Set<AnalysisSubscriber>()
 
-export function subscribeToAgentStatus(cb: AgentStatusSubscriber): () => void {
-  agentStatusSubscribers.add(cb)
-  return () => agentStatusSubscribers.delete(cb)
+export function subscribeToAnalyses(cb: AnalysisSubscriber): () => void {
+  analysisSubscribers.add(cb)
+  return () => analysisSubscribers.delete(cb)
 }
 
-function broadcastAgentUpdate(key: string): void {
-  const agent = state.agents[key]
-  if (!agent) return
-  const event: AgentStatusEvent = { type: 'agent_update', agentKey: key, agent }
-  for (const sub of agentStatusSubscribers) {
+export function broadcastAnalysisUpdate(symbolKey: string, analysisId: number): void {
+  const event: AnalysisEvent = { type: 'analysis_update', symbolKey, analysisId }
+  for (const sub of analysisSubscribers) {
     try { sub(event) } catch { /* ignore */ }
   }
 }
 
+// ── Log events ────────────────────────────────────────────────────────────────
+
 export function logEvent(
-  agentKey: string,
+  symbolKey: string,
   level: LogLevel,
   event: LogEvent,
   message: string,
   data?: Record<string, unknown>,
 ): void {
-  const entry: LogEntry = { id: nextLogId(), time: new Date().toISOString(), agentKey, level, event, message, data }
+  const entry: LogEntry = {
+    id: nextLogId(),
+    time: new Date().toISOString(),
+    symbolKey,
+    level,
+    event,
+    message,
+    data,
+  }
   logBuffer.unshift(entry)
   if (logBuffer.length > 500) logBuffer.length = 500
   dbLogEvent(entry)
-  // Broadcast to SSE subscribers
   for (const sub of logSubscribers) {
-    try { sub(entry) } catch { /* ignore subscriber errors */ }
+    try { sub(entry) } catch { /* ignore */ }
   }
 }
 
-export function getLogs(sinceId?: number, agentKey?: string, limit = 200): LogEntry[] {
-  return dbGetLogs(sinceId, agentKey, limit)
-}
-
-interface AppState {
-  agents: Record<string, AgentState>   // key = makeAgentKey(market, symbol, accountId, name)
-  recentEvents: CycleResult[]
-}
-
-const state: AppState = {
-  agents: {},
-  recentEvents: [],
-}
-
-export function getState(): Readonly<AppState> {
-  return state
-}
-
-export function getAgent(key: string): AgentState | undefined {
-  return state.agents[key]
-}
-
-export function upsertAgent(agent: AgentState): void {
-  const key = makeAgentKey(agent.config.market, agent.config.symbol, agent.config.mt5AccountId, agent.config.name)
-  state.agents[key] = agent
-  dbUpsertAgent(agent)
-}
-
-export function removeAgent(key: string): void {
-  delete state.agents[key]
-  dbRemoveAgent(key)
-}
-
-export function setAgentStatus(key: string, status: AgentStatus): void {
-  const agent = state.agents[key]
-  if (agent) {
-    agent.status = status
-    if (status === 'running') {
-      agent.pauseReason = undefined  // clear any previous pause reason on restart
-      if (!agent.startedAt) agent.startedAt = new Date().toISOString()
-    }
-    if (status === 'idle') {
-      agent.startedAt = null
-      agent.pauseReason = undefined
-    }
-    dbUpdateAgentStatus(key, agent.status, agent.startedAt)
-    broadcastAgentUpdate(key)
-  }
-}
-
-/** Pause the agent and record a human-readable reason shown in the UI banner */
-export function setAgentPaused(key: string, reason: string): void {
-  const agent = state.agents[key]
-  if (agent) {
-    agent.status = 'paused'
-    agent.pauseReason = reason
-    dbUpdateAgentStatus(key, 'paused', agent.startedAt)
-    broadcastAgentUpdate(key)
-  }
-}
-
-export function recordCycle(key: string, result: CycleResult): void {
-  const isExternalClose = result.decision === 'EXTERNAL_CLOSE'
-  const agent = state.agents[key]
-  if (agent) {
-    // Don't overwrite lastCycle for EXTERNAL_CLOSE — it's a pre-tick detection event,
-    // not the agent's actual decision. The real decision comes when the tick finishes.
-    if (!isExternalClose) {
-      agent.lastCycle = result
-    }
-    agent.cycleCount++
-    dbUpsertAgent(agent)
-    broadcastAgentUpdate(key)
-  }
-  state.recentEvents.unshift(result)
-  if (state.recentEvents.length > 100) state.recentEvents.length = 100
-  dbRecordCycle(key, result)
+export function getLogs(sinceId?: number, symbolKey?: string, limit = 200): LogEntry[] {
+  return dbGetLogs(sinceId, symbolKey, limit)
 }

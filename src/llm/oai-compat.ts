@@ -45,8 +45,8 @@ export interface OAIResponse {
 
 // ── Translators ───────────────────────────────────────────────────────────────
 
-export function toOAITools(tools: Anthropic.Tool[]): OAITool[] {
-  return tools.map(t => ({
+export function toOAITools(tools: Anthropic.Tool[] | undefined): OAITool[] {
+  return (tools ?? []).map(t => ({
     type: 'function',
     function: {
       name: t.name,

@@ -469,6 +469,46 @@ export class MT5Adapter {
         const pipVal = info.trade_tick_value ?? 1;
         return { pipSize: pipSz, pipValue: pipVal, point: info.point };
     }
+    /**
+     * Fetch everything needed for an analysis run: current price, all timeframe candles,
+     * and symbol info. Does not require RiskState — for use by the analyzer module.
+     */
+    async fetchAnalysisData(symbol) {
+        const snap = await mt5Get(this.buildUrl(`/snapshot/${toMt5Symbol(symbol)}`));
+        const mapCandles = (arr) => arr.map(c => ({
+            openTime: c.openTime,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+            volume: c.volume,
+            closeTime: c.closeTime,
+        }));
+        const { bid, ask, last } = snap.price;
+        const mid = last || (bid + ask) / 2;
+        const info = snap.symbol_info;
+        const point = info.point || pipSizeHeuristic(symbol);
+        const pipSz = pipSizeHeuristic(symbol, point);
+        const spread = info.spread * point / pipSz;
+        return {
+            price: { bid, ask, mid, spread },
+            candles: {
+                m1: mapCandles(snap.candles.m1),
+                m5: mapCandles(snap.candles.m5 ?? []),
+                m15: mapCandles(snap.candles.m15),
+                m30: mapCandles(snap.candles.m30 ?? []),
+                h1: mapCandles(snap.candles.h1),
+                h4: mapCandles(snap.candles.h4),
+            },
+            symbolInfo: {
+                point: info.point,
+                digits: info.digits,
+                volumeMin: info.volume_min,
+                volumeStep: info.volume_step,
+                contractSize: info.trade_contract_size || 100_000,
+            },
+        };
+    }
 }
 export const mt5Adapter = new MT5Adapter();
 //# sourceMappingURL=mt5.js.map

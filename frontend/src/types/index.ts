@@ -321,8 +321,8 @@ export interface EconomicEvent {
 // ── Market state (Phase 1) ────────────────────────────────────────────────────
 
 export type MarketRegime = 'trend' | 'range' | 'breakout_watch' | 'reversal_watch' | 'volatile' | 'compressed'
-export type VolatilityLevel = 'low' | 'normal' | 'elevated' | 'extreme'
-export type SessionQuality = 'optimal' | 'good' | 'fair' | 'poor'
+export type VolatilityLevel = 'quiet' | 'normal' | 'elevated' | 'abnormal'
+export type SessionQuality = 'poor' | 'acceptable' | 'favorable' | 'optimal'
 export type ContextRisk = 'low' | 'moderate' | 'elevated' | 'avoid'
 
 export interface MarketState {
@@ -332,11 +332,11 @@ export interface MarketState {
   volatility:        VolatilityLevel
   sessionQuality:    SessionQuality
   contextRisk:       ContextRisk
-  trendReasons:      string[]
-  rangeReasons:      string[]
-  breakoutReasons:   string[]
+  regimeReasons:     string[]
+  directionReasons:  string[]
   volatilityReasons: string[]
   sessionReasons:    string[]
+  riskReasons:       string[]
   capturedAt?:       string
   symbolKey?:        string
 }

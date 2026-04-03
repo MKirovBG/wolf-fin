@@ -10,17 +10,17 @@ const REGIME_META: Record<string, { label: string; color: string; bg: string; bo
 }
 
 const VOL_META: Record<string, { color: string; label: string }> = {
-  low:      { color: 'text-muted',    label: 'Low' },
+  quiet:    { color: 'text-muted',    label: 'Quiet' },
   normal:   { color: 'text-green',    label: 'Normal' },
   elevated: { color: 'text-yellow',   label: 'Elevated' },
-  extreme:  { color: 'text-red',      label: 'Extreme' },
+  abnormal: { color: 'text-red',      label: 'Abnormal' },
 }
 
 const SESSION_META: Record<string, { color: string; label: string }> = {
-  optimal: { color: 'text-green',    label: 'Optimal' },
-  good:    { color: 'text-green',    label: 'Good' },
-  fair:    { color: 'text-yellow',   label: 'Fair' },
-  poor:    { color: 'text-muted',    label: 'Poor' },
+  optimal:    { color: 'text-green',  label: 'Optimal' },
+  favorable:  { color: 'text-green',  label: 'Favorable' },
+  acceptable: { color: 'text-yellow', label: 'Acceptable' },
+  poor:       { color: 'text-muted',  label: 'Poor' },
 }
 
 const RISK_META: Record<string, { color: string; bg: string; border: string; label: string }> = {
@@ -66,12 +66,14 @@ export function MarketStatePanel({ state }: { state: MarketState }) {
   const sesMeta  = SESSION_META[state.sessionQuality] ?? SESSION_META.fair
   const riskMeta = RISK_META[state.contextRisk]  ?? RISK_META.low
 
+  const safeArr = (a: unknown) => Array.isArray(a) ? a as string[] : []
+
   const allReasons = [
-    ...state.trendReasons,
-    ...state.rangeReasons,
-    ...state.breakoutReasons,
-    ...state.volatilityReasons,
-    ...state.sessionReasons,
+    ...safeArr(state.regimeReasons),
+    ...safeArr(state.directionReasons),
+    ...safeArr(state.volatilityReasons),
+    ...safeArr(state.sessionReasons),
+    ...safeArr(state.riskReasons),
   ]
 
   return (
@@ -130,11 +132,11 @@ export function MarketStatePanel({ state }: { state: MarketState }) {
       {/* Reasons */}
       {allReasons.length > 0 && (
         <div className="bg-surface border border-border rounded-lg p-4 space-y-3">
-          <ReasonsBlock title="Trend factors"     items={state.trendReasons} />
-          <ReasonsBlock title="Range factors"     items={state.rangeReasons} />
-          <ReasonsBlock title="Breakout signals"  items={state.breakoutReasons} />
-          <ReasonsBlock title="Volatility"        items={state.volatilityReasons} />
-          <ReasonsBlock title="Session"           items={state.sessionReasons} />
+          <ReasonsBlock title="Regime"     items={safeArr(state.regimeReasons)} />
+          <ReasonsBlock title="Direction"  items={safeArr(state.directionReasons)} />
+          <ReasonsBlock title="Volatility" items={safeArr(state.volatilityReasons)} />
+          <ReasonsBlock title="Session"    items={safeArr(state.sessionReasons)} />
+          <ReasonsBlock title="Risk"       items={safeArr(state.riskReasons)} />
         </div>
       )}
     </div>

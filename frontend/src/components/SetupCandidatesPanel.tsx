@@ -28,11 +28,17 @@ function scoreText(score: number) {
   return 'text-red'
 }
 
+const safeArr = (a: unknown): string[] => Array.isArray(a) ? a as string[] : []
+
 function CandidateCard({ candidate, hero = false }: { candidate: SetupCandidate; hero?: boolean }) {
   const [showBreakdown, setShowBreakdown] = useState(false)
   const tier = TIER_META[candidate.tier] ?? TIER_META.rejected
   const dirColor = candidate.direction === 'BUY' ? 'text-green' : candidate.direction === 'SELL' ? 'text-red' : 'text-muted'
   const breakdown = candidate.scoreBreakdown
+  const targets = Array.isArray(candidate.targets) ? candidate.targets : []
+  const reasons = safeArr(candidate.reasons)
+  const disqualifiers = safeArr(candidate.disqualifiers)
+  const tags = safeArr(candidate.tags)
 
   return (
     <div className={`border rounded-lg overflow-hidden ${hero ? `${tier.border} ${tier.bg}` : 'border-border bg-surface'}`}>
@@ -78,7 +84,7 @@ function CandidateCard({ candidate, hero = false }: { candidate: SetupCandidate;
                 <div className="font-mono text-[11px] text-red">{candidate.stopLoss.toFixed(5)}</div>
               </div>
             )}
-            {candidate.targets.map((tp, i) => (
+            {targets.map((tp, i) => (
               <div key={i} className="bg-bg/40 rounded p-2">
                 <div className="text-[10px] text-muted uppercase tracking-wider mb-1">TP{i + 1}</div>
                 <div className="font-mono text-[11px] text-green">{tp.toFixed(5)}</div>
@@ -94,9 +100,9 @@ function CandidateCard({ candidate, hero = false }: { candidate: SetupCandidate;
       )}
 
       {/* Tags */}
-      {candidate.tags.length > 0 && (
+      {tags.length > 0 && (
         <div className="px-4 pb-2 flex flex-wrap gap-1">
-          {candidate.tags.map((tag, i) => (
+          {tags.map((tag, i) => (
             <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-surface2 border border-border text-muted2 font-mono">
               {tag}
             </span>
@@ -105,9 +111,9 @@ function CandidateCard({ candidate, hero = false }: { candidate: SetupCandidate;
       )}
 
       {/* Reasons */}
-      {candidate.reasons.length > 0 && (
+      {reasons.length > 0 && (
         <div className="px-4 pb-2 space-y-0.5">
-          {candidate.reasons.map((r, i) => (
+          {reasons.map((r, i) => (
             <div key={i} className="text-[11px] text-text/60 flex items-start gap-1.5">
               <span className="text-green/50 flex-shrink-0 mt-0.5">+</span>{r}
             </div>
@@ -116,9 +122,9 @@ function CandidateCard({ candidate, hero = false }: { candidate: SetupCandidate;
       )}
 
       {/* Disqualifiers */}
-      {candidate.disqualifiers.length > 0 && (
+      {disqualifiers.length > 0 && (
         <div className="px-4 pb-2 space-y-0.5">
-          {candidate.disqualifiers.map((d, i) => (
+          {disqualifiers.map((d, i) => (
             <div key={i} className="text-[11px] text-red/70 flex items-start gap-1.5">
               <span className="text-red/50 flex-shrink-0 mt-0.5">✕</span>{d}
             </div>

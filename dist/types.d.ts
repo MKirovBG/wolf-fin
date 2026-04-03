@@ -22,6 +22,9 @@ export interface IndicatorConfig {
     obvEnabled?: boolean;
     mfiEnabled?: boolean;
     keltnerEnabled?: boolean;
+    divergenceEnabled?: boolean;
+    fibEnabled?: boolean;
+    patternsEnabled?: boolean;
 }
 export interface CandleConfig {
     primaryTimeframe?: 'm1' | 'm5' | 'm15' | 'm30' | 'h1' | 'h4';
@@ -46,6 +49,8 @@ export interface WatchSymbol {
     contextConfig?: ContextConfig;
     llmProvider?: 'platform' | 'anthropic' | 'anthropic-subscription' | 'openrouter' | 'ollama' | 'openai-subscription';
     llmModel?: string;
+    strategy?: string;
+    systemPrompt?: string;
     createdAt: string;
     lastAnalysisAt?: string;
 }
@@ -84,7 +89,11 @@ export interface AnalysisResult {
     context: AnalysisContext;
     llmProvider: string;
     llmModel: string;
+    patterns?: CandlePattern[];
+    validation?: ProposalValidation;
     error?: string;
+    rawResponse?: string;
+    llmThinking?: string;
 }
 export interface AnalysisContext {
     news?: Array<{
@@ -109,6 +118,24 @@ export interface AnalysisContext {
         volumeMin: number;
         volumeStep: number;
     };
+    session?: {
+        activeSessions: string[];
+        isLondonNYOverlap: boolean;
+        isOptimalSession: boolean;
+        note: string;
+    };
+}
+export interface CandlePattern {
+    name: string;
+    direction: 'bullish' | 'bearish' | 'neutral';
+    price: number;
+    barIndex: number;
+    description: string;
+}
+export interface ProposalValidation {
+    score: number;
+    flags: string[];
+    valid: boolean;
 }
 export interface CandleBar {
     time: number;
@@ -119,7 +146,7 @@ export interface CandleBar {
     volume: number;
 }
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
-export type LogEvent = 'analysis_start' | 'analysis_end' | 'analysis_error' | 'analysis_skip' | 'schedule_start' | 'schedule_stop' | 'schedule_tick' | 'llm_request' | 'llm_response' | 'symbol_added' | 'symbol_removed';
+export type LogEvent = 'analysis_start' | 'analysis_end' | 'analysis_error' | 'analysis_skip' | 'schedule_start' | 'schedule_stop' | 'schedule_tick' | 'llm_request' | 'llm_response' | 'symbol_added' | 'symbol_removed' | 'features_computed';
 export interface LogEntry {
     id: number;
     time: string;

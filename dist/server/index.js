@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, appendFileSync, readFileSync, writeFileSync } from 'fs';
 import pino from 'pino';
-import { dbGetAllSymbols, dbGetSymbol, dbUpsertSymbol, dbDeleteSymbol, dbGetAnalyses, dbGetLatestAnalysis, dbGetAllRecentAnalyses, dbGetAnalysisById, dbGetAllMt5Accounts, dbUpsertMt5Accounts, dbMarkMt5AccountsGone, makeSymbolKey, } from '../db/index.js';
+import { dbGetAllSymbols, dbGetSymbol, dbUpsertSymbol, dbDeleteSymbol, dbGetAnalyses, dbGetLatestAnalysis, dbGetAllRecentAnalyses, dbGetAnalysisById, dbGetAllMt5Accounts, dbUpsertMt5Accounts, dbMarkMt5AccountsGone, dbGetSetting, dbSetSetting, dbGetAllStrategies, dbGetStrategy, dbUpsertStrategy, dbDeleteStrategy, dbGetOutcomes, dbGetOutcomeStats, dbGetPendingOutcomes, makeSymbolKey, } from '../db/index.js';
 import { getLogs, subscribeToLogs, subscribeToAnalyses, broadcastAnalysisUpdate } from './state.js';
 import { runAnalysis, isAnalysisRunning } from '../analyzer/index.js';
 import { syncSchedule, stopSchedule, getScheduledKeys } from '../scheduler/index.js';
@@ -269,6 +269,124 @@ export async function startServer() {
         const { key } = req.params;
         return { running: isAnalysisRunning(key) };
     });
+    // Prompt preview — returns the effective system prompt for a symbol without calling the LLM
+    app.get('/api/symbols/:key/prompt', async (req, reply) => {
+        const { key } = req.params;
+        const sym = dbGetSymbol(key);
+        if (!sym)
+            return reply.status(404).send({ error: 'Symbol not found' });
+        const { buildSystemPrompt } = await import('../analyzer/prompt.js');
+        const stratRow = sym.strategy ? dbGetStrategy(sym.strategy) : null;
+        return reply.send({
+            systemPrompt: buildSystemPrompt({ strategyInstructions: stratRow?.instructions, customPrompt: sym.systemPrompt }),
+            strategy: sym.strategy ?? null,
+            strategyName: stratRow?.name ?? null,
+            hasCustom: !!(sym.systemPrompt?.trim()),
+        });
+    });
+    // ── Strategies ────────────────────────────────────────────────────────────────
+    app.get('/api/strategies', async (_req, reply) => {
+        return reply.send(dbGetAllStrategies());
+    });
+    app.post('/api/strategies', async (req, reply) => {
+        const body = req.body;
+        if (!body.key?.trim() || !body.name?.trim() || !body.instructions?.trim()) {
+            return reply.status(400).send({ error: 'key, name and instructions are required' });
+        }
+        // Prevent overwriting builtins via POST
+        const existing = dbGetStrategy(body.key.trim());
+        if (existing?.isBuiltin)
+            return reply.status(409).send({ error: 'Cannot overwrite a built-in strategy via POST — use PATCH' });
+        dbUpsertStrategy({ key: body.key.trim(), name: body.name.trim(), description: body.description, instructions: body.instructions.trim() });
+        return reply.send({ ok: true });
+    });
+    app.patch('/api/strategies/:key', async (req, reply) => {
+        const { key } = req.params;
+        const body = req.body;
+        const existing = dbGetStrategy(key);
+        if (!existing)
+            return reply.status(404).send({ error: 'Strategy not found' });
+        dbUpsertStrategy({
+            key,
+            name: body.name?.trim() ?? existing.name,
+            description: body.description ?? existing.description ?? undefined,
+            instructions: body.instructions?.trim() ?? existing.instructions,
+        });
+        return reply.send({ ok: true });
+    });
+    app.delete('/api/strategies/:key', async (req, reply) => {
+        const { key } = req.params;
+        const existing = dbGetStrategy(key);
+        if (!existing)
+            return reply.status(404).send({ error: 'Strategy not found' });
+        if (existing.isBuiltin)
+            return reply.status(403).send({ error: 'Built-in strategies cannot be deleted' });
+        dbDeleteStrategy(key);
+        return reply.send({ ok: true });
+    });
+    // Backtest — evaluate stored analyses with trade proposals
+    app.get('/api/symbols/:key/backtest', async (req, reply) => {
+        const { key } = req.params;
+        const query = req.query;
+        const minRR = parseFloat(query.minRR ?? '1.5');
+        const analyses = dbGetAnalyses(key, 200);
+        const proposals = analyses.filter(a => a.tradeProposal !== null &&
+            a.tradeProposal.direction !== null &&
+            (a.tradeProposal.riskReward ?? 0) >= minRR &&
+            !a.error);
+        const results = proposals.map(a => ({
+            analysisId: a.id,
+            time: a.time,
+            bias: a.bias,
+            direction: a.tradeProposal?.direction ?? null,
+            entryLow: a.tradeProposal?.entryZone?.low ?? 0,
+            entryHigh: a.tradeProposal?.entryZone?.high ?? 0,
+            sl: a.tradeProposal?.stopLoss ?? 0,
+            tp1: a.tradeProposal?.takeProfits?.[0] ?? 0,
+            rr: a.tradeProposal?.riskReward ?? 0,
+            confidence: a.tradeProposal?.confidence ?? 'medium',
+        }));
+        return reply.send(results);
+    });
+    // Live candles proxy — fetches fresh candles from MT5 bridge for the chart
+    app.get('/api/symbols/:key/candles', async (req, reply) => {
+        const { key } = req.params;
+        const query = req.query;
+        const sym = dbGetSymbol(key);
+        if (!sym)
+            return reply.status(404).send({ error: 'Symbol not found' });
+        const tf = query.timeframe ?? sym.candleConfig?.primaryTimeframe ?? 'h1';
+        const count = parseInt(query.count ?? '200', 10);
+        // Map internal timeframe codes to MT5 bridge format
+        const TF_MAP = {
+            m1: 'M1', m5: 'M5', m15: 'M15', m30: 'M30', h1: 'H1', h4: 'H4',
+        };
+        const bridgeTf = TF_MAP[tf] ?? 'H1';
+        const base = `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`;
+        const key_ = process.env.MT5_BRIDGE_KEY ?? '';
+        const hdrs = key_ ? { 'X-Bridge-Key': key_ } : {};
+        try {
+            const r = await fetch(`${base}/candles/${encodeURIComponent(sym.symbol)}?timeframe=${bridgeTf}&count=${count}`, { headers: hdrs });
+            if (!r.ok)
+                return reply.status(502).send({ error: `Bridge returned ${r.status}` });
+            const body = await r.json();
+            const raw = body.candles ?? [];
+            // Convert ms → seconds for lightweight-charts
+            const candles = raw.map(c => ({
+                time: Math.floor(c.openTime / 1000),
+                open: c.open,
+                high: c.high,
+                low: c.low,
+                close: c.close,
+                volume: c.volume,
+            }));
+            return reply.send(candles);
+        }
+        catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return reply.status(502).send({ error: `Bridge unreachable: ${msg}` });
+        }
+    });
     // Scheduled symbols
     app.get('/api/scheduled', async () => {
         return { keys: getScheduledKeys() };
@@ -336,6 +454,22 @@ export async function startServer() {
             return reply.send(dbGetAllMt5Accounts());
         }
     });
+    // MT5 positions for a given account (proxied from bridge)
+    app.get('/api/accounts/:id/positions', async (_req, reply) => {
+        const base = `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`;
+        const key = process.env.MT5_BRIDGE_KEY ?? '';
+        const hdrs = key ? { 'X-Bridge-Key': key } : {};
+        try {
+            const r = await fetch(`${base}/positions`, { headers: hdrs });
+            if (!r.ok)
+                return reply.send([]);
+            const data = await r.json();
+            return reply.send(Array.isArray(data) ? data : data.positions ?? []);
+        }
+        catch {
+            return reply.send([]);
+        }
+    });
     // MT5 bridge health pass-through
     app.get('/api/mt5/health', async (_req, reply) => {
         const base = `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`;
@@ -359,8 +493,9 @@ export async function startServer() {
             const r = await fetch(url);
             if (!r.ok)
                 return reply.send([]);
-            const data = await r.json();
-            const symbols = (data.symbols ?? []).slice(0, 50).map(s => ({
+            const raw = await r.json();
+            const list = Array.isArray(raw) ? raw : (raw.symbols ?? []);
+            const symbols = list.slice(0, 50).map(s => ({
                 symbol: s.name,
                 description: s.description,
             }));
@@ -597,6 +732,42 @@ export async function startServer() {
     app.get('/api/calendar', async () => {
         return fetchCalendarForDisplay();
     });
+    // ── Symbol summary (bias heatmap data) ───────────────────────────────────────
+    app.get('/api/summary', async () => {
+        const symbols = dbGetAllSymbols();
+        const scheduled = new Set(getScheduledKeys());
+        return symbols.map(sym => {
+            const latest = dbGetLatestAnalysis(sym.key);
+            return {
+                key: sym.key,
+                symbol: sym.symbol,
+                displayName: sym.displayName,
+                scheduleEnabled: sym.scheduleEnabled,
+                scheduled: scheduled.has(sym.key),
+                running: isAnalysisRunning(sym.key),
+                lastAnalysisAt: sym.lastAnalysisAt ?? null,
+                bias: latest?.bias ?? null,
+                summary: latest?.summary ? latest.summary.slice(0, 120) : null,
+                error: latest?.error ?? null,
+                direction: latest?.tradeProposal?.direction ?? null,
+                confidence: latest?.tradeProposal?.confidence ?? null,
+                riskReward: latest?.tradeProposal?.riskReward ?? null,
+                validationScore: latest?.validation?.score ?? null,
+            };
+        });
+    });
+    // ── Outcome tracking ──────────────────────────────────────────────────────────
+    app.get('/api/outcomes', async (req) => {
+        const { symbolKey, limit } = req.query;
+        return dbGetOutcomes(symbolKey, limit ? parseInt(limit) : 100);
+    });
+    app.get('/api/outcomes/stats', async (req) => {
+        const { symbolKey } = req.query;
+        return dbGetOutcomeStats(symbolKey);
+    });
+    app.get('/api/outcomes/pending', async () => {
+        return dbGetPendingOutcomes();
+    });
     // ── Dashboard status ──────────────────────────────────────────────────────────
     app.get('/api/status', async () => {
         const symbols = dbGetAllSymbols();
@@ -606,6 +777,55 @@ export async function startServer() {
             recentAnalyses,
             scheduled: getScheduledKeys(),
         };
+    });
+    // ── Selected account persistence ─────────────────────────────────────────────
+    app.get('/api/selected-account', async () => {
+        const v = dbGetSetting('selected_account');
+        if (!v)
+            return null;
+        try {
+            return JSON.parse(v);
+        }
+        catch {
+            return null;
+        }
+    });
+    app.post('/api/selected-account', async (req) => {
+        const body = req.body;
+        dbSetSetting('selected_account', body ? JSON.stringify(body) : '');
+        return { ok: true };
+    });
+    // ── General app config (bridge, runtime) ─────────────────────────────────────
+    app.get('/api/config', async () => {
+        return {
+            bridgePort: process.env.MT5_BRIDGE_PORT ?? '8000',
+            bridgeUrl: process.env.MT5_BRIDGE_URL ?? '',
+            bridgeKeySet: !!(process.env.MT5_BRIDGE_KEY?.trim()),
+            logLevel: process.env.LOG_LEVEL ?? 'info',
+        };
+    });
+    app.post('/api/config', async (req) => {
+        const body = req.body;
+        if (body.bridgePort != null) {
+            persistEnvKey('MT5_BRIDGE_PORT', body.bridgePort);
+            process.env.MT5_BRIDGE_PORT = body.bridgePort;
+        }
+        if (body.bridgeUrl != null) {
+            persistEnvKey('MT5_BRIDGE_URL', body.bridgeUrl);
+            process.env.MT5_BRIDGE_URL = body.bridgeUrl;
+        }
+        if (body.bridgeKey != null && body.bridgeKey.trim()) {
+            persistEnvKey('MT5_BRIDGE_KEY', body.bridgeKey.trim());
+            process.env.MT5_BRIDGE_KEY = body.bridgeKey.trim();
+        }
+        if (body.logLevel != null) {
+            const validLevels = ['debug', 'info', 'warn', 'error'];
+            if (validLevels.includes(body.logLevel)) {
+                persistEnvKey('LOG_LEVEL', body.logLevel);
+                process.env.LOG_LEVEL = body.logLevel;
+            }
+        }
+        return { ok: true };
     });
     // ── Serve React frontend ──────────────────────────────────────────────────────
     const frontendDist = join(__dirname, '../../frontend-dist');

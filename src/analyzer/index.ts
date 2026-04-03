@@ -10,10 +10,12 @@ import type { Candle, KeyLevel as AdapterKeyLevel } from '../adapters/types.js'
 import { getLLMProvider, getModelForConfig } from '../llm/index.js'
 import { buildAnalysisPrompt, buildSystemPrompt } from './prompt.js'
 import { validateProposal } from './validate.js'
-import { dbSaveAnalysis, dbSetLastAnalysisAt, dbGetSymbol, dbGetStrategy, dbCreateOutcome } from '../db/index.js'
+import { dbSaveAnalysis, dbSetLastAnalysisAt, dbGetSymbol, dbGetStrategy, dbCreateOutcome, dbSaveFeatures, dbSaveMarketState } from '../db/index.js'
 import { logEvent } from '../server/state.js'
 import { buildSessionContext } from '../adapters/session.js'
 import { detectPatterns } from '../adapters/patterns.js'
+import { computeFeatures } from '../features/index.js'
+import { classifyMarketState } from '../state/marketState.js'
 import type { WatchSymbol, AnalysisResult, KeyLevel, TradeProposal, CandleBar, AnalysisContext } from '../types.js'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
@@ -174,6 +176,25 @@ export async function runAnalysis(symbolKey: string): Promise<AnalysisResult> {
       ? detectPatterns(candleSlice, data.symbolInfo.digits)
       : []
 
+    // ── 3b. Feature engine + market-state classifier ──────────────────────────
+    // Compute a typed FeatureSnapshot from indicators + context, then classify
+    // the market state. Both are passed to the prompt builder and persisted
+    // after the analysis ID is known.
+    const features = computeFeatures({
+      symbolKey,
+      symbol:       sym.symbol,
+      candles:      candleSlice,
+      indicators,
+      context,
+      keyLevels:    [],   // bridge key levels available in full snapshot; empty for now
+      point:        data.symbolInfo.point,
+      indicatorCfg: { emaFast: indicatorCfg.emaFast, emaSlow: indicatorCfg.emaSlow },
+    })
+    const marketState = classifyMarketState(features)
+
+    logEvent(symbolKey, 'info', 'features_computed',
+      `State: ${marketState.regime} / ${marketState.direction} (${marketState.directionStrength}%) | Vol: ${marketState.volatility} | Session: ${marketState.sessionQuality}`)
+
     // ── 4. Build prompt & call LLM ────────────────────────────────────────────
     const provider  = getLLMProvider(sym)
     const model     = getModelForConfig(sym)
@@ -192,6 +213,8 @@ export async function runAnalysis(symbolKey: string): Promise<AnalysisResult> {
       patterns,
       indicatorCfg:  { emaFast: indicatorCfg.emaFast, emaSlow: indicatorCfg.emaSlow },
       digits:        data.symbolInfo.digits,
+      features,
+      marketState,
     })
 
     const stratRow = sym.strategy ? dbGetStrategy(sym.strategy) : null
@@ -355,6 +378,15 @@ export async function runAnalysis(symbolKey: string): Promise<AnalysisResult> {
 
     const id = dbSaveAnalysis(result)
     dbSetLastAnalysisAt(symbolKey, now)
+
+    // ── Persist feature snapshot and market state ─────────────────────────────
+    try {
+      dbSaveFeatures({ ...features, analysisId: id }, id)
+      dbSaveMarketState({ ...marketState, analysisId: id }, id)
+    } catch (e) {
+      // Non-fatal — analysis is already saved; log and continue
+      log.warn({ err: String(e) }, 'failed to persist features/market state')
+    }
 
     // ── Create outcome tracking record if a trade was proposed ────────────────
     if (tradeProposal && tradeProposal.direction) {

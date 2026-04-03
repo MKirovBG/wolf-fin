@@ -5,6 +5,7 @@ import { mkdirSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import type { WatchSymbol, AnalysisResult, LogEntry, LogLevel, LogEvent, ProposalValidation, CandlePattern } from '../types.js'
+import type { FeatureSnapshot, MarketState } from '../types/market.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DB_PATH = join(__dirname, '../../data/wolf-fin.db')
@@ -137,6 +138,35 @@ export function initDb(): void {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_analyses_symbol_key ON analyses(symbol_key, time DESC);
     CREATE INDEX IF NOT EXISTS idx_log_entries_symbol_key ON log_entries(symbol_key, id DESC);
+  `)
+
+  // Phase 1: feature snapshots and market states
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS analysis_features (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      analysis_id INTEGER NOT NULL,
+      symbol_key  TEXT NOT NULL,
+      captured_at TEXT NOT NULL,
+      data        TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_features_analysis_id  ON analysis_features(analysis_id);
+    CREATE INDEX IF NOT EXISTS idx_features_symbol_key   ON analysis_features(symbol_key, captured_at DESC);
+
+    CREATE TABLE IF NOT EXISTS market_states (
+      id               INTEGER PRIMARY KEY AUTOINCREMENT,
+      analysis_id      INTEGER NOT NULL,
+      symbol_key       TEXT NOT NULL,
+      captured_at      TEXT NOT NULL,
+      regime           TEXT NOT NULL,
+      direction        TEXT NOT NULL,
+      direction_strength INTEGER NOT NULL,
+      volatility       TEXT NOT NULL,
+      session_quality  TEXT NOT NULL,
+      context_risk     TEXT NOT NULL,
+      data             TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_states_analysis_id ON market_states(analysis_id);
+    CREATE INDEX IF NOT EXISTS idx_states_symbol_key  ON market_states(symbol_key, captured_at DESC);
   `)
 
   // Strategies table
@@ -649,4 +679,70 @@ export function dbGetOutcomeStats(symbolKey?: string): {
     expired:  row.expired ?? 0,
     winRate:  resolved > 0 ? (wins / resolved) * 100 : 0,
   }
+}
+
+// ── Phase 1: Feature snapshots ────────────────────────────────────────────────
+
+export function dbSaveFeatures(features: FeatureSnapshot, analysisId: number): void {
+  db.prepare(`
+    INSERT INTO analysis_features (analysis_id, symbol_key, captured_at, data)
+    VALUES (@analysisId, @symbolKey, @capturedAt, @data)
+  `).run({
+    analysisId,
+    symbolKey:  features.symbolKey,
+    capturedAt: features.capturedAt,
+    data:       JSON.stringify({ ...features, analysisId }),
+  })
+}
+
+export function dbGetLatestFeatures(symbolKey: string): FeatureSnapshot | null {
+  const row = db.prepare(
+    'SELECT data FROM analysis_features WHERE symbol_key = ? ORDER BY captured_at DESC LIMIT 1'
+  ).get(symbolKey) as { data: string } | undefined
+  return row ? JSON.parse(row.data) as FeatureSnapshot : null
+}
+
+export function dbGetFeaturesForAnalysis(analysisId: number): FeatureSnapshot | null {
+  const row = db.prepare(
+    'SELECT data FROM analysis_features WHERE analysis_id = ? LIMIT 1'
+  ).get(analysisId) as { data: string } | undefined
+  return row ? JSON.parse(row.data) as FeatureSnapshot : null
+}
+
+// ── Phase 1: Market states ────────────────────────────────────────────────────
+
+export function dbSaveMarketState(state: MarketState, analysisId: number): void {
+  db.prepare(`
+    INSERT INTO market_states
+      (analysis_id, symbol_key, captured_at, regime, direction, direction_strength,
+       volatility, session_quality, context_risk, data)
+    VALUES
+      (@analysisId, @symbolKey, @capturedAt, @regime, @direction, @directionStrength,
+       @volatility, @sessionQuality, @contextRisk, @data)
+  `).run({
+    analysisId,
+    symbolKey:        state.symbolKey,
+    capturedAt:       state.capturedAt,
+    regime:           state.regime,
+    direction:        state.direction,
+    directionStrength: state.directionStrength,
+    volatility:       state.volatility,
+    sessionQuality:   state.sessionQuality,
+    contextRisk:      state.contextRisk,
+    data:             JSON.stringify({ ...state, analysisId }),
+  })
+}
+
+export function dbGetLatestMarketState(symbolKey: string): MarketState | null {
+  const row = db.prepare(
+    'SELECT data FROM market_states WHERE symbol_key = ? ORDER BY captured_at DESC LIMIT 1'
+  ).get(symbolKey) as { data: string } | undefined
+  return row ? JSON.parse(row.data) as MarketState : null
+}
+
+export function dbGetMarketStateForAnalysis(analysisId: number): MarketState | null {
+  const row = db.prepare(
+    'SELECT data FROM market_states WHERE analysis_id = ? LIMIT 1'
+  ).get(analysisId) as { data: string } | undefined
+  return row ? JSON.parse(row.data) as MarketState : null
 }

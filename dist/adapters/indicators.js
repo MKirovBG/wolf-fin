@@ -203,6 +203,136 @@ export function computeKeltner(candles, period = 20, multiplier = 2) {
     const last = results[results.length - 1];
     return last ?? undefined;
 }
+// ── RSI series (full array, needed for divergence) ───────────────────────────
+function rsiSeries(candles, period = 14) {
+    const prices = closes(candles);
+    if (prices.length < period + 1)
+        return [];
+    const output = [];
+    let avgGain = 0;
+    let avgLoss = 0;
+    for (let i = 1; i <= period; i++) {
+        const diff = prices[i] - prices[i - 1];
+        if (diff >= 0)
+            avgGain += diff;
+        else
+            avgLoss += Math.abs(diff);
+    }
+    avgGain /= period;
+    avgLoss /= period;
+    const rs0 = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+    output.push(rs0);
+    for (let i = period + 1; i < prices.length; i++) {
+        const diff = prices[i] - prices[i - 1];
+        avgGain = (avgGain * (period - 1) + (diff >= 0 ? diff : 0)) / period;
+        avgLoss = (avgLoss * (period - 1) + (diff < 0 ? Math.abs(diff) : 0)) / period;
+        output.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+    }
+    return output;
+}
+// ── Divergence detection ──────────────────────────────────────────────────────
+// Compares price swing highs/lows against RSI and MACD histogram swings.
+// Returns 'bullish' (hidden buying pressure) or 'bearish' (hidden selling pressure).
+function swingHighIndices(values, lookback = 3) {
+    const out = [];
+    for (let i = lookback; i < values.length - lookback; i++) {
+        const win = values.slice(i - lookback, i + lookback + 1);
+        if (values[i] === Math.max(...win))
+            out.push(i);
+    }
+    return out;
+}
+function swingLowIndices(values, lookback = 3) {
+    const out = [];
+    for (let i = lookback; i < values.length - lookback; i++) {
+        const win = values.slice(i - lookback, i + lookback + 1);
+        if (values[i] === Math.min(...win))
+            out.push(i);
+    }
+    return out;
+}
+export function computeDivergence(candles, period = 14) {
+    if (candles.length < 40)
+        return undefined;
+    const prices = closes(candles);
+    const rsiVals = rsiSeries(candles, period);
+    const offset = prices.length - rsiVals.length; // RSI series is shorter
+    const macdRaw = TI.MACD.calculate({
+        values: prices, fastPeriod: 12, slowPeriod: 26, signalPeriod: 9,
+        SimpleMAOscillator: false, SimpleMASignal: false,
+    });
+    const macdOffset = prices.length - macdRaw.length;
+    const macdHist = macdRaw.map(r => r.histogram);
+    const priceHighs = swingHighIndices(prices);
+    const priceLows = swingLowIndices(prices);
+    const result = {};
+    // Bearish RSI divergence: price higher high, RSI lower high
+    if (priceHighs.length >= 2) {
+        const i1 = priceHighs[priceHighs.length - 2];
+        const i2 = priceHighs[priceHighs.length - 1];
+        const r1 = i1 - offset;
+        const r2 = i2 - offset;
+        if (r1 >= 0 && r2 >= 0 && r2 < rsiVals.length) {
+            if (prices[i2] > prices[i1] && rsiVals[r2] < rsiVals[r1])
+                result.rsi = 'bearish';
+        }
+    }
+    // Bullish RSI divergence: price lower low, RSI higher low
+    if (!result.rsi && priceLows.length >= 2) {
+        const i1 = priceLows[priceLows.length - 2];
+        const i2 = priceLows[priceLows.length - 1];
+        const r1 = i1 - offset;
+        const r2 = i2 - offset;
+        if (r1 >= 0 && r2 >= 0 && r2 < rsiVals.length) {
+            if (prices[i2] < prices[i1] && rsiVals[r2] > rsiVals[r1])
+                result.rsi = 'bullish';
+        }
+    }
+    // Bearish MACD divergence: price higher high, MACD hist lower high
+    if (macdHist.length >= 6 && priceHighs.length >= 2) {
+        const i1 = priceHighs[priceHighs.length - 2];
+        const i2 = priceHighs[priceHighs.length - 1];
+        const m1 = i1 - macdOffset;
+        const m2 = i2 - macdOffset;
+        if (m1 >= 0 && m2 >= 0 && m2 < macdHist.length) {
+            if (prices[i2] > prices[i1] && macdHist[m2] < macdHist[m1])
+                result.macd = 'bearish';
+        }
+    }
+    // Bullish MACD divergence: price lower low, MACD hist higher low
+    if (!result.macd && macdHist.length >= 6 && priceLows.length >= 2) {
+        const i1 = priceLows[priceLows.length - 2];
+        const i2 = priceLows[priceLows.length - 1];
+        const m1 = i1 - macdOffset;
+        const m2 = i2 - macdOffset;
+        if (m1 >= 0 && m2 >= 0 && m2 < macdHist.length) {
+            if (prices[i2] < prices[i1] && macdHist[m2] > macdHist[m1])
+                result.macd = 'bullish';
+        }
+    }
+    return Object.keys(result).length > 0 ? result : undefined;
+}
+// ── Fibonacci Retracements ────────────────────────────────────────────────────
+// Finds the dominant swing (highest high → lowest low or vice versa) across
+// the candle window and returns the standard retracement levels.
+const FIB_RATIOS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+export function computeFibLevels(candles) {
+    if (candles.length < 20)
+        return [];
+    const swingHigh = Math.max(...candles.map(c => c.high));
+    const swingLow = Math.min(...candles.map(c => c.low));
+    const range = swingHigh - swingLow;
+    if (range === 0)
+        return [];
+    // Determine trend direction: is the last close closer to the high (uptrend retraces down)
+    // or to the low (downtrend retraces up)?
+    const lastClose = candles[candles.length - 1].close;
+    const isUptrend = Math.abs(lastClose - swingHigh) < Math.abs(lastClose - swingLow);
+    return FIB_RATIOS.map(ratio => ({
+        price: isUptrend ? swingHigh - ratio * range : swingLow + ratio * range,
+        label: `Fib ${(ratio * 100).toFixed(1)}%`,
+    }));
+}
 export function computeIndicators(h1Candles, cfg = {}) {
     const rsiPeriod = cfg.rsiPeriod ?? 14;
     const emaFast = cfg.emaFast ?? 20;
@@ -216,7 +346,7 @@ export function computeIndicators(h1Candles, cfg = {}) {
         ema20: cfg.emaFastEnabled !== false ? ema(h1Candles, emaFast) : undefined,
         ema50: cfg.emaSlowEnabled !== false ? ema(h1Candles, emaSlow) : undefined,
         atr14: cfg.atrEnabled !== false ? atr(h1Candles, atrPeriod) : undefined,
-        vwap: includeVwap ? vwap(h1Candles) : 0,
+        vwap: includeVwap ? vwap(h1Candles) : undefined,
         bbWidth: cfg.bbEnabled !== false ? bbWidth(h1Candles, bbPeriod, bbStd) : undefined,
     };
     if (cfg.macdEnabled)
@@ -239,6 +369,10 @@ export function computeIndicators(h1Candles, cfg = {}) {
         result.mfi = computeMfi(h1Candles);
     if (cfg.keltnerEnabled)
         result.keltner = computeKeltner(h1Candles);
+    if (cfg.divergenceEnabled)
+        result.divergence = computeDivergence(h1Candles);
+    if (cfg.fibEnabled)
+        result.fib = computeFibLevels(h1Candles);
     return result;
 }
 // ── Multi-Timeframe Indicators ───────────────────────────────────────────────

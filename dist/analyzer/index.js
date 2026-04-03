@@ -7,8 +7,13 @@ import { fetchCalendarForDisplay } from '../adapters/calendar.js';
 import { fetchForexNews } from '../adapters/finnhubNews.js';
 import { getLLMProvider, getModelForConfig } from '../llm/index.js';
 import { buildAnalysisPrompt, buildSystemPrompt } from './prompt.js';
-import { dbSaveAnalysis, dbSetLastAnalysisAt, dbGetSymbol } from '../db/index.js';
+import { validateProposal } from './validate.js';
+import { dbSaveAnalysis, dbSetLastAnalysisAt, dbGetSymbol, dbGetStrategy, dbCreateOutcome, dbSaveFeatures, dbSaveMarketState } from '../db/index.js';
 import { logEvent } from '../server/state.js';
+import { buildSessionContext } from '../adapters/session.js';
+import { detectPatterns } from '../adapters/patterns.js';
+import { computeFeatures } from '../features/index.js';
+import { classifyMarketState } from '../state/marketState.js';
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 // Prevent concurrent analysis runs for the same symbol
 const analysisInFlight = new Set();
@@ -70,8 +75,8 @@ export async function runAnalysis(symbolKey) {
         throw new Error(`Symbol ${symbolKey} not found`);
     analysisInFlight.add(symbolKey);
     const startTime = Date.now();
-    logEvent(symbolKey, 'info', 'analysis_start', `Starting analysis for ${sym.symbol}`);
     try {
+        logEvent(symbolKey, 'info', 'analysis_start', `Starting analysis for ${sym.symbol}`);
         // ── 1. Fetch market data from MT5 bridge ───────────────────────────────────
         const adapter = new MT5Adapter(sym.mt5AccountId);
         const data = await adapter.fetchAnalysisData(sym.symbol);
@@ -123,6 +128,34 @@ export async function runAnalysis(symbolKey) {
             }
             catch { /* calendar is optional */ }
         }
+        // ── Session context ────────────────────────────────────────────────────────
+        const sessionCtx = buildSessionContext(sym.symbol);
+        context.session = {
+            activeSessions: sessionCtx.activeSessions,
+            isLondonNYOverlap: sessionCtx.isLondonNYOverlap,
+            isOptimalSession: sessionCtx.isOptimalSession,
+            note: sessionCtx.note,
+        };
+        // ── Candlestick pattern detection ─────────────────────────────────────────
+        const patterns = indicatorCfg.patternsEnabled !== false
+            ? detectPatterns(candleSlice, data.symbolInfo.digits)
+            : [];
+        // ── 3b. Feature engine + market-state classifier ──────────────────────────
+        // Compute a typed FeatureSnapshot from indicators + context, then classify
+        // the market state. Both are passed to the prompt builder and persisted
+        // after the analysis ID is known.
+        const features = computeFeatures({
+            symbolKey,
+            symbol: sym.symbol,
+            candles: candleSlice,
+            indicators,
+            context,
+            keyLevels: [], // bridge key levels available in full snapshot; empty for now
+            point: data.symbolInfo.point,
+            indicatorCfg: { emaFast: indicatorCfg.emaFast, emaSlow: indicatorCfg.emaSlow },
+        });
+        const marketState = classifyMarketState(features);
+        logEvent(symbolKey, 'info', 'features_computed', `State: ${marketState.regime} / ${marketState.direction} (${marketState.directionStrength}%) | Vol: ${marketState.volatility} | Session: ${marketState.sessionQuality}`);
         // ── 4. Build prompt & call LLM ────────────────────────────────────────────
         const provider = getLLMProvider(sym);
         const model = getModelForConfig(sym);
@@ -133,20 +166,27 @@ export async function runAnalysis(symbolKey) {
             timeframe: primaryTf,
             price: data.price,
             candles: candleSlice,
+            allCandles: data.candles,
             indicators,
             context,
+            patterns,
             indicatorCfg: { emaFast: indicatorCfg.emaFast, emaSlow: indicatorCfg.emaSlow },
             digits: data.symbolInfo.digits,
+            features,
+            marketState,
         });
+        const stratRow = sym.strategy ? dbGetStrategy(sym.strategy) : null;
         const response = await provider.createMessage({
             model,
             max_tokens: 2048,
-            system: buildSystemPrompt(),
+            system: buildSystemPrompt({ strategyInstructions: stratRow?.instructions, customPrompt: sym.systemPrompt }),
             messages: [{ role: 'user', content: userMessage }],
         });
-        // ── 5. Extract text response ──────────────────────────────────────────────
+        // ── 5. Extract text response + optional thinking block ───────────────────
         const textContent = response.content.find(c => c.type === 'text');
+        const thinkingContent = response.content.find(c => c.type === 'thinking');
         const rawText = textContent && 'text' in textContent ? textContent.text : '';
+        const rawThinking = thinkingContent && 'thinking' in thinkingContent ? thinkingContent.thinking : undefined;
         logEvent(symbolKey, 'info', 'llm_response', `LLM responded (${response.usage.output_tokens} tokens)`, {
             inputTokens: response.usage.input_tokens,
             outputTokens: response.usage.output_tokens,
@@ -184,34 +224,92 @@ export async function runAnalysis(symbolKey) {
         }
         // Flatten indicators to a simple Record<string, number|string> for storage
         const indicatorsFlat = {};
+        // Scalars
         if (indicators.rsi14 != null)
-            indicatorsFlat.rsi14 = +indicators.rsi14.toFixed(2);
+            indicatorsFlat['RSI(14)'] = +indicators.rsi14.toFixed(2);
         if (indicators.ema20 != null)
-            indicatorsFlat.ema20 = +indicators.ema20.toFixed(5);
+            indicatorsFlat['EMA Fast'] = +indicators.ema20.toFixed(5);
         if (indicators.ema50 != null)
-            indicatorsFlat.ema50 = +indicators.ema50.toFixed(5);
+            indicatorsFlat['EMA Slow'] = +indicators.ema50.toFixed(5);
         if (indicators.atr14 != null)
-            indicatorsFlat.atr14 = +indicators.atr14.toFixed(5);
-        if (indicators.vwap)
-            indicatorsFlat.vwap = +indicators.vwap.toFixed(5);
+            indicatorsFlat['ATR(14)'] = +indicators.atr14.toFixed(5);
+        if (indicators.vwap != null)
+            indicatorsFlat['VWAP'] = +indicators.vwap.toFixed(5);
         if (indicators.bbWidth != null)
-            indicatorsFlat.bbWidth = +indicators.bbWidth.toFixed(5);
+            indicatorsFlat['BB Width'] = +indicators.bbWidth.toFixed(5);
+        if (indicators.cci != null)
+            indicatorsFlat['CCI(20)'] = +indicators.cci.toFixed(2);
+        if (indicators.williamsR != null)
+            indicatorsFlat['Williams %R'] = +indicators.williamsR.toFixed(2);
+        if (indicators.mfi != null)
+            indicatorsFlat['MFI(14)'] = +indicators.mfi.toFixed(2);
+        // Compound
         if (indicators.macd) {
-            indicatorsFlat.macd_macd = +indicators.macd.macd.toFixed(5);
-            indicatorsFlat.macd_signal = +indicators.macd.signal.toFixed(5);
-            indicatorsFlat.macd_histogram = +indicators.macd.histogram.toFixed(5);
+            indicatorsFlat['MACD'] = +indicators.macd.macd.toFixed(5);
+            indicatorsFlat['MACD Signal'] = +indicators.macd.signal.toFixed(5);
+            indicatorsFlat['MACD Hist'] = +indicators.macd.histogram.toFixed(5);
         }
         if (indicators.adx) {
-            indicatorsFlat.adx = +indicators.adx.adx.toFixed(2);
-            indicatorsFlat.plusDI = +indicators.adx.plusDI.toFixed(2);
-            indicatorsFlat.minusDI = +indicators.adx.minusDI.toFixed(2);
+            indicatorsFlat['ADX(14)'] = +indicators.adx.adx.toFixed(2);
+            indicatorsFlat['+DI'] = +indicators.adx.plusDI.toFixed(2);
+            indicatorsFlat['-DI'] = +indicators.adx.minusDI.toFixed(2);
         }
         if (indicators.stoch) {
-            indicatorsFlat.stoch_k = +indicators.stoch.k.toFixed(2);
-            indicatorsFlat.stoch_d = +indicators.stoch.d.toFixed(2);
+            indicatorsFlat['Stoch %K'] = +indicators.stoch.k.toFixed(2);
+            indicatorsFlat['Stoch %D'] = +indicators.stoch.d.toFixed(2);
         }
-        if (indicators.mtf?.confluence != null) {
-            indicatorsFlat.mtf_confluence = indicators.mtf.confluence;
+        if (indicators.psar) {
+            indicatorsFlat['PSAR'] = +indicators.psar.value.toFixed(5);
+            indicatorsFlat['PSAR Trend'] = indicators.psar.bullish ? 'Bullish' : 'Bearish';
+        }
+        if (indicators.obv) {
+            indicatorsFlat['OBV'] = +indicators.obv.value.toFixed(0);
+            indicatorsFlat['OBV Bias'] = indicators.obv.rising ? 'Rising' : 'Falling';
+        }
+        if (indicators.keltner) {
+            indicatorsFlat['Keltner Upper'] = +indicators.keltner.upper.toFixed(5);
+            indicatorsFlat['Keltner Mid'] = +indicators.keltner.middle.toFixed(5);
+            indicatorsFlat['Keltner Lower'] = +indicators.keltner.lower.toFixed(5);
+        }
+        if (indicators.ichimoku) {
+            indicatorsFlat['Ichi Conversion'] = +indicators.ichimoku.conversion.toFixed(5);
+            indicatorsFlat['Ichi Base'] = +indicators.ichimoku.base.toFixed(5);
+            indicatorsFlat['Ichi Cloud'] = indicators.ichimoku.cloudBullish ? 'Bullish' : 'Bearish';
+            indicatorsFlat['Ichi Position'] = indicators.ichimoku.aboveCloud ? 'Above' : 'Below';
+        }
+        // Multi-timeframe
+        if (indicators.mtf) {
+            if (indicators.mtf.confluence != null)
+                indicatorsFlat['MTF Score'] = indicators.mtf.confluence;
+            if (indicators.mtf.m15?.rsi14 != null)
+                indicatorsFlat['M15 RSI'] = +indicators.mtf.m15.rsi14.toFixed(2);
+            if (indicators.mtf.m15?.ema20 != null)
+                indicatorsFlat['M15 EMA20'] = +indicators.mtf.m15.ema20.toFixed(5);
+            if (indicators.mtf.h4?.rsi14 != null)
+                indicatorsFlat['H4 RSI'] = +indicators.mtf.h4.rsi14.toFixed(2);
+            if (indicators.mtf.h4?.ema20 != null)
+                indicatorsFlat['H4 EMA20'] = +indicators.mtf.h4.ema20.toFixed(5);
+            if (indicators.mtf.h4?.ema50 != null)
+                indicatorsFlat['H4 EMA50'] = +indicators.mtf.h4.ema50.toFixed(5);
+        }
+        // Strip NaN values — JSON.stringify turns NaN → null which pollutes the DB
+        for (const k of Object.keys(indicatorsFlat)) {
+            const v = indicatorsFlat[k];
+            if (typeof v === 'number' && isNaN(v))
+                delete indicatorsFlat[k];
+        }
+        // ── Proposal validation ────────────────────────────────────────────────────
+        let validation = undefined;
+        if (tradeProposal && tradeProposal.direction) {
+            const atrVal = indicators.atr14 ?? 0;
+            const mtfScore = indicators.mtf?.confluence;
+            validation = validateProposal({
+                proposal: tradeProposal,
+                keyLevels,
+                atr: atrVal,
+                bias,
+                mtfScore,
+            });
         }
         const now = new Date().toISOString();
         const elapsed = Date.now() - startTime;
@@ -228,11 +326,41 @@ export async function runAnalysis(symbolKey) {
             indicators: indicatorsFlat,
             candles: toChartCandles(candleSlice),
             context,
+            patterns: patterns.length > 0 ? patterns : undefined,
+            validation,
             llmProvider: providerName,
             llmModel: model,
+            rawResponse: rawText,
+            llmThinking: rawThinking,
         };
         const id = dbSaveAnalysis(result);
         dbSetLastAnalysisAt(symbolKey, now);
+        // ── Persist feature snapshot and market state ─────────────────────────────
+        try {
+            dbSaveFeatures({ ...features, analysisId: id }, id);
+            dbSaveMarketState({ ...marketState, analysisId: id }, id);
+        }
+        catch (e) {
+            // Non-fatal — analysis is already saved; log and continue
+            log.warn({ err: String(e) }, 'failed to persist features/market state');
+        }
+        // ── Create outcome tracking record if a trade was proposed ────────────────
+        if (tradeProposal && tradeProposal.direction) {
+            const tps = tradeProposal.takeProfits ?? [];
+            dbCreateOutcome({
+                analysisId: id,
+                symbolKey,
+                direction: tradeProposal.direction,
+                entryLow: tradeProposal.entryZone.low,
+                entryHigh: tradeProposal.entryZone.high,
+                sl: tradeProposal.stopLoss,
+                tp1: tps[0] ?? null,
+                tp2: tps[1] ?? null,
+                tp3: tps[2] ?? null,
+                status: 'pending',
+                createdAt: now,
+            });
+        }
         logEvent(symbolKey, 'info', 'analysis_end', `Analysis complete in ${elapsed}ms — ${bias} bias`, {
             bias, keyLevels: keyLevels.length, hasProposal: !!tradeProposal,
         });

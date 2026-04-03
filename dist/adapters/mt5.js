@@ -484,6 +484,30 @@ export class MT5Adapter {
             volume: c.volume,
             closeTime: c.closeTime,
         }));
+        // Some bridge versions omit m5/m30 from snapshot — fetch them separately if empty.
+        const TF_BRIDGE = {
+            m1: 'M1', m5: 'M5', m15: 'M15', m30: 'M30', h1: 'H1', h4: 'H4',
+        };
+        const resolveTf = async (tf, fromSnap, count = 150) => {
+            const mapped = mapCandles(fromSnap ?? []);
+            if (mapped.length > 0)
+                return mapped;
+            // Snapshot missing this TF — fetch directly
+            try {
+                return await this.getHistoricalCandles(symbol, TF_BRIDGE[tf], count);
+            }
+            catch {
+                return [];
+            }
+        };
+        const [m1, m5, m15, m30, h1, h4] = await Promise.all([
+            resolveTf('m1', snap.candles.m1),
+            resolveTf('m5', snap.candles.m5),
+            resolveTf('m15', snap.candles.m15),
+            resolveTf('m30', snap.candles.m30),
+            resolveTf('h1', snap.candles.h1),
+            resolveTf('h4', snap.candles.h4),
+        ]);
         const { bid, ask, last } = snap.price;
         const mid = last || (bid + ask) / 2;
         const info = snap.symbol_info;
@@ -492,14 +516,7 @@ export class MT5Adapter {
         const spread = info.spread * point / pipSz;
         return {
             price: { bid, ask, mid, spread },
-            candles: {
-                m1: mapCandles(snap.candles.m1),
-                m5: mapCandles(snap.candles.m5 ?? []),
-                m15: mapCandles(snap.candles.m15),
-                m30: mapCandles(snap.candles.m30 ?? []),
-                h1: mapCandles(snap.candles.h1),
-                h4: mapCandles(snap.candles.h4),
-            },
+            candles: { m1, m5, m15, m30, h1, h4 },
             symbolInfo: {
                 point: info.point,
                 digits: info.digits,

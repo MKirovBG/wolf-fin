@@ -42,6 +42,14 @@ export declare function computeKeltner(candles: Candle[], period?: number, multi
     middle: number;
     lower: number;
 } | undefined;
+export declare function computeDivergence(candles: Candle[], period?: number): {
+    rsi?: 'bullish' | 'bearish';
+    macd?: 'bullish' | 'bearish';
+} | undefined;
+export declare function computeFibLevels(candles: Candle[]): Array<{
+    price: number;
+    label: string;
+}>;
 import type { Indicators, KeyLevel, MTFIndicators } from './types.js';
 import type { IndicatorConfig } from '../types.js';
 export declare function computeIndicators(h1Candles: Candle[], cfg?: IndicatorConfig): Indicators;

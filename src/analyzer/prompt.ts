@@ -1,8 +1,10 @@
 // Wolf-Fin Analyzer — prompt builder
-// Assembles the structured analysis prompt from candle data, indicators, and context.
+// Assembles the structured analysis prompt from feature snapshot, market state,
+// and supporting candle/indicator data. Phase 1: structured-first prompt.
 
 import type { Candle, Indicators } from '../adapters/types.js'
 import type { AnalysisContext, CandlePattern, CandleConfig } from '../types.js'
+import type { FeatureSnapshot, MarketState } from '../types/market.js'
 
 const TIMEFRAME_LABELS: Record<string, string> = {
   m1: '1-Minute', m5: '5-Minute', m15: '15-Minute',
@@ -179,6 +181,70 @@ function contextBlock(ctx: AnalysisContext): string {
   return lines.join('\n')
 }
 
+// ── Structured state section ──────────────────────────────────────────────────
+// Replaces the raw 50-candle dump with a compact, typed market summary.
+
+function marketStateBlock(state: MarketState): string {
+  const dir = `${state.direction.toUpperCase()} (${state.directionStrength}%)`
+  const lines = [
+    '## Market State',
+    `Regime:          ${state.regime.replace('_', ' ').toUpperCase()}`,
+    `Direction:       ${dir}`,
+    `Volatility:      ${state.volatility.toUpperCase()}`,
+    `Session Quality: ${state.sessionQuality.toUpperCase()}`,
+    `Context Risk:    ${state.contextRisk.toUpperCase()}`,
+    '',
+    `Regime reasons:   ${state.regimeReasons.join(' | ')}`,
+    `Direction notes:  ${state.directionReasons.join(' | ')}`,
+  ]
+  if (state.contextRisk !== 'low') {
+    lines.push(`Risk factors:     ${state.riskReasons.join(' | ')}`)
+  }
+  return lines.join('\n')
+}
+
+function featureSummaryBlock(f: FeatureSnapshot): string {
+  const t = f.trend
+  const v = f.volatility
+  const s = f.structure
+  const l = f.levels
+
+  const macd = t.macdBias ? `MACD ${t.macdBias}` : ''
+  const psar = t.psarBias ? `PSAR ${t.psarBias}` : ''
+  const mtf  = t.mtfScore != null ? `MTF ${t.mtfScore > 0 ? '+' : ''}${t.mtfScore}/3` : ''
+  const signals = [macd, psar, mtf].filter(Boolean).join(', ')
+
+  const structLines: string[] = [
+    `  Trend: ${s.trendDirection}`,
+    `  Recent Swing High: ${s.recentSwingHigh} (${s.swingHighAge} bars ago)`,
+    `  Recent Swing Low:  ${s.recentSwingLow} (${s.swingLowAge} bars ago)`,
+  ]
+  if (s.bos)  structLines.push(`  Break of Structure: ${s.bos.toUpperCase()}`)
+  if (s.choch) structLines.push(`  Change of Character: ${s.choch.toUpperCase()} (potential reversal)`)
+  if (s.pullbackDepthPct > 0) structLines.push(`  Pullback depth: ${s.pullbackDepthPct}%`)
+  if (s.overextensionATR > 1.5) structLines.push(`  Overextension: ${s.overextensionATR}× ATR from swing`)
+
+  const levelLines: string[] = []
+  if (l.vwapSide) levelLines.push(`  VWAP: price ${l.vwapSide} by ${l.vwapDistance.toFixed(3)}%`)
+  if (l.roundNumberProximity < 0.15) levelLines.push(`  Near round number (within ${l.roundNumberProximity.toFixed(3)}%)`)
+  if (l.nearestFibLabel) levelLines.push(`  Near Fibonacci ${l.nearestFibLabel}`)
+
+  const lines = [
+    '## Deterministic Features',
+    `Trend:           EMA ${t.emaAlignment}, price ${t.priceVsEmaFast >= 0 ? '+' : ''}${t.priceVsEmaFast.toFixed(3)}% vs fast EMA`,
+    `Momentum:        RSI ${t.rsiValue.toFixed(0)} (${t.rsiZone})  ADX ${t.adxValue.toFixed(0)} (${t.adxStrength})${signals ? '  ' + signals : ''}`,
+    `Volatility:      ATR ${v.atrAbsolute.toFixed(5)} (${v.atrPips.toFixed(1)} pips)  BB width ${v.bbWidthPct.toFixed(3)}%  Pctile: ${v.volatilityPercentile}th${v.recentRangeExpansion ? '  [EXPANDING]' : ''}`,
+    `Spread:          ${f.execution.spreadPips.toFixed(1)} pips (${f.execution.spreadStatus})`,
+    '',
+    'Market Structure:',
+    ...structLines,
+  ]
+  if (levelLines.length) {
+    lines.push('', 'Level Context:', ...levelLines)
+  }
+  return lines.join('\n')
+}
+
 export function buildAnalysisPrompt(params: {
   symbol: string
   timeframe: string
@@ -190,6 +256,8 @@ export function buildAnalysisPrompt(params: {
   patterns?: CandlePattern[]
   indicatorCfg?: { emaFast?: number; emaSlow?: number }
   digits?: number
+  features?: FeatureSnapshot
+  marketState?: MarketState
 }): string {
   const { symbol, timeframe, price, candles, allCandles, indicators, context, patterns = [] } = params
   const tfLabel = TIMEFRAME_LABELS[timeframe] ?? timeframe.toUpperCase()
@@ -200,13 +268,19 @@ export function buildAnalysisPrompt(params: {
   const prev = candles[candles.length - 2]
   const change = last && prev ? fmtPct(((last.close - prev.close) / prev.close) * 100) : 'n/a'
 
-  const ctxText      = contextBlock(context)
   const patternsText = patternsBlock(patterns)
-  const mtfOverview  = allCandles ? multiTfOverview(allCandles, timeframe, digits) : null
+  const ctxText      = contextBlock(context)
+
+  // Phase 1: structured sections replace the raw 50-candle dump
+  const stateSection    = params.marketState ? marketStateBlock(params.marketState) : null
+  const featureSection  = params.features    ? featureSummaryBlock(params.features) : null
+  // Limit raw candles to most recent 15 when structured context is available
+  const candleLimit     = stateSection ? 15 : 50
+  const mtfOverview     = allCandles ? multiTfOverview(allCandles, timeframe, digits) : null
 
   return `Analyze ${symbol} on the ${tfLabel} timeframe and return a structured trading analysis.
 
-## Current Market State
+## Price Snapshot
 Symbol:       ${symbol}
 Timeframe:    ${tfLabel}
 Bid:          ${price.bid.toFixed(digits)}
@@ -215,17 +289,19 @@ Mid:          ${price.mid.toFixed(digits)}
 Spread:       ${price.spread.toFixed(1)} pips
 Last bar:     O:${last?.open.toFixed(digits)} H:${last?.high.toFixed(digits)} L:${last?.low.toFixed(digits)} C:${last?.close.toFixed(digits)}  (${change})
 
-${mtfOverview ? '\n## ' + mtfOverview + '\n' : ''}
+${stateSection ?? ''}
+${featureSection ?? ''}
+${stateSection ? '' : (mtfOverview ? '\n## Timeframe Overview\n' + mtfOverview + '\n' : '')}
 ## Technical Indicators
 ${indicatorBlock(indicators, params.indicatorCfg)}
 
-## Candlestick Data (${Math.min(candles.length, 50)} bars, ${tfLabel})
-${candleTable(candles, 50)}
+## Recent Price Action (${Math.min(candles.length, candleLimit)} bars, ${tfLabel})
+${candleTable(candles, candleLimit)}
 ${patternsText ? '\n## Candlestick Patterns\n' + patternsText : ''}
 ${ctxText ? '\n## Market Context\n' + ctxText : ''}
 
 ## Instructions
-Based on the above data, provide a professional technical analysis. Identify key price levels from the chart structure (swing highs/lows, round numbers, recent support/resistance), determine the overall market bias, and if a high-probability setup exists, propose a specific trade.
+Based on the structured market state and price data above, provide a professional technical analysis. The deterministic features (regime, structure, swing levels) are pre-computed — use them as ground truth. Identify additional key price levels from recent chart structure, determine the overall market bias consistent with the state, and if a high-probability setup exists, propose a specific trade.
 
 Return ONLY a JSON code block in this exact format — no text before or after the block:
 
@@ -247,7 +323,7 @@ Return ONLY a JSON code block in this exact format — no text before or after t
     "stopLoss": <number>,
     "takeProfits": [<tp1>, <tp2>],
     "riskReward": <number>,
-    "reasoning": "Why this setup is valid — entry trigger, confluence factors",
+    "reasoning": "Why this setup is valid — entry trigger, confluence factors, regime alignment",
     "confidence": "high" | "medium" | "low",
     "invalidatedIf": "What price action would cancel this setup"
   }

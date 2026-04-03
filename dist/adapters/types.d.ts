@@ -12,7 +12,7 @@ export interface Indicators {
     ema20?: number;
     ema50?: number;
     atr14?: number;
-    vwap: number;
+    vwap?: number;
     bbWidth?: number;
     mtf?: MTFIndicators;
     macd?: {
@@ -53,6 +53,14 @@ export interface Indicators {
         middle: number;
         lower: number;
     };
+    divergence?: {
+        rsi?: 'bullish' | 'bearish';
+        macd?: 'bullish' | 'bearish';
+    };
+    fib?: Array<{
+        price: number;
+        label: string;
+    }>;
 }
 export interface TFIndicators {
     rsi14: number;

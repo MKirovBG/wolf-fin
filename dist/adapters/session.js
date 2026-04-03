@@ -1,102 +1,92 @@
-// Wolf-Fin Session — forex session open/close logic
+// Wolf-Fin — Forex session context
+// Determines which trading sessions are active and generates a note for the LLM prompt.
 const SESSIONS = {
-    sydney: { openUtcHour: 22, closeUtcHour: 7 }, // wraps midnight
-    tokyo: { openUtcHour: 0, closeUtcHour: 9 },
-    london: { openUtcHour: 8, closeUtcHour: 17 },
-    newyork: { openUtcHour: 13, closeUtcHour: 22 },
+    sydney: { open: 22, close: 31 }, // 22:00–07:00 UTC (wraps midnight)
+    tokyo: { open: 0, close: 9 }, // 00:00–09:00 UTC
+    london: { open: 8, close: 17 }, // 08:00–17:00 UTC
+    newyork: { open: 13, close: 22 }, // 13:00–22:00 UTC
 };
-function utcHour() {
-    return new Date().getUTCHours();
+function isInSession(utcHour, win) {
+    if (win.close > 24) {
+        return utcHour >= win.open || utcHour < (win.close - 24);
+    }
+    return utcHour >= win.open && utcHour < win.close;
 }
-function isInSession(session, hour) {
-    if (session.openUtcHour < session.closeUtcHour) {
-        // Normal window e.g. 08:00-17:00
-        return hour >= session.openUtcHour && hour < session.closeUtcHour;
+function minutesUntilOpen(utcHour, utcMin, win) {
+    const currentMins = utcHour * 60 + utcMin;
+    const openMins = (win.open % 24) * 60;
+    let diff = openMins - currentMins;
+    if (diff <= 0)
+        diff += 24 * 60;
+    return diff;
+}
+// Symbols with preferred (most liquid) sessions
+const PREFERRED_SESSIONS = {
+    XAUUSD: ['london', 'newyork'],
+    XAGUSD: ['london', 'newyork'],
+    EURUSD: ['london', 'newyork'],
+    GBPUSD: ['london', 'newyork'],
+    USDCHF: ['london', 'newyork'],
+    USDJPY: ['tokyo', 'london', 'newyork'],
+    EURJPY: ['tokyo', 'london'],
+    GBPJPY: ['tokyo', 'london'],
+    AUDUSD: ['sydney', 'tokyo'],
+    NZDUSD: ['sydney', 'tokyo'],
+    USDCAD: ['newyork'],
+    USDMXN: ['newyork'],
+    US30: ['newyork'],
+    US500: ['newyork'],
+    NAS100: ['newyork'],
+    GER40: ['london'],
+    UK100: ['london'],
+    OIL: ['london', 'newyork'],
+    BRENT: ['london', 'newyork'],
+};
+export function buildSessionContext(symbol) {
+    const now = new Date();
+    const utcHour = now.getUTCHours();
+    const utcMin = now.getUTCMinutes();
+    const sessionNames = Object.keys(SESSIONS);
+    const activeSessions = sessionNames.filter(s => isInSession(utcHour, SESSIONS[s]));
+    const isLondonOpen = isInSession(utcHour, SESSIONS.london);
+    const isNYOpen = isInSession(utcHour, SESSIONS.newyork);
+    const isLondonNYOverlap = isLondonOpen && isNYOpen;
+    const preferred = PREFERRED_SESSIONS[symbol.toUpperCase()] ?? ['london', 'newyork'];
+    const isOptimalSession = preferred.some(s => activeSessions.includes(s));
+    // Find the next session to open
+    const inactive = sessionNames.filter(s => !activeSessions.includes(s));
+    let nextSession = null;
+    let minutesToNextOpen = null;
+    for (const s of inactive) {
+        const mins = minutesUntilOpen(utcHour, utcMin, SESSIONS[s]);
+        if (minutesToNextOpen === null || mins < minutesToNextOpen) {
+            minutesToNextOpen = mins;
+            nextSession = s;
+        }
+    }
+    // Build a concise note for the LLM prompt
+    let note;
+    if (activeSessions.length === 0) {
+        note = `All major sessions closed. Next: ${nextSession} opens in ${minutesToNextOpen}min (UTC).`;
+    }
+    else if (isLondonNYOverlap) {
+        note = `London/New York overlap (highest liquidity).${isOptimalSession ? ' Optimal session for this symbol.' : ''}`;
     }
     else {
-        // Wraps midnight e.g. 22:00-07:00
-        return hour >= session.openUtcHour || hour < session.closeUtcHour;
+        const labels = activeSessions.map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' + ');
+        const optimal = isOptimalSession ? ' Optimal session for this symbol.' : ' Not the primary session for this symbol — expect lower liquidity.';
+        const next = nextSession ? ` Next session: ${nextSession} in ${minutesToNextOpen}min.` : '';
+        note = `${labels} session active.${optimal}${next}`;
     }
-}
-/** Returns which sessions are currently open. */
-export function openSessions() {
-    const hour = utcHour();
-    return Object.keys(SESSIONS).filter(s => isInSession(SESSIONS[s], hour));
-}
-/**
- * Returns true when forex markets have meaningful liquidity:
- * - At least one major session is open (Tokyo, London, or New York)
- * - Not in the 30-minute buffer before Sydney-only periods
- */
-export function isForexSessionOpen() {
-    const sessions = openSessions();
-    return sessions.some(s => s === 'tokyo' || s === 'london' || s === 'newyork');
-}
-/**
- * Returns minutes remaining until the earliest active session closes.
- * Returns null if no major session is open.
- */
-export function minutesUntilSessionClose() {
-    const now = new Date();
-    const hour = now.getUTCHours();
-    const minute = now.getUTCMinutes();
-    const minutesNow = hour * 60 + minute;
-    let minRemaining = null;
-    for (const [, w] of Object.entries(SESSIONS)) {
-        if (!isInSession(w, hour))
-            continue;
-        let closeMinutes = w.closeUtcHour * 60;
-        // If session wraps midnight (e.g. Sydney 22:00-07:00)
-        if (w.openUtcHour > w.closeUtcHour && minutesNow >= w.openUtcHour * 60) {
-            closeMinutes += 24 * 60; // next day
-        }
-        const remaining = closeMinutes - minutesNow;
-        if (remaining > 0 && (minRemaining === null || remaining < minRemaining)) {
-            minRemaining = remaining;
-        }
-    }
-    return minRemaining;
-}
-/**
- * Derives pip size from broker point value.
- * point >= 0.01 → index/commodity/crypto-CFD → pip = 1.0
- * point >= 0.001 → JPY/ZAR pairs → pip = point × 10
- * default → 4-decimal forex → pip = 0.0001
- */
-export function pipSize(symbol, point) {
-    if (point != null && point > 0) {
-        return point >= 0.01 ? 1.0 : point * 10;
-    }
-    const s = symbol.toUpperCase();
-    if (s.startsWith('XAU') || s.startsWith('XAG') || s.includes('OIL') || s.includes('GOLD'))
-        return 1.0;
-    if (s.includes('JPY'))
-        return 0.01;
-    return 0.0001;
-}
-/**
- * Returns a human-readable session label for the system prompt.
- * e.g. "London / New York overlap (high liquidity)"
- */
-export function sessionLabel() {
-    const sessions = openSessions();
-    if (sessions.length === 0)
-        return 'Off-hours (low liquidity)';
-    const active = sessions.filter(s => s !== 'sydney');
-    if (active.length === 0)
-        return 'Sydney only (low liquidity)';
-    const labels = {
-        sydney: 'Sydney',
-        tokyo: 'Tokyo',
-        london: 'London',
-        newyork: 'New York',
+    return {
+        activeSessions,
+        isLondonOpen,
+        isNYOpen,
+        isLondonNYOverlap,
+        nextSession,
+        minutesToNextOpen,
+        isOptimalSession,
+        note,
     };
-    if (active.includes('london') && active.includes('newyork')) {
-        return 'London / New York overlap (highest liquidity)';
-    }
-    if (active.includes('tokyo') && active.includes('london')) {
-        return 'Tokyo / London overlap (good liquidity)';
-    }
-    return active.map(s => labels[s]).join(' + ');
 }
 //# sourceMappingURL=session.js.map

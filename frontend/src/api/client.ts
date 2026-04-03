@@ -240,5 +240,69 @@ export const updateAgentRule = (id: number, patch: { ruleText?: string; scope?: 
 export const deleteAgentRule = (id: number) =>
   api<{ ok: boolean }>(`/api/agent/rules/${id}`, { method: 'DELETE' })
 
+// ── Correlation ──────────────────────────────────────────────────────────────
+export const getCorrelation = () =>
+  api<{ symbols: string[]; matrix: Array<{ a: string; b: string; correlation: number }> }>('/api/correlation')
+
 // ── Phase 6: Deep health ──────────────────────────────────────────────────────
 export const getDeepHealth = () => api<DeepHealth>('/api/system/health/deep')
+
+// ── Telegram ─────────────────────────────────────────────────────────────────
+export const getTelegramConfig = () => api<{ botToken: string | null; chatId: string | null; enabled: boolean }>('/api/telegram/config')
+export const setTelegramConfig = (cfg: { botToken?: string; chatId?: string; enabled?: boolean }) =>
+  api<{ ok: boolean }>('/api/telegram/config', { method: 'POST', ...json(cfg) })
+export const testTelegram = () => api<{ ok: boolean; botName?: string; error?: string }>('/api/telegram/test', { method: 'POST' })
+
+// ── Delete MT5 Account ───────────────────────────────────────────────────────
+export const deleteMt5Account = (login: number) =>
+  api<{ ok: boolean; deleted: string[] }>(`/api/mt5-accounts/${login}`, { method: 'DELETE' })
+
+// ── Account Snapshots ────────────────────────────────────────────────────────
+export const getAccountSnapshots = (login: number, since?: string) => {
+  const p = new URLSearchParams()
+  if (since) p.set('since', since)
+  const qs = p.toString()
+  return api<Array<{ id: number; login: number; balance: number; equity: number; margin: number; freeMargin: number; floatingPl: number; currency: string; takenAt: string }>>(`/api/accounts/${login}/snapshots${qs ? `?${qs}` : ''}`)
+}
+
+// ── Challenge Tracker ────────────────────────────────────────────────────────
+export const getChallenge = (login: number) =>
+  api<{ id: number; login: number; preset: string; startBalance: number; profitTargetPct: number; dailyLossLimitPct: number; maxDrawdownPct: number; minTradingDays: number; startDate: string; active: boolean } | null>(`/api/accounts/${login}/challenge`)
+export const saveChallenge = (login: number, cfg: { preset: string; startBalance: number; profitTargetPct: number; dailyLossLimitPct: number; maxDrawdownPct: number; minTradingDays: number; startDate: string }) =>
+  api<{ ok: boolean; id: number }>(`/api/accounts/${login}/challenge`, { method: 'POST', ...json(cfg) })
+export const deleteChallenge = (login: number) =>
+  api<{ ok: boolean }>(`/api/accounts/${login}/challenge`, { method: 'DELETE' })
+
+// ── Data Export ──────────────────────────────────────────────────────────────
+export function exportData(type: string, params: Record<string, string> = {}) {
+  const qs = new URLSearchParams(params).toString()
+  return api<Record<string, unknown>[]>(`/api/export/${type}${qs ? `?${qs}` : ''}`)
+}
+
+// ── Performance Analytics ────────────────────────────────────────────────────
+export const getAnalyticsOverview = (opts: { from?: string; to?: string } = {}) => {
+  const p = new URLSearchParams()
+  if (opts.from) p.set('from', opts.from)
+  if (opts.to) p.set('to', opts.to)
+  const qs = p.toString()
+  return api<{ total: number; entered: number; wins: number; losses: number; expired: number; winRate: number; avgPipsWin: number; avgPipsLoss: number; totalPips: number; expectancy: number; profitFactor: number; maxConsecutiveLosses: number; bestTrade: number; worstTrade: number }>(`/api/analytics/overview${qs ? `?${qs}` : ''}`)
+}
+export const getAnalyticsBySymbol = (opts: { from?: string; to?: string } = {}) => {
+  const p = new URLSearchParams()
+  if (opts.from) p.set('from', opts.from)
+  if (opts.to) p.set('to', opts.to)
+  return api<Array<{ symbolKey: string; total: number; wins: number; losses: number; winRate: number; totalPips: number; expectancy: number; profitFactor: number }>>(`/api/analytics/by-symbol${p.toString() ? `?${p}` : ''}`)
+}
+export const getAnalyticsByStrategy = (opts: { from?: string; to?: string } = {}) => {
+  const p = new URLSearchParams()
+  if (opts.from) p.set('from', opts.from)
+  if (opts.to) p.set('to', opts.to)
+  return api<Array<{ strategyKey: string; total: number; wins: number; losses: number; winRate: number; totalPips: number; expectancy: number; profitFactor: number }>>(`/api/analytics/by-strategy${p.toString() ? `?${p}` : ''}`)
+}
+export const getAnalyticsByDay = (opts: { symbolKey?: string; from?: string; to?: string } = {}) => {
+  const p = new URLSearchParams()
+  if (opts.symbolKey) p.set('symbolKey', opts.symbolKey)
+  if (opts.from) p.set('from', opts.from)
+  if (opts.to) p.set('to', opts.to)
+  return api<Array<{ day: string; wins: number; losses: number; pips: number }>>(`/api/analytics/by-day${p.toString() ? `?${p}` : ''}`)
+}

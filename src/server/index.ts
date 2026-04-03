@@ -26,6 +26,11 @@ import {
   dbSaveFeedback, dbGetFeedback,
   dbGetMemories, dbSaveMemory, dbUpdateMemory, dbDeleteMemory,
   dbGetRules, dbGetActiveRules, dbSaveRule, dbUpdateRule, dbDeleteRule,
+  dbSaveAccountSnapshot, dbGetAccountSnapshots, dbGetLatestSnapshot,
+  dbGetChallenge, dbSaveChallenge, dbDeleteChallenge,
+  dbDeleteMt5Account,
+  dbExportAnalyses, dbExportOutcomes, dbExportMemories, dbExportSnapshots,
+  dbGetPerformanceStats, dbGetPerformanceBySymbol, dbGetPerformanceByStrategy, dbGetPerformanceByDay,
 } from '../db/index.js'
 import type { Mt5AccountRow } from '../db/index.js'
 import { getLogs, subscribeToLogs, subscribeToAnalyses, broadcastAnalysisUpdate } from './state.js'
@@ -34,6 +39,7 @@ import { getAgentState } from '../analyzer/state.js'
 import { syncSchedule, stopSchedule, getScheduledKeys, startDailyDigest } from '../scheduler/index.js'
 import { runDailyDigest } from '../analyzer/memory.js'
 import { MT5Adapter, setBridgeActiveLogin } from '../adapters/mt5.js'
+import { getTelegramConfig, setTelegramConfig, testTelegramConnection, sendTelegramMessage } from '../adapters/telegram.js'
 import { getPlatformLLMModel, getPlatformLLMProvider, getOpenAITokenStatus, getOpenAIAccessToken } from '../llm/index.js'
 import type { WatchSymbol } from '../types.js'
 import { fetchCalendarForDisplay } from '../adapters/calendar.js'
@@ -137,7 +143,9 @@ async function fetchMt5Entries(): Promise<Mt5AccountEntry[]> {
   const hdrs = key ? { 'X-Bridge-Key': key } : {}
 
   type HealthData = { connected: boolean; account?: { login: number; server: string; trade_mode: number } }
+  type AccountData = { balance?: number; equity?: number; margin?: number; free_margin?: number; profit?: number; leverage?: number; currency?: string }
   let health: HealthData = { connected: false }
+  let accountData: AccountData = {}
   let bridgeUp = false
   let bridgeAccounts: Array<{ login: number; name?: string; server?: string }> = []
 
@@ -145,6 +153,12 @@ async function fetchMt5Entries(): Promise<Mt5AccountEntry[]> {
     health = await fetch(`${base}/health`, { headers: hdrs })
       .then(r => r.ok ? r.json() as Promise<HealthData> : { connected: false })
       .catch(() => ({ connected: false }))
+
+    // Fetch full account data (balance, equity, etc.)
+    try {
+      const accData = await fetch(`${base}/account`, { headers: hdrs })
+      if (accData.ok) accountData = await accData.json() as AccountData
+    } catch { /* ignore */ }
 
     const accRes = await fetch(`${base}/accounts`, { headers: hdrs })
     if (accRes.ok) {
@@ -188,10 +202,43 @@ async function fetchMt5Entries(): Promise<Mt5AccountEntry[]> {
               error: bridgeUp ? 'No accounts found in bridge' : 'MT5 bridge offline' }]
   }
 
+  // Take a snapshot of the active account if we have balance data
+  if (activeLogin != null && accountData.balance != null) {
+    try {
+      // Only snapshot once per 15 minutes (check latest)
+      const latest = dbGetLatestSnapshot(activeLogin)
+      const now = Date.now()
+      const lastTime = latest ? new Date(latest.takenAt + 'Z').getTime() : 0
+      if (now - lastTime > 15 * 60 * 1000) {
+        dbSaveAccountSnapshot({
+          login: activeLogin,
+          balance: accountData.balance,
+          equity: accountData.equity ?? accountData.balance,
+          margin: accountData.margin ?? 0,
+          freeMargin: accountData.free_margin ?? 0,
+          floatingPl: accountData.profit ?? 0,
+          currency: accountData.currency ?? 'USD',
+          takenAt: new Date().toISOString(),
+        })
+      }
+    } catch { /* non-critical */ }
+  }
+
   return allKnown.map(acct => {
     const isActive   = activeLogin != null && acct.login === activeLogin
     const inBridge   = acct.inBridge && bridgeUp
     const mode = acct.mode === 'LIVE' ? 'LIVE' : 'DEMO'
+    const summary: Mt5AccountEntry['summary'] = { login: acct.login, name: acct.name, server: acct.server }
+
+    // Attach live balance data to the active account
+    if (isActive && accountData.balance != null) {
+      summary.balance    = accountData.balance
+      summary.equity     = accountData.equity
+      summary.freeMargin = accountData.free_margin
+      summary.leverage   = accountData.leverage
+      summary.currency   = accountData.currency
+    }
+
     return {
       id:        `mt5-${acct.login}`,
       exchange:  'mt5' as const,
@@ -199,7 +246,7 @@ async function fetchMt5Entries(): Promise<Mt5AccountEntry[]> {
       connected: isActive,
       label:     acct.name || acct.server || `MT5 #${acct.login}`,
       error:     !inBridge ? `Last seen: ${new Date(acct.lastSeenAt).toLocaleString()}` : undefined,
-      summary:   { login: acct.login, name: acct.name, server: acct.server },
+      summary,
     }
   })
 }
@@ -697,6 +744,166 @@ export async function startServer(): Promise<void> {
     } catch {
       return reply.status(503).send({ connected: false, error: 'Bridge offline' })
     }
+  })
+
+  // ── Delete inactive MT5 account (cascade) ────────────────────────────────────
+
+  app.delete('/api/mt5-accounts/:login', async (req, reply) => {
+    const login = parseInt((req.params as { login: string }).login, 10)
+    if (isNaN(login)) return reply.status(400).send({ error: 'Invalid login' })
+    const result = dbDeleteMt5Account(login)
+    return reply.send({ ok: true, ...result })
+  })
+
+  // ── Telegram ────────────────────────────────────────────────────────────────
+
+  app.get('/api/telegram/config', async (_req, reply) => {
+    const cfg = getTelegramConfig()
+    return reply.send({ ...cfg, botToken: cfg.botToken ? '***configured***' : null })
+  })
+
+  app.post('/api/telegram/config', async (req, reply) => {
+    const body = req.body as { botToken?: string; chatId?: string; enabled?: boolean }
+    setTelegramConfig(body)
+    return reply.send({ ok: true })
+  })
+
+  app.post('/api/telegram/test', async (_req, reply) => {
+    const result = await testTelegramConnection()
+    if (result.ok) {
+      await sendTelegramMessage(`✅ Wolf-Fin connected successfully!\n\nYou will receive trade alerts and proposals here.`)
+    }
+    return reply.send(result)
+  })
+
+  // ── Account Snapshots ───────────────────────────────────────────────────────
+
+  app.get('/api/accounts/:login/snapshots', async (req, reply) => {
+    const login = parseInt((req.params as { login: string }).login, 10)
+    const { since } = req.query as { since?: string }
+    return reply.send(dbGetAccountSnapshots(login, since))
+  })
+
+  // ── Challenge Tracker ───────────────────────────────────────────────────────
+
+  app.get('/api/accounts/:login/challenge', async (req, reply) => {
+    const login = parseInt((req.params as { login: string }).login, 10)
+    const challenge = dbGetChallenge(login)
+    return reply.send(challenge ?? null)
+  })
+
+  app.post('/api/accounts/:login/challenge', async (req, reply) => {
+    const login = parseInt((req.params as { login: string }).login, 10)
+    const body = req.body as {
+      preset: string; startBalance: number; profitTargetPct: number;
+      dailyLossLimitPct: number; maxDrawdownPct: number; minTradingDays: number; startDate: string
+    }
+    const id = dbSaveChallenge({ login, active: true, ...body })
+    return reply.send({ ok: true, id })
+  })
+
+  app.delete('/api/accounts/:login/challenge', async (req, reply) => {
+    const login = parseInt((req.params as { login: string }).login, 10)
+    dbDeleteChallenge(login)
+    return reply.send({ ok: true })
+  })
+
+  // ── Data Export ─────────────────────────────────────────────────────────────
+
+  app.get('/api/export/analyses', async (req, reply) => {
+    const q = req.query as { symbolKey?: string; from?: string; to?: string; limit?: string }
+    return reply.send(dbExportAnalyses({ ...q, limit: q.limit ? parseInt(q.limit) : undefined }))
+  })
+
+  app.get('/api/export/outcomes', async (req, reply) => {
+    const q = req.query as { symbolKey?: string; from?: string; to?: string; status?: string }
+    return reply.send(dbExportOutcomes(q))
+  })
+
+  app.get('/api/export/memories', async (req, reply) => {
+    const q = req.query as { category?: string; active?: string }
+    return reply.send(dbExportMemories({ ...q, active: q.active === '1' ? true : q.active === '0' ? false : undefined }))
+  })
+
+  app.get('/api/export/snapshots', async (req, reply) => {
+    const q = req.query as { login?: string; from?: string; to?: string }
+    return reply.send(dbExportSnapshots({ ...q, login: q.login ? parseInt(q.login) : undefined }))
+  })
+
+  // ── Performance Analytics ───────────────────────────────────────────────────
+
+  app.get('/api/analytics/overview', async (req, reply) => {
+    const q = req.query as { from?: string; to?: string }
+    return reply.send(dbGetPerformanceStats(q))
+  })
+
+  app.get('/api/analytics/by-symbol', async (req, reply) => {
+    const q = req.query as { from?: string; to?: string }
+    return reply.send(dbGetPerformanceBySymbol(q))
+  })
+
+  app.get('/api/analytics/by-strategy', async (req, reply) => {
+    const q = req.query as { from?: string; to?: string }
+    return reply.send(dbGetPerformanceByStrategy(q))
+  })
+
+  app.get('/api/analytics/by-day', async (req, reply) => {
+    const q = req.query as { symbolKey?: string; from?: string; to?: string }
+    return reply.send(dbGetPerformanceByDay(q))
+  })
+
+  // ── Correlation Matrix ───────────────────────────────────────────────────────
+
+  app.get('/api/correlation', async (_req, reply) => {
+    // Compute pairwise correlation between all watched symbols using recent H1 candles
+    const symbols = dbGetAllSymbols()
+    if (symbols.length < 2) return reply.send({ matrix: [], symbols: [] })
+
+    const base = `http://127.0.0.1:${process.env.MT5_BRIDGE_PORT ?? '8000'}`
+    const key  = process.env.MT5_BRIDGE_KEY ?? ''
+    const hdrs: Record<string, string> = key ? { 'X-Bridge-Key': key } : {}
+    const priceData: Record<string, number[]> = {}
+
+    for (const sym of symbols) {
+      try {
+        const r = await fetch(`${base}/candles?symbol=${encodeURIComponent(sym.symbol)}&timeframe=h1&limit=60`, { headers: hdrs })
+        if (!r.ok) continue
+        const data = await r.json() as { candles?: Array<{ close: number }> } | Array<{ close: number }>
+        const candles = Array.isArray(data) ? data : (data.candles ?? [])
+        if (candles.length >= 10) {
+          priceData[sym.key] = candles.map((c: { close: number }) => c.close)
+        }
+      } catch { /* skip */ }
+    }
+
+    const keys = Object.keys(priceData)
+    const matrix: Array<{ a: string; b: string; correlation: number }> = []
+
+    for (let i = 0; i < keys.length; i++) {
+      for (let j = i + 1; j < keys.length; j++) {
+        const a = priceData[keys[i]], b = priceData[keys[j]]
+        const len = Math.min(a.length, b.length)
+        if (len < 10) continue
+
+        // Compute returns
+        const ra = a.slice(-len).map((v, k) => k > 0 ? (v - a[a.length - len + k - 1]) / a[a.length - len + k - 1] : 0).slice(1)
+        const rb = b.slice(-len).map((v, k) => k > 0 ? (v - b[b.length - len + k - 1]) / b[b.length - len + k - 1] : 0).slice(1)
+
+        // Pearson correlation
+        const n = ra.length
+        const meanA = ra.reduce((s, v) => s + v, 0) / n
+        const meanB = rb.reduce((s, v) => s + v, 0) / n
+        let cov = 0, varA = 0, varB = 0
+        for (let k = 0; k < n; k++) {
+          const da = ra[k] - meanA, db = rb[k] - meanB
+          cov += da * db; varA += da * da; varB += db * db
+        }
+        const corr = (varA > 0 && varB > 0) ? cov / Math.sqrt(varA * varB) : 0
+        matrix.push({ a: keys[i], b: keys[j], correlation: Math.round(corr * 100) / 100 })
+      }
+    }
+
+    return reply.send({ symbols: keys, matrix })
   })
 
   // Symbol search (for add symbol form)

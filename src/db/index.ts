@@ -847,3 +847,278 @@ export function dbGetMarketStateForAnalysis(analysisId: number): MarketState | n
   ).get(analysisId) as { data: string } | undefined
   return row ? JSON.parse(row.data) as MarketState : null
 }
+
+// ── Account Snapshots ─────────────────────────────────────────────────────────
+
+export interface AccountSnapshot {
+  id: number
+  login: number
+  balance: number
+  equity: number
+  margin: number
+  freeMargin: number
+  floatingPl: number
+  currency: string
+  takenAt: string
+}
+
+export function dbSaveAccountSnapshot(snap: Omit<AccountSnapshot, 'id'>): void {
+  db.prepare(`
+    INSERT INTO account_snapshots (login, balance, equity, margin, free_margin, floating_pl, currency, taken_at)
+    VALUES (@login, @balance, @equity, @margin, @freeMargin, @floatingPl, @currency, @takenAt)
+  `).run(snap)
+}
+
+export function dbGetAccountSnapshots(login: number, since?: string, limit = 500): AccountSnapshot[] {
+  const q = since
+    ? 'SELECT * FROM account_snapshots WHERE login = ? AND taken_at >= ? ORDER BY taken_at ASC LIMIT ?'
+    : 'SELECT * FROM account_snapshots WHERE login = ? ORDER BY taken_at ASC LIMIT ?'
+  const rows = (since
+    ? db.prepare(q).all(login, since, limit)
+    : db.prepare(q).all(login, limit)) as Array<Record<string, unknown>>
+  return rows.map(r => ({
+    id:         r.id as number,
+    login:      r.login as number,
+    balance:    r.balance as number,
+    equity:     r.equity as number,
+    margin:     r.margin as number,
+    freeMargin: r.free_margin as number,
+    floatingPl: r.floating_pl as number,
+    currency:   r.currency as string,
+    takenAt:    r.taken_at as string,
+  }))
+}
+
+export function dbGetLatestSnapshot(login: number): AccountSnapshot | null {
+  const r = db.prepare(
+    'SELECT * FROM account_snapshots WHERE login = ? ORDER BY taken_at DESC LIMIT 1'
+  ).get(login) as Record<string, unknown> | undefined
+  if (!r) return null
+  return {
+    id: r.id as number, login: r.login as number, balance: r.balance as number,
+    equity: r.equity as number, margin: r.margin as number, freeMargin: r.free_margin as number,
+    floatingPl: r.floating_pl as number, currency: r.currency as string, takenAt: r.taken_at as string,
+  }
+}
+
+// ── Challenge Configs ─────────────────────────────────────────────────────────
+
+export interface ChallengeConfig {
+  id: number
+  login: number
+  preset: string
+  startBalance: number
+  profitTargetPct: number
+  dailyLossLimitPct: number
+  maxDrawdownPct: number
+  minTradingDays: number
+  startDate: string
+  active: boolean
+  createdAt: string
+}
+
+function rowToChallenge(r: Record<string, unknown>): ChallengeConfig {
+  return {
+    id: r.id as number, login: r.login as number, preset: r.preset as string,
+    startBalance: r.start_balance as number, profitTargetPct: r.profit_target_pct as number,
+    dailyLossLimitPct: r.daily_loss_limit_pct as number, maxDrawdownPct: r.max_drawdown_pct as number,
+    minTradingDays: r.min_trading_days as number, startDate: r.start_date as string,
+    active: (r.active as number) === 1, createdAt: r.created_at as string,
+  }
+}
+
+export function dbGetChallenge(login: number): ChallengeConfig | null {
+  const r = db.prepare('SELECT * FROM challenge_configs WHERE login = ? AND active = 1 LIMIT 1').get(login) as Record<string, unknown> | undefined
+  return r ? rowToChallenge(r) : null
+}
+
+export function dbSaveChallenge(cfg: Omit<ChallengeConfig, 'id' | 'createdAt'>): number {
+  // Deactivate any existing for this login
+  db.prepare('UPDATE challenge_configs SET active = 0 WHERE login = ?').run(cfg.login)
+  const info = db.prepare(`
+    INSERT INTO challenge_configs (login, preset, start_balance, profit_target_pct, daily_loss_limit_pct, max_drawdown_pct, min_trading_days, start_date, active)
+    VALUES (@login, @preset, @startBalance, @profitTargetPct, @dailyLossLimitPct, @maxDrawdownPct, @minTradingDays, @startDate, @active)
+  `).run({
+    login: cfg.login, preset: cfg.preset, startBalance: cfg.startBalance,
+    profitTargetPct: cfg.profitTargetPct, dailyLossLimitPct: cfg.dailyLossLimitPct,
+    maxDrawdownPct: cfg.maxDrawdownPct, minTradingDays: cfg.minTradingDays,
+    startDate: cfg.startDate, active: cfg.active ? 1 : 0,
+  })
+  return info.lastInsertRowid as number
+}
+
+export function dbDeleteChallenge(login: number): void {
+  db.prepare('DELETE FROM challenge_configs WHERE login = ?').run(login)
+}
+
+// ── Account Deletion (cascade) ────────────────────────────────────────────────
+
+export function dbDeleteMt5Account(login: number): { deleted: string[] } {
+  const deleted: string[] = []
+  const accountId = `mt5-${login}`
+
+  // Delete snapshots
+  const s1 = db.prepare('DELETE FROM account_snapshots WHERE login = ?').run(login)
+  if (s1.changes > 0) deleted.push(`account_snapshots: ${s1.changes}`)
+
+  // Delete challenge config
+  const s2 = db.prepare('DELETE FROM challenge_configs WHERE login = ?').run(login)
+  if (s2.changes > 0) deleted.push(`challenge_configs: ${s2.changes}`)
+
+  // Delete the mt5_accounts row
+  const s3 = db.prepare('DELETE FROM mt5_accounts WHERE login = ?').run(login)
+  if (s3.changes > 0) deleted.push(`mt5_accounts: ${s3.changes}`)
+
+  return { deleted }
+}
+
+// ── Data Export Queries ───────────────────────────────────────────────────────
+
+export function dbExportAnalyses(opts: { symbolKey?: string; from?: string; to?: string; limit?: number }): Record<string, unknown>[] {
+  let q = 'SELECT * FROM analyses WHERE 1=1'
+  const params: unknown[] = []
+  if (opts.symbolKey) { q += ' AND symbol_key = ?'; params.push(opts.symbolKey) }
+  if (opts.from) { q += ' AND time >= ?'; params.push(opts.from) }
+  if (opts.to) { q += ' AND time <= ?'; params.push(opts.to) }
+  q += ' ORDER BY time DESC'
+  if (opts.limit) { q += ' LIMIT ?'; params.push(opts.limit) }
+  return db.prepare(q).all(...params) as Record<string, unknown>[]
+}
+
+export function dbExportOutcomes(opts: { symbolKey?: string; from?: string; to?: string; status?: string }): Record<string, unknown>[] {
+  let q = 'SELECT * FROM proposal_outcomes WHERE 1=1'
+  const params: unknown[] = []
+  if (opts.symbolKey) { q += ' AND symbol_key = ?'; params.push(opts.symbolKey) }
+  if (opts.from) { q += ' AND created_at >= ?'; params.push(opts.from) }
+  if (opts.to) { q += ' AND created_at <= ?'; params.push(opts.to) }
+  if (opts.status) { q += ' AND status = ?'; params.push(opts.status) }
+  q += ' ORDER BY created_at DESC'
+  return db.prepare(q).all(...params) as Record<string, unknown>[]
+}
+
+export function dbExportMemories(opts: { category?: string; active?: boolean }): Record<string, unknown>[] {
+  let q = 'SELECT * FROM agent_memories WHERE 1=1'
+  const params: unknown[] = []
+  if (opts.category) { q += ' AND category = ?'; params.push(opts.category) }
+  if (opts.active !== undefined) { q += ' AND active = ?'; params.push(opts.active ? 1 : 0) }
+  q += ' ORDER BY created_at DESC'
+  return db.prepare(q).all(...params) as Record<string, unknown>[]
+}
+
+export function dbExportSnapshots(opts: { login?: number; from?: string; to?: string }): Record<string, unknown>[] {
+  let q = 'SELECT * FROM account_snapshots WHERE 1=1'
+  const params: unknown[] = []
+  if (opts.login) { q += ' AND login = ?'; params.push(opts.login) }
+  if (opts.from) { q += ' AND taken_at >= ?'; params.push(opts.from) }
+  if (opts.to) { q += ' AND taken_at <= ?'; params.push(opts.to) }
+  q += ' ORDER BY taken_at DESC'
+  return db.prepare(q).all(...params) as Record<string, unknown>[]
+}
+
+// ── Performance Analytics Queries ─────────────────────────────────────────────
+
+export interface PerformanceStats {
+  total: number
+  entered: number
+  wins: number
+  losses: number
+  expired: number
+  winRate: number
+  avgPipsWin: number
+  avgPipsLoss: number
+  totalPips: number
+  expectancy: number
+  profitFactor: number
+  maxConsecutiveLosses: number
+  bestTrade: number
+  worstTrade: number
+}
+
+export function dbGetPerformanceStats(opts: { symbolKey?: string; strategyKey?: string; from?: string; to?: string }): PerformanceStats {
+  let q = `SELECT o.*, a.strategy_key FROM proposal_outcomes o LEFT JOIN analyses a ON o.analysis_id = a.id WHERE 1=1`
+  const params: unknown[] = []
+  if (opts.symbolKey) { q += ' AND o.symbol_key = ?'; params.push(opts.symbolKey) }
+  if (opts.strategyKey) { q += ' AND a.strategy_key = ?'; params.push(opts.strategyKey) }
+  if (opts.from) { q += ' AND o.created_at >= ?'; params.push(opts.from) }
+  if (opts.to) { q += ' AND o.created_at <= ?'; params.push(opts.to) }
+  q += ' ORDER BY o.created_at ASC'
+
+  const rows = db.prepare(q).all(...params) as Array<Record<string, unknown>>
+
+  let entered = 0, wins = 0, losses = 0, expired = 0
+  let totalPipsWin = 0, totalPipsLoss = 0
+  let bestTrade = 0, worstTrade = 0
+  let consecutiveLosses = 0, maxConsecutiveLosses = 0
+
+  for (const r of rows) {
+    const status = r.status as string
+    const pips = (r.pips_result as number | null) ?? 0
+
+    if (status === 'entered' || status === 'hit_tp1' || status === 'hit_tp2' || status === 'hit_sl') entered++
+    if (status === 'hit_tp1' || status === 'hit_tp2') {
+      wins++
+      totalPipsWin += pips
+      consecutiveLosses = 0
+    } else if (status === 'hit_sl') {
+      losses++
+      totalPipsLoss += Math.abs(pips)
+      consecutiveLosses++
+      maxConsecutiveLosses = Math.max(maxConsecutiveLosses, consecutiveLosses)
+    } else if (status === 'expired' || status === 'invalidated') {
+      expired++
+    }
+    if (pips > bestTrade) bestTrade = pips
+    if (pips < worstTrade) worstTrade = pips
+  }
+
+  const winRate = (wins + losses) > 0 ? (wins / (wins + losses)) * 100 : 0
+  const avgPipsWin = wins > 0 ? totalPipsWin / wins : 0
+  const avgPipsLoss = losses > 0 ? totalPipsLoss / losses : 0
+  const expectancy = (wins + losses) > 0 ? (winRate / 100 * avgPipsWin) - ((1 - winRate / 100) * avgPipsLoss) : 0
+  const profitFactor = totalPipsLoss > 0 ? totalPipsWin / totalPipsLoss : totalPipsWin > 0 ? Infinity : 0
+
+  return {
+    total: rows.length, entered, wins, losses, expired, winRate,
+    avgPipsWin, avgPipsLoss, totalPips: totalPipsWin - totalPipsLoss,
+    expectancy, profitFactor, maxConsecutiveLosses, bestTrade, worstTrade,
+  }
+}
+
+export function dbGetPerformanceBySymbol(opts: { from?: string; to?: string }): Array<{ symbolKey: string } & PerformanceStats> {
+  const symbols = db.prepare('SELECT DISTINCT symbol_key FROM proposal_outcomes').all() as Array<{ symbol_key: string }>
+  return symbols.map(s => ({
+    symbolKey: s.symbol_key,
+    ...dbGetPerformanceStats({ symbolKey: s.symbol_key, ...opts }),
+  }))
+}
+
+export function dbGetPerformanceByStrategy(opts: { from?: string; to?: string }): Array<{ strategyKey: string } & PerformanceStats> {
+  const strategies = db.prepare(
+    'SELECT DISTINCT a.strategy_key FROM proposal_outcomes o JOIN analyses a ON o.analysis_id = a.id WHERE a.strategy_key IS NOT NULL'
+  ).all() as Array<{ strategy_key: string }>
+  return strategies.map(s => ({
+    strategyKey: s.strategy_key,
+    ...dbGetPerformanceStats({ strategyKey: s.strategy_key, ...opts }),
+  }))
+}
+
+export function dbGetPerformanceByDay(opts: { symbolKey?: string; from?: string; to?: string }): Array<{ day: string; wins: number; losses: number; pips: number }> {
+  let q = `SELECT date(o.created_at) as day, o.status, o.pips_result
+    FROM proposal_outcomes o WHERE (o.status = 'hit_tp1' OR o.status = 'hit_tp2' OR o.status = 'hit_sl')`
+  const params: unknown[] = []
+  if (opts.symbolKey) { q += ' AND o.symbol_key = ?'; params.push(opts.symbolKey) }
+  if (opts.from) { q += ' AND o.created_at >= ?'; params.push(opts.from) }
+  if (opts.to) { q += ' AND o.created_at <= ?'; params.push(opts.to) }
+  q += ' ORDER BY day ASC'
+
+  const rows = db.prepare(q).all(...params) as Array<{ day: string; status: string; pips_result: number | null }>
+  const map = new Map<string, { wins: number; losses: number; pips: number }>()
+  for (const r of rows) {
+    const d = map.get(r.day) ?? { wins: 0, losses: 0, pips: 0 }
+    if (r.status === 'hit_tp1' || r.status === 'hit_tp2') d.wins++
+    else d.losses++
+    d.pips += r.pips_result ?? 0
+    map.set(r.day, d)
+  }
+  return [...map.entries()].map(([day, v]) => ({ day, ...v }))
+}

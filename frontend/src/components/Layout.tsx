@@ -15,6 +15,8 @@ import {
   X,
   Brain,
   ShieldCheck,
+  BarChart3,
+  Download,
 } from 'lucide-react'
 import { ToastProvider } from './Toast.tsx'
 import { useAccount, buildAccountLabel, entryToSelectedAccount } from '../contexts/AccountContext.tsx'
@@ -33,8 +35,10 @@ const NAV_AGENT = [
 ]
 
 const NAV_TOOLS = [
-  { to: '/config',  label: 'Settings', icon: Settings },
-  { to: '/account', label: 'Accounts', icon: Wallet   },
+  { to: '/analytics', label: 'Analytics', icon: BarChart3 },
+  { to: '/export',    label: 'Data Export', icon: Download },
+  { to: '/config',    label: 'Settings', icon: Settings },
+  { to: '/account',   label: 'Accounts', icon: Wallet   },
 ]
 
 // ── Account selector (top bar) ────────────────────────────────────────────────

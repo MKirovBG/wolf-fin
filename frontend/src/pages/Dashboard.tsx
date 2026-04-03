@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { getStatus, getSummary, getLiveCandles } from '../api/client.ts'
+import { getStatus, getSummary, getLiveCandles, getAccountSnapshots } from '../api/client.ts'
 import type { StatusResponse, SymbolSummary, CandleBar } from '../types/index.ts'
 import { Card } from '../components/Card.tsx'
 import { CalendarWidget } from '../components/CalendarWidget.tsx'
 import { AgentStatePanel } from '../components/AgentStatePanel.tsx'
 import { MiniChart } from '../components/MiniChart.tsx'
+import { useAccount } from '../contexts/AccountContext.tsx'
 
 const BIAS_COLORS: Record<string, string> = {
   bullish: 'text-green',
@@ -138,6 +139,90 @@ function WatchlistCard({ s }: { s: SymbolSummary }) {
   )
 }
 
+// ── Equity Curve Widget ───────────────────────────────────────────────────────
+
+function EquityCurveWidget() {
+  const { accounts } = useAccount()
+  const connected = accounts.find(a => a.connected && a.summary?.login)
+  const login = connected?.summary?.login
+  const [snapshots, setSnapshots] = useState<Array<{ balance: number; equity: number; takenAt: string }>>([])
+
+  useEffect(() => {
+    if (!login) return
+    // Load last 7 days of snapshots
+    const since = new Date(Date.now() - 7 * 86400000).toISOString()
+    getAccountSnapshots(login, since).then(setSnapshots).catch(() => {})
+  }, [login])
+
+  if (!login || snapshots.length < 2) {
+    return (
+      <Card>
+        <div className="text-center py-6">
+          <div className="text-xs font-semibold uppercase tracking-wider text-muted mb-2">Equity Curve</div>
+          <div className="text-[11px] text-muted2">
+            {!login ? 'Connect an MT5 account to see equity curve' : 'Collecting snapshots… check back soon'}
+          </div>
+        </div>
+      </Card>
+    )
+  }
+
+  const balances = snapshots.map(s => s.equity)
+  const minBal = Math.min(...balances)
+  const maxBal = Math.max(...balances)
+  const range = maxBal - minBal || 1
+  const first = balances[0]
+  const last = balances[balances.length - 1]
+  const pnl = last - first
+  const pnlPct = ((pnl / first) * 100)
+
+  // SVG line chart
+  const w = 400
+  const h = 80
+  const points = snapshots.map((s, i) => {
+    const x = (i / (snapshots.length - 1)) * w
+    const y = h - ((s.equity - minBal) / range) * (h - 10) - 5
+    return `${x},${y}`
+  }).join(' ')
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-semibold uppercase tracking-wider text-muted">Equity Curve</span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-mono text-text">${last.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+          <span className={`text-[10px] font-mono font-bold ${pnl >= 0 ? 'text-green' : 'text-red'}`}>
+            {pnl >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%
+          </span>
+        </div>
+      </div>
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-20" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="eqGrad" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor={pnl >= 0 ? '#00E676' : '#FF5252'} stopOpacity="0.3" />
+            <stop offset="100%" stopColor={pnl >= 0 ? '#00E676' : '#FF5252'} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <polygon
+          points={`0,${h} ${points} ${w},${h}`}
+          fill="url(#eqGrad)"
+        />
+        <polyline
+          points={points}
+          fill="none"
+          stroke={pnl >= 0 ? '#00E676' : '#FF5252'}
+          strokeWidth="2"
+          strokeLinejoin="round"
+        />
+      </svg>
+      <div className="flex justify-between text-[9px] text-muted2 mt-1">
+        <span>{snapshots[0].takenAt.slice(5, 10)}</span>
+        <span>{snapshots[snapshots.length - 1].takenAt.slice(5, 10)}</span>
+      </div>
+    </Card>
+  )
+}
+
 // ── Main dashboard ────────────────────────────────────────────────────────────
 
 export function Dashboard() {
@@ -226,6 +311,9 @@ export function Dashboard() {
           </div>
         )}
       </div>
+
+      {/* Equity curve */}
+      <EquityCurveWidget />
 
       {/* Agent state + Calendar */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

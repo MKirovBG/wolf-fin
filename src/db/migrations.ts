@@ -422,6 +422,45 @@ const MIGRATIONS: Migration[] = [
     `),
   },
 
+  {
+    version: 20,
+    name: 'account_snapshots',
+    run: (db) => db.exec(`
+      CREATE TABLE IF NOT EXISTS account_snapshots (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        login       INTEGER NOT NULL,
+        balance     REAL NOT NULL,
+        equity      REAL NOT NULL,
+        margin      REAL NOT NULL DEFAULT 0,
+        free_margin REAL NOT NULL DEFAULT 0,
+        floating_pl REAL NOT NULL DEFAULT 0,
+        currency    TEXT NOT NULL DEFAULT 'USD',
+        taken_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_snapshots_login_time ON account_snapshots(login, taken_at);
+    `),
+  },
+
+  {
+    version: 21,
+    name: 'challenge_configs',
+    run: (db) => db.exec(`
+      CREATE TABLE IF NOT EXISTS challenge_configs (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        login               INTEGER NOT NULL UNIQUE,
+        preset              TEXT NOT NULL DEFAULT 'custom',
+        start_balance       REAL NOT NULL,
+        profit_target_pct   REAL NOT NULL DEFAULT 10,
+        daily_loss_limit_pct REAL NOT NULL DEFAULT 5,
+        max_drawdown_pct    REAL NOT NULL DEFAULT 10,
+        min_trading_days    INTEGER NOT NULL DEFAULT 0,
+        start_date          TEXT NOT NULL DEFAULT (datetime('now')),
+        active              INTEGER NOT NULL DEFAULT 1,
+        created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `),
+  },
+
 ]
 
 // ── Runner ─────────────────────────────────────────────────────────────────────

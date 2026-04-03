@@ -12,6 +12,8 @@ import { Account } from './pages/Account.tsx'
 import { Strategies } from './pages/Strategies.tsx'
 import { AgentMemory } from './pages/AgentMemory.tsx'
 import { AgentRules } from './pages/AgentRules.tsx'
+import { Analytics } from './pages/Analytics.tsx'
+import { DataExport } from './pages/DataExport.tsx'
 
 export default function App() {
   return (
@@ -30,6 +32,8 @@ export default function App() {
             <Route path="strategies" element={<Strategies />} />
             <Route path="agent/memory" element={<AgentMemory />} />
             <Route path="agent/rules" element={<AgentRules />} />
+            <Route path="analytics" element={<Analytics />} />
+            <Route path="export" element={<DataExport />} />
           </Route>
         </Routes>
       </AccountProvider>

@@ -39,6 +39,7 @@ export interface CandleConfig {
 export interface ContextConfig {
   economicCalendar?: boolean   // upcoming high-impact events (default true)
   forexNews?: boolean          // Finnhub forex news with sentiment (default true)
+  correlationAnalysis?: boolean // include correlation data for this symbol
 }
 
 // ── Watch symbol ──────────────────────────────────────────────────────────────

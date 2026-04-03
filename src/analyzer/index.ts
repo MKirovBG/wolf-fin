@@ -11,6 +11,7 @@ import { getLLMProvider, getModelForConfig } from '../llm/index.js'
 import { buildAnalysisPrompt, buildSystemPrompt } from './prompt.js'
 import { validateProposal } from './validate.js'
 import { extractAndSaveMemories } from './memory.js'
+import { sendAlertNotification, sendTradeProposal, getTelegramConfig } from '../adapters/telegram.js'
 import { dbSaveAnalysis, dbSetLastAnalysisAt, dbGetSymbol, dbGetStrategy, dbCreateOutcome, dbSaveFeatures, dbSaveMarketState, dbSaveCandidates, dbGetAlertRules, dbFireAlert, dbGetSymbolStrategies, dbGetActiveRules, dbGetMemories, dbSaveMemory } from '../db/index.js'
 import { logEvent } from '../server/state.js'
 import { buildSessionContext } from '../adapters/session.js'
@@ -505,10 +506,21 @@ export async function runAnalysis(symbolKey: string): Promise<AnalysisResult> {
         if (fired) {
           dbFireAlert(rule.id!, symbolKey, msg, primaryResult.id)
           logEvent(symbolKey, 'info', 'detectors_run', `Alert fired: ${rule.name} — ${msg}`)
+          // Send to Telegram (async, non-blocking)
+          sendAlertNotification(symbolKey, rule.name, msg).catch(() => {})
         }
       }
     } catch (e) {
       log.warn({ err: String(e) }, 'alert evaluation failed')
+    }
+
+    // Send trade proposal to Telegram if available
+    if (primaryResult.tradeProposal?.direction && getTelegramConfig().enabled) {
+      const tp = primaryResult.tradeProposal
+      sendTradeProposal(
+        symbolKey, tp.direction!, tp.entryZone.low, tp.entryZone.high,
+        tp.stopLoss, tp.takeProfits, tp.riskReward, tp.confidence, tp.reasoning,
+      ).catch(() => {})
     }
 
     const elapsed = Date.now() - startTime

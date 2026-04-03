@@ -39,6 +39,7 @@ export interface CandleConfig {
 export interface ContextConfig {
   economicCalendar?: boolean
   forexNews?: boolean
+  correlationAnalysis?: boolean
 }
 
 export type LLMProviderOption =
@@ -103,7 +104,7 @@ export interface AnalysisContext {
   news?: Array<{ headline: string; sentiment: string; url?: string }>
   calendar?: Array<{ time: string; event: string; impact: string; country: string }>
   currentPrice?: { bid: number; ask: number; mid: number; spread: number }
-  symbolInfo?: { point: number; digits: number; volumeMin: number; volumeStep: number }
+  symbolInfo?: { point: number; digits: number; volumeMin: number; volumeStep: number; contractSize: number }
   session?: {
     activeSessions: string[]
     isLondonNYOverlap: boolean

@@ -7,15 +7,17 @@ import {
   importClaudeCLI, startClaudeAuth, exchangeClaudeCode,
   startOpenAIAuth, exchangeOpenAICode, refreshOpenAIToken,
   getConfig, saveConfig,
+  getTelegramConfig, setTelegramConfig, testTelegram,
 } from '../api/client.ts'
 import type { PlatformLLMConfig, AnthropicModel, OpenRouterModel, OllamaModel, AppConfig } from '../types/index.ts'
 
-type Tab = 'llm' | 'credentials' | 'bridge' | 'general'
+type Tab = 'llm' | 'credentials' | 'bridge' | 'telegram' | 'general'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'llm',         label: 'LLM Provider'   },
   { id: 'credentials', label: 'API Keys'        },
   { id: 'bridge',      label: 'MT5 Bridge'      },
+  { id: 'telegram',    label: 'Telegram'        },
   { id: 'general',     label: 'General'         },
 ]
 
@@ -540,6 +542,116 @@ function BridgeTab() {
 }
 
 // ── General Tab ───────────────────────────────────────────────────────────────
+// ── Telegram Tab ──────────────────────────────────────────────────────────────
+
+function TelegramTab() {
+  const [botToken, setBotToken] = useState('')
+  const [chatId, setChatId]     = useState('')
+  const [enabled, setEnabled]   = useState(false)
+  const [configured, setConfigured] = useState(false)
+  const [loading, setLoading]   = useState(true)
+  const [testing, setTesting]   = useState(false)
+  const [testResult, setTestResult] = useState<{ ok: boolean; botName?: string; error?: string } | null>(null)
+
+  useEffect(() => {
+    getTelegramConfig().then(cfg => {
+      setEnabled(cfg.enabled)
+      setChatId(cfg.chatId ?? '')
+      setConfigured(!!cfg.botToken)
+      setLoading(false)
+    }).catch(() => setLoading(false))
+  }, [])
+
+  const handleSave = async () => {
+    const cfg: { chatId: string; enabled: boolean; botToken?: string } = { chatId, enabled }
+    if (botToken) cfg.botToken = botToken
+    await setTelegramConfig(cfg)
+    setConfigured(true)
+    if (botToken) setBotToken('')
+  }
+
+  const handleTest = async () => {
+    setTesting(true)
+    setTestResult(null)
+    const result = await testTelegram()
+    setTestResult(result)
+    setTesting(false)
+  }
+
+  if (loading) return <div className="text-sm text-muted py-8 text-center">Loading…</div>
+
+  return (
+    <Card>
+      <div className="space-y-4">
+        <div>
+          <h3 className="text-sm font-bold text-text">Telegram Bot</h3>
+          <p className="text-xs text-muted mt-0.5">
+            Receive trade alerts and proposals via Telegram. Create a bot with <span className="font-mono text-text">@BotFather</span> and get your chat ID.
+          </p>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="text-[10px] text-muted uppercase tracking-wider block mb-1">Bot Token</label>
+            <input
+              type="password"
+              value={botToken}
+              onChange={e => setBotToken(e.target.value)}
+              placeholder={configured ? '••• configured — enter new to change' : 'e.g. 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11'}
+              className="w-full text-xs font-mono bg-bg border border-border rounded px-3 py-2 text-text"
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] text-muted uppercase tracking-wider block mb-1">Chat ID</label>
+            <input
+              value={chatId}
+              onChange={e => setChatId(e.target.value)}
+              placeholder="e.g. 123456789 or -100123456789"
+              className="w-full text-xs font-mono bg-bg border border-border rounded px-3 py-2 text-text"
+            />
+            <p className="text-[10px] text-muted2 mt-1">Send <span className="font-mono">/start</span> to your bot, then use <span className="font-mono">@userinfobot</span> to get your chat ID.</p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)}
+                className="rounded border-border" />
+              <span className="text-xs text-text">Enable Telegram notifications</span>
+            </label>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button onClick={handleSave}
+              className="px-4 py-1.5 text-xs font-medium bg-brand/10 text-brand border border-brand/30 rounded hover:bg-brand/20 transition-colors">
+              Save
+            </button>
+            <button onClick={handleTest} disabled={testing || !configured}
+              className="px-4 py-1.5 text-xs font-medium bg-green/10 text-green border border-green/30 rounded hover:bg-green/20 transition-colors disabled:opacity-40">
+              {testing ? 'Testing…' : 'Test Connection'}
+            </button>
+          </div>
+
+          {testResult && (
+            <div className={`text-xs p-3 rounded border ${testResult.ok ? 'bg-green/5 border-green/30 text-green' : 'bg-red/5 border-red/30 text-red'}`}>
+              {testResult.ok ? `Connected: ${testResult.botName}` : `Error: ${testResult.error}`}
+            </div>
+          )}
+
+          <div className="text-[11px] text-muted border-t border-border pt-3 mt-3">
+            <p className="font-medium text-text mb-1">What you'll receive:</p>
+            <ul className="space-y-0.5 text-muted2">
+              <li>• Alert notifications (setup score, regime change, direction change)</li>
+              <li>• Trade proposals with entry, SL, TP levels</li>
+              <li>• Daily digest summaries</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
 function GeneralTab() {
   const [appCfg, setAppCfg] = useState<AppConfig>({
     bridgePort: '8000', bridgeUrl: '', bridgeKeySet: false, logLevel: 'info',
@@ -681,6 +793,7 @@ export function Config() {
       {tab === 'llm'         && <LLMTab keys={keys} onKeysChange={setKeys} />}
       {tab === 'credentials' && <CredentialsTab keys={keys} onKeysChange={setKeys} />}
       {tab === 'bridge'      && <BridgeTab />}
+      {tab === 'telegram'    && <TelegramTab />}
       {tab === 'general'     && <GeneralTab />}
     </div>
   )

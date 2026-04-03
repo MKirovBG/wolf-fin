@@ -6,13 +6,14 @@ import {
   getSymbolStrategies, addSymbolStrategy, removeSymbolStrategy,
   getStrategies, submitFeedback,
 } from '../api/client.ts'
-import type { WatchSymbol, AnalysisResult, CandleBar, MarketState, SetupCandidate, AlertRule, AlertFiring, SymbolStrategy, Strategy } from '../types/index.ts'
+import type { WatchSymbol, AnalysisResult, CandleBar, MarketState, SetupCandidate, AlertRule, AlertFiring, SymbolStrategy, Strategy, TradeProposal, AnalysisContext } from '../types/index.ts'
 import { CandlestickChart } from '../components/CandlestickChart.tsx'
 import { MarketStatePanel } from '../components/MarketStatePanel.tsx'
 import { SetupCandidatesPanel } from '../components/SetupCandidatesPanel.tsx'
 import { AlertsPanel } from '../components/AlertsPanel.tsx'
 import { useToast } from '../components/Toast.tsx'
 import { Card } from '../components/Card.tsx'
+import { useAccount } from '../contexts/AccountContext.tsx'
 
 const TF_LABELS: Record<string, string> = {
   m1: '1M', m5: '5M', m15: '15M', m30: '30M', h1: '1H', h4: '4H',
@@ -89,6 +90,147 @@ function rel(iso: string) {
 }
 
 // ── Analysis report ───────────────────────────────────────────────────────────
+
+// ── Position Sizing Calculator ─────────────────────────────────────────────────
+
+function PositionSizingCalc({ proposal, context }: { proposal: TradeProposal; context: AnalysisContext }) {
+  const { accounts } = useAccount()
+  const connected = accounts.filter(a => a.connected && a.summary?.balance)
+  const si = context.symbolInfo
+
+  const [riskPct, setRiskPct]     = useState(1)
+  const [accountBal, setAccountBal] = useState(0)
+  const [manualEntry, setManualEntry] = useState('')
+  const [manualSl, setManualSl]   = useState('')
+
+  // Auto-populate balance from first connected account
+  useEffect(() => {
+    if (connected.length > 0 && accountBal === 0) {
+      setAccountBal(connected[0].summary?.balance ?? 0)
+    }
+  }, [connected, accountBal])
+
+  const entry = manualEntry ? parseFloat(manualEntry) : (proposal.entryZone.low + proposal.entryZone.high) / 2
+  const sl    = manualSl ? parseFloat(manualSl) : proposal.stopLoss
+  const point = si?.point ?? 0.00001
+  const digits = si?.digits ?? 5
+  const contractSize = si?.contractSize ?? 100_000
+  const volumeMin  = si?.volumeMin  ?? 0.01
+  const volumeStep = si?.volumeStep ?? 0.01
+
+  // Calculate pip distance & lot size
+  const slDistPips = Math.abs(entry - sl) / (point * (digits === 3 || digits === 5 ? 10 : 1))
+  const pipValue   = (point * (digits === 3 || digits === 5 ? 10 : 1)) * contractSize
+  const riskAmount = accountBal * (riskPct / 100)
+  const rawLots    = slDistPips > 0 ? riskAmount / (slDistPips * pipValue) : 0
+  const lots       = Math.max(volumeMin, Math.floor(rawLots / volumeStep) * volumeStep)
+
+  // Per-TP potential
+  const tpResults = proposal.takeProfits.map((tp, i) => {
+    const tpPips = Math.abs(tp - entry) / (point * (digits === 3 || digits === 5 ? 10 : 1))
+    const tpPnl  = tpPips * pipValue * lots
+    return { label: `TP${i + 1}`, pips: tpPips, pnl: tpPnl }
+  })
+
+  const potentialLoss = slDistPips * pipValue * lots
+
+  if (!si || accountBal === 0) {
+    return (
+      <div className="border border-border/40 rounded-lg p-3 bg-surface2/30">
+        <div className="text-[10px] uppercase tracking-wider text-muted font-semibold mb-1">Position Sizing</div>
+        <div className="text-xs text-muted2">
+          {!si ? 'Symbol info unavailable — run analysis with MT5 connected.' : 'No connected account found.'}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="border border-brand/20 rounded-lg p-4 bg-brand/5">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs font-semibold uppercase tracking-wider text-brand">Position Sizing</span>
+        <span className="text-[10px] text-muted2 font-mono">{contractSize.toLocaleString()} contract</span>
+      </div>
+
+      {/* Inputs row */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+        <div>
+          <label className="text-[10px] text-muted uppercase tracking-wider block mb-1">Account Balance</label>
+          <select
+            value={accountBal}
+            onChange={e => setAccountBal(parseFloat(e.target.value))}
+            className="w-full text-xs font-mono bg-bg border border-border rounded px-2 py-1.5 text-text"
+          >
+            {connected.map(a => (
+              <option key={a.id} value={a.summary?.balance ?? 0}>
+                ${(a.summary?.balance ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} — #{a.summary?.login}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="text-[10px] text-muted uppercase tracking-wider block mb-1">Risk %</label>
+          <div className="flex items-center gap-1">
+            {[0.5, 1, 2, 3].map(v => (
+              <button
+                key={v}
+                onClick={() => setRiskPct(v)}
+                className={`flex-1 text-[10px] py-1.5 rounded border font-medium transition-colors ${
+                  riskPct === v ? 'bg-brand/10 text-brand border-brand/30' : 'bg-bg text-muted border-border hover:text-text'
+                }`}
+              >
+                {v}%
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <label className="text-[10px] text-muted uppercase tracking-wider block mb-1">Entry Price</label>
+          <input
+            type="number"
+            step="any"
+            value={manualEntry || entry.toFixed(digits)}
+            onChange={e => setManualEntry(e.target.value)}
+            className="w-full text-xs font-mono bg-bg border border-border rounded px-2 py-1.5 text-text"
+          />
+        </div>
+        <div>
+          <label className="text-[10px] text-muted uppercase tracking-wider block mb-1">Stop Loss</label>
+          <input
+            type="number"
+            step="any"
+            value={manualSl || sl.toFixed(digits)}
+            onChange={e => setManualSl(e.target.value)}
+            className="w-full text-xs font-mono bg-bg border border-border rounded px-2 py-1.5 text-text"
+          />
+        </div>
+      </div>
+
+      {/* Results */}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        <div className="bg-bg/60 rounded p-2 text-center">
+          <div className="text-[10px] text-muted uppercase mb-0.5">Lot Size</div>
+          <div className="font-mono text-sm font-bold text-brand">{lots.toFixed(2)}</div>
+        </div>
+        <div className="bg-bg/60 rounded p-2 text-center">
+          <div className="text-[10px] text-muted uppercase mb-0.5">Risk $</div>
+          <div className="font-mono text-sm font-bold text-red">${potentialLoss.toFixed(2)}</div>
+        </div>
+        <div className="bg-bg/60 rounded p-2 text-center">
+          <div className="text-[10px] text-muted uppercase mb-0.5">SL Distance</div>
+          <div className="font-mono text-sm font-bold text-text">{slDistPips.toFixed(1)} pips</div>
+        </div>
+        {tpResults.slice(0, 2).map(tp => (
+          <div key={tp.label} className="bg-bg/60 rounded p-2 text-center">
+            <div className="text-[10px] text-muted uppercase mb-0.5">{tp.label} Profit</div>
+            <div className="font-mono text-sm font-bold text-green">+${tp.pnl.toFixed(2)}</div>
+            <div className="text-[9px] text-muted2">{tp.pips.toFixed(1)} pips</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 function AnalysisReport({
   analysis, strategy, onRetry,
@@ -188,6 +330,11 @@ function AnalysisReport({
             </div>
           )}
         </div>
+      )}
+
+      {/* ── Position sizing calculator ── */}
+      {tradeProposal && tradeProposal.direction && (
+        <PositionSizingCalc proposal={tradeProposal} context={context} />
       )}
 
       {/* ── Proposal validation ── */}

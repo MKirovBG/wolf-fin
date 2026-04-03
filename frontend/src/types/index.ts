@@ -317,3 +317,124 @@ export interface EconomicEvent {
   previous?: string
   actual?:   string | null
 }
+
+// ── Market state (Phase 1) ────────────────────────────────────────────────────
+
+export type MarketRegime = 'trend' | 'range' | 'breakout_watch' | 'reversal_watch' | 'volatile' | 'compressed'
+export type VolatilityLevel = 'low' | 'normal' | 'elevated' | 'extreme'
+export type SessionQuality = 'optimal' | 'good' | 'fair' | 'poor'
+export type ContextRisk = 'low' | 'moderate' | 'elevated' | 'avoid'
+
+export interface MarketState {
+  regime:            MarketRegime
+  direction:         'bullish' | 'bearish' | 'neutral'
+  directionStrength: number   // 0–100
+  volatility:        VolatilityLevel
+  sessionQuality:    SessionQuality
+  contextRisk:       ContextRisk
+  trendReasons:      string[]
+  rangeReasons:      string[]
+  breakoutReasons:   string[]
+  volatilityReasons: string[]
+  sessionReasons:    string[]
+  capturedAt?:       string
+  symbolKey?:        string
+}
+
+// ── Setup candidates (Phase 2) ────────────────────────────────────────────────
+
+export type SetupTier = 'valid' | 'watchlist' | 'low_quality' | 'rejected'
+
+export interface ScoreBreakdown {
+  trendAlignment:       number
+  structureQuality:     number
+  volatilityFit:        number
+  sessionQuality:       number
+  riskReward:           number
+  entryPrecision:       number
+  confirmations:        number
+  contextClarity:       number
+  patternQuality:       number
+  spreadPenalty:        number
+  newsPenalty:          number
+  contextRiskPenalty:   number
+  subtotal:             number
+  penalties:            number
+  total:                number
+  reasons:              string[]
+}
+
+export interface SetupCandidate {
+  detector:       string
+  found:          boolean
+  direction:      'BUY' | 'SELL' | null
+  entryZone:      { low: number; high: number } | null
+  stopLoss:       number | null
+  targets:        number[]
+  riskReward:     number
+  score:          number
+  tier:           SetupTier
+  scoreBreakdown: ScoreBreakdown
+  reasons:        string[]
+  disqualifiers:  string[]
+  tags:           string[]
+  capturedAt?:    string
+  symbolKey?:     string
+}
+
+// ── Alerts (Phase 5) ──────────────────────────────────────────────────────────
+
+export type AlertConditionType =
+  | 'setup_score_gte'
+  | 'regime_change'
+  | 'direction_change'
+  | 'context_risk_gte'
+
+export interface AlertRule {
+  id:             number
+  symbolKey:      string
+  name:           string
+  conditionType:  AlertConditionType
+  conditionValue: string
+  enabled:        boolean
+  createdAt:      string
+}
+
+export interface AlertFiring {
+  id:           number
+  ruleId:       number
+  symbolKey:    string
+  analysisId?:  number
+  firedAt:      string
+  message:      string
+  acknowledged: boolean
+}
+
+// ── Backtest (Phase 4) ────────────────────────────────────────────────────────
+
+export interface BacktestRun {
+  id:          number
+  symbolKey:   string
+  config:      Record<string, unknown>
+  status:      'running' | 'complete' | 'failed'
+  startedAt:   string
+  completedAt: string | null
+  error:       string | null
+  metrics:     Record<string, unknown> | null
+}
+
+// ── Strategy version (Phase 3) ────────────────────────────────────────────────
+
+export interface StrategyVersion {
+  id:        number
+  version:   string
+  createdAt: string
+  notes:     string | null
+}
+
+// ── Deep health (Phase 6) ─────────────────────────────────────────────────────
+
+export interface DeepHealth {
+  ok:     boolean
+  checks: Record<string, { ok: boolean; message: string }>
+}

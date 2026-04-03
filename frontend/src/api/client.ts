@@ -3,6 +3,8 @@ import type {
   SelectedAccount, PlatformLLMConfig, AnthropicModel, OpenRouterModel, OllamaModel,
   LogEntry, EconomicEvent, Mt5Position, AppConfig, Strategy,
   SymbolSummary, ProposalOutcome, OutcomeStats,
+  MarketState, SetupCandidate, AlertRule, AlertFiring,
+  BacktestRun, StrategyVersion, DeepHealth,
 } from '../types/index.ts'
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
@@ -141,3 +143,53 @@ export const getCalendar = () => api<EconomicEvent[]>('/api/calendar')
 export const getSelectedAccount = () => api<SelectedAccount | null>('/api/selected-account').catch(() => null)
 export const setSelectedAccount = (account: SelectedAccount | null) =>
   api<{ ok: boolean }>('/api/selected-account', { method: 'POST', ...json(account) })
+
+// ── Phase 2: Feature + market state ──────────────────────────────────────────
+export const getLatestMarketState = (key: string) =>
+  api<MarketState>(`/api/symbols/${encodeURIComponent(key)}/state/latest`)
+export const getLatestSetups = (key: string) =>
+  api<SetupCandidate[]>(`/api/symbols/${encodeURIComponent(key)}/setups/latest`)
+
+// ── Phase 3: Strategy versions ────────────────────────────────────────────────
+export const getStrategyVersions = (key: string) =>
+  api<StrategyVersion[]>(`/api/strategies/${encodeURIComponent(key)}/versions`)
+
+// ── Phase 4: Backtests ────────────────────────────────────────────────────────
+export const createBacktest = (body: { symbolKey: string; strategyKey?: string; timeframe?: string; count?: number }) =>
+  api<{ ok: boolean; runId: number }>('/api/backtests', { method: 'POST', ...json(body) })
+export const getBacktestRun = (id: number) =>
+  api<BacktestRun>(`/api/backtests/${id}`)
+
+// ── Phase 5: Research ─────────────────────────────────────────────────────────
+export const getResearchLeaderboard = (symbolKey?: string) => {
+  const p = symbolKey ? `?symbolKey=${encodeURIComponent(symbolKey)}` : ''
+  return api<{ byDetector: unknown[]; bySession: unknown[]; byRegime: unknown[] }>(`/api/research/leaderboard${p}`)
+}
+export const getSimilarAnalyses = (analysisId: number) =>
+  api<Array<{ analysisId: number; symbolKey: string; capturedAt: string; distance: number }>>(`/api/research/similar/${analysisId}`)
+
+// ── Phase 5: Alerts ───────────────────────────────────────────────────────────
+export const getAlerts = (symbolKey?: string) => {
+  const p = symbolKey ? `?symbolKey=${encodeURIComponent(symbolKey)}` : ''
+  return api<AlertRule[]>(`/api/alerts${p}`)
+}
+export const createAlert = (rule: {
+  symbolKey: string; name: string
+  conditionType: string; conditionValue: string; enabled?: boolean
+}) => api<{ ok: boolean; id: number }>('/api/alerts', { method: 'POST', ...json(rule) })
+export const toggleAlert = (id: number, enabled: boolean) =>
+  api<{ ok: boolean }>(`/api/alerts/${id}`, { method: 'PATCH', ...json({ enabled }) })
+export const deleteAlert = (id: number) =>
+  api<{ ok: boolean }>(`/api/alerts/${id}`, { method: 'DELETE' })
+export const getAlertFirings = (symbolKey?: string, limit?: number) => {
+  const p = new URLSearchParams()
+  if (symbolKey) p.set('symbolKey', symbolKey)
+  if (limit)     p.set('limit', String(limit))
+  const qs = p.toString()
+  return api<AlertFiring[]>(`/api/alerts/firings${qs ? `?${qs}` : ''}`)
+}
+export const acknowledgeAlert = (id: number) =>
+  api<{ ok: boolean }>(`/api/alerts/firings/${id}/acknowledge`, { method: 'POST' })
+
+// ── Phase 6: Deep health ──────────────────────────────────────────────────────
+export const getDeepHealth = () => api<DeepHealth>('/api/system/health/deep')

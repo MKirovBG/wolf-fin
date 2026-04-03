@@ -1,8 +1,14 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { getSymbol, getAnalyses, triggerAnalysis, getLiveCandles } from '../api/client.ts'
-import type { WatchSymbol, AnalysisResult, CandleBar } from '../types/index.ts'
+import {
+  getSymbol, getAnalyses, triggerAnalysis, getLiveCandles,
+  getLatestMarketState, getLatestSetups, getAlerts, getAlertFirings,
+} from '../api/client.ts'
+import type { WatchSymbol, AnalysisResult, CandleBar, MarketState, SetupCandidate, AlertRule, AlertFiring } from '../types/index.ts'
 import { CandlestickChart } from '../components/CandlestickChart.tsx'
+import { MarketStatePanel } from '../components/MarketStatePanel.tsx'
+import { SetupCandidatesPanel } from '../components/SetupCandidatesPanel.tsx'
+import { AlertsPanel } from '../components/AlertsPanel.tsx'
 import { useToast } from '../components/Toast.tsx'
 import { Card } from '../components/Card.tsx'
 
@@ -288,9 +294,7 @@ function AnalysisReport({
             onClick={() => setShowIndicators(s => !s)}
             className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-surface2 transition-colors"
           >
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted">
-              Indicators
-            </span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted">Indicators</span>
             <span className="text-muted text-xs">{showIndicators ? '▲' : '▼'}</span>
           </button>
           {showIndicators && (
@@ -330,9 +334,7 @@ function AnalysisReport({
             onClick={() => setShowContext(s => !s)}
             className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-surface2 transition-colors"
           >
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted">
-              Market Context
-            </span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted">Market Context</span>
             <span className="text-muted text-xs">{showContext ? '▲' : '▼'}</span>
           </button>
           {showContext && (
@@ -422,24 +424,49 @@ function HistoryItem({ analysis, active, onClick }: {
   )
 }
 
+// ── Tab type ──────────────────────────────────────────────────────────────────
+
+type Tab = 'analysis' | 'setups' | 'state' | 'alerts'
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function SymbolDetail() {
   const { key } = useParams<{ key: string }>()
   const decodedKey = key ? decodeURIComponent(key) : ''
 
-  const [sym, setSym]                 = useState<WatchSymbol | null>(null)
-  const [selected, setSelected]       = useState<AnalysisResult | null>(null)
-  const [history, setHistory]         = useState<AnalysisResult[]>([])
-  const [running, setRunning]         = useState(false)
-  const [loading, setLoading]         = useState(true)
-  const [showHistory, setShowHistory] = useState(true)
-  const [liveMode, setLiveMode]       = useState(false)
-  const [chartTf, setChartTf]         = useState<string>('h1')
-  const [liveCandles, setLiveCandles] = useState<CandleBar[] | null>(null)
-  const [liveError, setLiveError]     = useState<string | null>(null)
-  const liveTimer                     = useRef<ReturnType<typeof setInterval> | null>(null)
-  const toast                         = useToast()
+  const [sym, setSym]                   = useState<WatchSymbol | null>(null)
+  const [selected, setSelected]         = useState<AnalysisResult | null>(null)
+  const [history, setHistory]           = useState<AnalysisResult[]>([])
+  const [running, setRunning]           = useState(false)
+  const [loading, setLoading]           = useState(true)
+  const [showHistory, setShowHistory]   = useState(true)
+  const [liveMode, setLiveMode]         = useState(false)
+  const [chartTf, setChartTf]           = useState<string>('h1')
+  const [liveCandles, setLiveCandles]   = useState<CandleBar[] | null>(null)
+  const [liveError, setLiveError]       = useState<string | null>(null)
+  const liveTimer                       = useRef<ReturnType<typeof setInterval> | null>(null)
+  const toast                           = useToast()
+
+  // Phase 2–5 state
+  const [activeTab, setActiveTab]       = useState<Tab>('analysis')
+  const [marketState, setMarketState]   = useState<MarketState | null>(null)
+  const [setups, setSetups]             = useState<SetupCandidate[]>([])
+  const [alertRules, setAlertRules]     = useState<AlertRule[]>([])
+  const [alertFirings, setAlertFirings] = useState<AlertFiring[]>([])
+
+  const loadPhaseData = useCallback(async () => {
+    if (!decodedKey) return
+    const [stateRes, setupsRes, rulesRes, firingsRes] = await Promise.allSettled([
+      getLatestMarketState(decodedKey),
+      getLatestSetups(decodedKey),
+      getAlerts(decodedKey),
+      getAlertFirings(decodedKey, 50),
+    ])
+    if (stateRes.status   === 'fulfilled') setMarketState(stateRes.value)
+    if (setupsRes.status  === 'fulfilled') setSetups(setupsRes.value)
+    if (rulesRes.status   === 'fulfilled') setAlertRules(rulesRes.value)
+    if (firingsRes.status === 'fulfilled') setAlertFirings(firingsRes.value)
+  }, [decodedKey])
 
   const load = useCallback(async () => {
     if (!decodedKey) return
@@ -457,7 +484,8 @@ export function SymbolDetail() {
     } finally {
       setLoading(false)
     }
-  }, [decodedKey, selected, toast])
+    loadPhaseData()
+  }, [decodedKey, selected, toast, loadPhaseData])
 
   useEffect(() => { load() }, [load])
 
@@ -526,6 +554,8 @@ export function SymbolDetail() {
   }
 
   const configUrl = `/symbols/${encodeURIComponent(decodedKey)}/config`
+  const unackedCount = alertFirings.filter(f => !f.acknowledged).length
+  const validSetups = setups.filter(s => s.found && s.tier === 'valid').length
 
   return (
     <div className="flex flex-col h-full">
@@ -546,11 +576,21 @@ export function SymbolDetail() {
               {STRATEGY_LABELS[sym.strategy] ?? sym.strategy}
             </span>
           )}
+          {marketState && (
+            <span className={`text-[10px] rounded px-1.5 py-0.5 flex-shrink-0 font-medium ${
+              marketState.regime === 'trend'          ? 'text-green bg-green/10 border border-green/20' :
+              marketState.regime === 'volatile'       ? 'text-red bg-red/10 border border-red/20' :
+              marketState.regime === 'breakout_watch' ? 'text-yellow bg-yellow-dim border border-yellow/20' :
+              marketState.regime === 'reversal_watch' ? 'text-purple-400 bg-purple-400/10 border border-purple-400/20' :
+              'text-muted bg-surface2 border border-border'
+            }`}>
+              {marketState.regime.replace('_', ' ')}
+            </span>
+          )}
         </div>
 
         {/* Right: actions */}
         <div className="flex items-center gap-2 flex-shrink-0">
-          {/* History toggle */}
           {history.length > 0 && (
             <button
               onClick={() => setShowHistory(s => !s)}
@@ -564,14 +604,12 @@ export function SymbolDetail() {
               ☰ History {history.length > 0 && <span className="text-muted2">({history.length})</span>}
             </button>
           )}
-          {/* Edit config */}
           <Link
             to={configUrl}
             className="text-[10px] px-2.5 py-1.5 rounded border border-border text-muted hover:text-text hover:bg-surface2 transition-colors font-medium"
           >
             ✎ Edit
           </Link>
-          {/* Run analysis */}
           <button
             onClick={handleAnalyze}
             disabled={running}
@@ -593,7 +631,7 @@ export function SymbolDetail() {
         {/* Main area */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4 min-w-0">
 
-          {/* Chart header — TF buttons + Live toggle */}
+          {/* Chart header */}
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-1">
               {(['m1','m5','m15','m30','h1','h4'] as const).map(tf => (
@@ -663,15 +701,66 @@ export function SymbolDetail() {
             </div>
           )}
 
-          {/* Analysis report */}
-          {selected ? (
-            <AnalysisReport analysis={selected} strategy={sym.strategy} onRetry={handleAnalyze} />
-          ) : (
-            <Card>
-              <div className="text-center py-8 text-muted text-sm">
-                No analysis yet — click "▶ Run Analysis" to get started
+          {/* ── Tab bar ── */}
+          <div className="flex items-center gap-0 border-b border-border -mx-4 px-4">
+            {([
+              { id: 'analysis', label: 'Analysis' },
+              { id: 'setups',   label: `Setups${validSetups > 0 ? ` (${validSetups})` : ''}` },
+              { id: 'state',    label: 'Market State' },
+              { id: 'alerts',   label: `Alerts${unackedCount > 0 ? ` (${unackedCount})` : ''}` },
+            ] as { id: Tab; label: string }[]).map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`text-xs px-3 py-2 -mb-px border-b-2 transition-colors ${
+                  activeTab === tab.id
+                    ? 'text-green border-green'
+                    : 'text-muted border-transparent hover:text-text'
+                }`}
+              >
+                {tab.label}
+                {tab.id === 'alerts' && unackedCount > 0 && (
+                  <span className="ml-1 w-1.5 h-1.5 rounded-full bg-yellow inline-block" />
+                )}
+              </button>
+            ))}
+          </div>
+
+          {/* ── Tab content ── */}
+
+          {activeTab === 'analysis' && (
+            selected ? (
+              <AnalysisReport analysis={selected} strategy={sym.strategy} onRetry={handleAnalyze} />
+            ) : (
+              <Card>
+                <div className="text-center py-8 text-muted text-sm">
+                  No analysis yet — click "▶ Run Analysis" to get started
+                </div>
+              </Card>
+            )
+          )}
+
+          {activeTab === 'setups' && (
+            <SetupCandidatesPanel candidates={setups} />
+          )}
+
+          {activeTab === 'state' && (
+            marketState ? (
+              <MarketStatePanel state={marketState} />
+            ) : (
+              <div className="bg-surface border border-border rounded-lg p-6 text-center text-sm text-muted">
+                No market state data — run an analysis first
               </div>
-            </Card>
+            )
+          )}
+
+          {activeTab === 'alerts' && (
+            <AlertsPanel
+              symbolKey={decodedKey}
+              rules={alertRules}
+              firings={alertFirings}
+              onRefresh={loadPhaseData}
+            />
           )}
         </div>
 
@@ -689,7 +778,7 @@ export function SymbolDetail() {
                   key={a.id}
                   analysis={a}
                   active={selected?.id === a.id}
-                  onClick={() => setSelected(a)}
+                  onClick={() => { setSelected(a); setActiveTab('analysis') }}
                 />
               ))}
             </div>

@@ -36,7 +36,7 @@ function StrategyForm({
   const [form, setForm]     = useState<StrategyFormData>(initial)
   const [saving, setSaving] = useState(false)
 
-  const set = (field: keyof StrategyForm, val: string) =>
+  const set = (field: keyof StrategyFormData, val: string) =>
     setForm(p => ({ ...p, [field]: val }))
 
   const handleSave = async () => {

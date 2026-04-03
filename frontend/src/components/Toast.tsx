@@ -74,9 +74,9 @@ function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: 
   }, [])
 
   const styles: Record<ToastVariant, string> = {
-    success: 'border-green/40 bg-[#0d1a10] text-green',
-    error:   'border-red/40 bg-[#1a0d0d] text-red',
-    info:    'border-blue-500/30 bg-[#0d1120] text-blue-300',
+    success: 'border-green/30 bg-surface2 text-green shadow-dropdown',
+    error:   'border-red/30   bg-surface2 text-red   shadow-dropdown',
+    info:    'border-teal/30  bg-surface2 text-teal  shadow-dropdown',
   }
 
   const icons: Record<ToastVariant, string> = {

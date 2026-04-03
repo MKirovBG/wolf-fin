@@ -24,9 +24,9 @@ interface Props {
 }
 
 const BIAS_COLORS = {
-  support:    '#26a69a',
-  resistance: '#ef5350',
-  pivot:      '#7e57c2',
+  support:    '#20D68A',
+  resistance: '#FF4757',
+  pivot:      '#9B59FF',
 }
 
 const STRENGTH_OPACITY = {
@@ -52,25 +52,25 @@ export function CandlestickChart({ candles, keyLevels = [], proposal, currentPri
 
     const chart = createChart(containerRef.current, {
       layout: {
-        background:  { type: ColorType.Solid, color: '#0d0d0d' },
-        textColor:   '#9e9e9e',
+        background:  { type: ColorType.Solid, color: '#0E1929' },
+        textColor:   '#6B84A0',
         fontSize:    11,
       },
       grid: {
-        vertLines:   { color: '#1a1a1a' },
-        horzLines:   { color: '#1a1a1a' },
+        vertLines:   { color: '#1A2840' },
+        horzLines:   { color: '#1A2840' },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
-        vertLine: { color: '#444', labelBackgroundColor: '#1e1e1e' },
-        horzLine: { color: '#444', labelBackgroundColor: '#1e1e1e' },
+        vertLine: { color: '#2A4A6E', labelBackgroundColor: '#152035' },
+        horzLine: { color: '#2A4A6E', labelBackgroundColor: '#152035' },
       },
       rightPriceScale: {
-        borderColor: '#2a2a2a',
-        textColor:   '#9e9e9e',
+        borderColor: '#1E3352',
+        textColor:   '#6B84A0',
       },
       timeScale: {
-        borderColor:       '#2a2a2a',
+        borderColor:       '#1E3352',
         timeVisible:       true,
         secondsVisible:    false,
         rightOffset:       5,
@@ -81,12 +81,12 @@ export function CandlestickChart({ candles, keyLevels = [], proposal, currentPri
     })
 
     const series = chart.addSeries(CandlestickSeries, {
-      upColor:          '#26a69a',
-      downColor:        '#ef5350',
-      borderUpColor:    '#26a69a',
-      borderDownColor:  '#ef5350',
-      wickUpColor:      '#26a69a',
-      wickDownColor:    '#ef5350',
+      upColor:          '#20D68A',
+      downColor:        '#FF4757',
+      borderUpColor:    '#20D68A',
+      borderDownColor:  '#FF4757',
+      wickUpColor:      '#20D68A',
+      wickDownColor:    '#FF4757',
     })
 
     if (candles.length > 0) {
@@ -119,7 +119,7 @@ export function CandlestickChart({ candles, keyLevels = [], proposal, currentPri
     // ── Trade proposal ──────────────────────────────────────────────────────
     if (proposal) {
       const isBuy = proposal.direction === 'BUY'
-      const dirColor = isBuy ? '#26a69a' : '#ef5350'
+      const dirColor = isBuy ? '#20D68A' : '#FF4757'
 
       // Entry zone (upper bound line)
       series.createPriceLine({
@@ -134,7 +134,7 @@ export function CandlestickChart({ candles, keyLevels = [], proposal, currentPri
       // Stop loss
       series.createPriceLine({
         price:      proposal.stopLoss,
-        color:      '#ef535099',
+        color:      '#FF475799',
         lineWidth:  2,
         lineStyle:  LineStyle.Dashed,
         axisLabelVisible: true,
@@ -145,7 +145,7 @@ export function CandlestickChart({ candles, keyLevels = [], proposal, currentPri
       proposal.takeProfits.forEach((tp, i) => {
         series.createPriceLine({
           price:      tp,
-          color:      '#26a69a99',
+          color:      '#20D68A99',
           lineWidth:  1,
           lineStyle:  LineStyle.Dashed,
           axisLabelVisible: true,
@@ -158,7 +158,7 @@ export function CandlestickChart({ candles, keyLevels = [], proposal, currentPri
     if (currentPrice) {
       series.createPriceLine({
         price:      currentPrice,
-        color:      '#ffd54f99',
+        color:      '#00E5CC99',
         lineWidth:  1,
         lineStyle:  LineStyle.Solid,
         axisLabelVisible: true,
@@ -197,7 +197,7 @@ export function CandlestickChart({ candles, keyLevels = [], proposal, currentPri
     <div
       ref={containerRef}
       style={{ width: '100%', height }}
-      className="rounded-lg overflow-hidden border border-border"
+      className="rounded-xl overflow-hidden border border-border"
     />
   )
 }

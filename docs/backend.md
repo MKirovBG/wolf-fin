@@ -1,392 +1,205 @@
 # Wolf-Fin — Backend Documentation
 
-**Runtime:** Node.js 22 · TypeScript · Fastify
+**Runtime:** Node.js 22 · TypeScript (ESM)
+**Framework:** Fastify 5
 **Entry point:** `src/main.ts` → `src/server/index.ts`
-**Build:** `npm run build` → compiled to `dist/`
-**Start:** `npm start` (runs `dist/main.js`)
+**Build:** `pnpm build` → compiled to `dist/`
+**Default port:** `3000` (override with `PORT` env var)
 
 ---
 
-## Architecture Overview
+## Startup Sequence (`src/main.ts`)
+
+1. `initDb()` — opens SQLite, runs migrations, seeds built-in strategies
+2. Log pruning — prune `log_entries` to 10,000 rows max
+3. DB integrity check — PRAGMA integrity_check, warn on failure
+4. `startServer()` — Fastify HTTP + static file serving
+5. `syncSchedule()` — restore cron jobs for all symbols with `scheduleEnabled: true`
+
+Process hardening: `SIGTERM`/`SIGINT` → graceful shutdown; `uncaughtException` → log + exit(1); `unhandledRejection` → log.
+
+---
+
+## Module Map
 
 ```
 src/
-├── main.ts                  Bootstrap, DB init, risk state hydration
-├── server/
-│   ├── index.ts             Fastify HTTP server + all REST endpoints
-│   └── state.ts             In-memory agent state + SQLite persistence
-├── agent/
-│   ├── index.ts             Autonomous trading cycle (LLM loop)
-│   └── context.ts           Market enrichment context builder
-├── scheduler/
-│   └── index.ts             Per-agent cron task manager
-├── adapters/
-│   ├── interface.ts         IMarketAdapter abstract interface
-│   ├── registry.ts          Adapter factory (crypto/forex/mt5)
-│   ├── types.ts             Shared data models (Candle, Order, Snapshot…)
-│   ├── binance.ts           Binance Spot adapter
-│   ├── alpaca.ts            Alpaca Forex adapter
-│   ├── mt5.ts               MetaTrader5 adapter (HTTP bridge client)
-│   ├── indicators.ts        Technical indicator computations (RSI, EMA, ATR…)
-│   ├── session.ts           Forex market hours detection
-│   ├── twelvedata.ts        Twelve Data candle/quote source
-│   ├── feargreed.ts         Alternative.me Fear & Greed index
-│   ├── coingecko.ts         CoinGecko macro market data
-│   ├── cryptopanic.ts       CryptoPanic news headlines
-│   └── calendar.ts          Finnhub economic calendar
-├── guardrails/
-│   ├── index.ts             Barrel export
-│   ├── validate.ts          Crypto order validation
-│   ├── forex.ts             Forex order validation
-│   ├── mt5.ts               MT5 order validation
-│   ├── riskStateStore.ts    Per-market daily P&L tracking
-│   └── riskState.ts         Backward-compat shim (crypto only)
-├── llm/
-│   ├── types.ts             LLMProvider interface
-│   ├── anthropic.ts         Anthropic SDK wrapper
-│   ├── openrouter.ts        OpenRouter (OpenAI-compat) wrapper
-│   └── index.ts             Factory: getLLMProvider(), getModelForConfig()
-├── tools/
-│   └── definitions.ts       Anthropic tool schemas (6 trading tools)
-├── db/
-│   └── index.ts             SQLite ORM layer (better-sqlite3)
-└── types.ts                 Domain types (AgentConfig, AgentState, CycleResult…)
+  analyzer/       — runAnalysis(key): full pipeline per symbol
+  adapters/
+    mt5.ts        — MT5Adapter: fetch candles, positions via bridge
+    calendar.ts   — Finnhub economic calendar + news
+  backtest/
+    engine.ts     — runBacktest(): bar-by-bar replay with fill simulation
+  db/
+    index.ts      — initDb(), all exported DB functions
+    phase25.ts    — Phase 2-5 table operations (candidates, alerts, backtest, etc.)
+    migrations.ts — versioned migration runner (12 migrations)
+  detectors/      — 6 setup detector modules
+  engine/         — computeFeatures(): ~40 technical indicators
+  llm/            — provider adapters (Anthropic, OpenRouter, Ollama, OpenAI)
+  market/         — classifyMarketState(): regime + direction + risk
+  research/
+    aggregates.ts — leaderboardByDetector/Session/Regime
+    similarity.ts — findSimilarAnalyses(): cosine similarity on feature vectors
+  scheduler/      — syncSchedule(), stopSchedule(), node-cron wrappers
+  scoring/        — 9-component scoring engine
+  server/
+    index.ts      — all Fastify routes
+    state.ts      — in-memory log buffer + SSE pub/sub
+  strategies/
+    resolver.ts   — resolveStrategyDefinition()
+    definitions/  — 6 built-in strategy objects
+  types/          — shared backend TypeScript types
 ```
 
 ---
 
 ## REST API Reference
 
-**Base URL:** `http://localhost:3000` (configurable via `PORT` env)
+All endpoints return JSON. Error responses: `{ "error": "message" }`.
 
-### Status
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/status` | Full app status — agents, recent cycles, risk state, loss limit |
-
-**Response `StatusResponse`:**
-```json
-{
-  "agents": { "mt5:XAUUSD": { "config": {}, "status": "running", "cycleCount": 42 } },
-  "recentEvents": [ { "symbol": "XAUUSD", "decision": "SELL", "reason": "…" } ],
-  "risk": { "dailyPnlUsd": -45, "remainingBudgetUsd": 155 },
-  "maxDailyLossUsd": 200
-}
-```
-
----
-
-### Agents
+### Watch Symbols
 
 | Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/agents` | List all agents |
-| `POST` | `/api/agents` | Create a new agent |
-| `DELETE` | `/api/agents/:key` | Delete agent by key (`market:symbol`) |
-| `PATCH` | `/api/agents/:key/config` | Update agent configuration |
-| `POST` | `/api/agents/:key/start` | Start agent (creates scheduler) |
-| `POST` | `/api/agents/:key/pause` | Pause agent (suspends cron) |
-| `POST` | `/api/agents/:key/stop` | Stop agent (removes cron, idle) |
-| `POST` | `/api/agents/:key/trigger` | Manually fire one cycle immediately |
+|---|---|---|
+| `GET` | `/api/symbols` | List all watch symbols |
+| `GET` | `/api/symbols/:key` | Get one symbol |
+| `POST` | `/api/symbols` | Add symbol to watchlist |
+| `PATCH` | `/api/symbols/:key` | Update symbol config |
+| `DELETE` | `/api/symbols/:key` | Remove symbol |
+| `GET` | `/api/symbols/search?q=&accountId=` | Search MT5 symbols via bridge |
 
-**Agent key format:** `"market:symbol"` e.g. `"mt5:XAUUSD"`, `"crypto:BTCUSDT"`
-
-**`AgentConfig` shape:**
-```typescript
-{
-  symbol: string               // e.g. "XAUUSD"
-  market: 'crypto'|'forex'|'mt5'
-  paper: boolean               // true = simulate, false = live orders
-  maxIterations: number        // LLM tool-use iterations per cycle (default 10)
-  fetchMode: 'manual'|'scheduled'|'autonomous'
-  scheduleIntervalMinutes: number
-  maxLossUsd: number           // Per-agent daily loss cap
-  maxPositionUsd: number       // Max single position size
-  customPrompt?: string        // Appended to system prompt as ADDITIONAL INSTRUCTIONS
-  mt5AccountId?: number        // Which MT5 account to trade (multi-account)
-  llmProvider?: 'anthropic'|'openrouter'
-  llmModel?: string            // e.g. "openrouter/healer-alpha"
-}
-```
-
----
-
-### Market Data
+### Analysis
 
 | Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/market/:market/:symbol` | Live snapshot (price, candles, indicators, account) |
+|---|---|---|
+| `POST` | `/api/symbols/:key/analyze` | Trigger analysis (async, fires SSE on complete) |
+| `GET` | `/api/symbols/:key/analyses` | Analysis history (default limit 50) |
+| `GET` | `/api/symbols/:key/analyses/latest` | Most recent analysis |
+| `GET` | `/api/symbols/:key/running` | Whether analysis is in progress |
+| `GET` | `/api/symbols/:key/prompt` | Preview effective system prompt |
+| `GET` | `/api/analyses` | All recent analyses (cross-symbol, limit 100) |
+| `GET` | `/api/analyses/:id` | Single analysis by ID |
+| `GET` | `/api/symbols/:key/candles?timeframe=&count=` | Live candles from MT5 bridge |
+| `GET` | `/api/symbols/:key/backtest?minRR=` | Simple proposal backtest (stored analyses) |
 
----
-
-### Accounts & Positions
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/accounts` | All connected exchange accounts (Alpaca, Binance, MT5) |
-| `GET` | `/api/mt5-accounts` | MT5 accounts list for agent dropdown |
-| `GET` | `/api/positions` | Open positions across all running agents |
-| `GET` | `/api/trades` | Trade fill history |
-
----
-
-### API Keys
+### Phase 2 — Feature & Market State Snapshots
 
 | Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/keys` | Which keys are configured (values masked) |
-| `POST` | `/api/keys` | Persist a key to `.env` file |
-| `POST` | `/api/keys/test/:service` | Test connectivity for a service |
+|---|---|---|
+| `GET` | `/api/symbols/:key/features/latest` | Latest feature snapshot |
+| `GET` | `/api/symbols/:key/state/latest` | Latest market state classification |
+| `GET` | `/api/symbols/:key/setups/latest` | Latest setup candidates (all 6 detectors) |
 
-**Testable services:** `anthropic`, `openrouter`, `alpaca`, `binance`, `finnhub`, `twelvedata`, `coingecko`
-
----
-
-### Logs
+### Phase 3 — Strategies
 
 | Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/logs?sinceId=&agent=` | Paginated logs (default 200 per page) |
-| `POST` | `/api/logs/clear` | Set log clear floor (hides old entries) |
+|---|---|---|
+| `GET` | `/api/strategies` | List all strategies (built-in + custom) |
+| `POST` | `/api/strategies` | Create custom strategy |
+| `PATCH` | `/api/strategies/:key` | Update strategy |
+| `DELETE` | `/api/strategies/:key` | Delete custom strategy (built-ins protected) |
+| `GET` | `/api/strategies/:key/versions` | Strategy version history |
 
----
-
-### Reports
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/reports/summary` | Aggregated stats by market (buys/sells/holds/errors, P&L) |
-| `GET` | `/api/reports/trades?market=` | Full cycle history with optional market filter |
-
----
-
-### OpenRouter
+### Phase 4 — Backtesting
 
 | Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/openrouter/models` | List all available OpenRouter models |
+|---|---|---|
+| `POST` | `/api/backtests` | Start backtest run (async, 202 response) |
+| `GET` | `/api/backtests/:id` | Poll backtest run status/metrics |
+
+`POST /api/backtests` body: `{ symbolKey, strategyKey?, timeframe?, count? }`
+
+### Phase 5 — Research & Alerts
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/research/leaderboard?symbolKey=` | Detector/session/regime performance leaderboard |
+| `GET` | `/api/research/similar/:analysisId` | Find historically similar analyses |
+| `POST` | `/api/alerts` | Create alert rule |
+| `GET` | `/api/alerts?symbolKey=` | List alert rules |
+| `PATCH` | `/api/alerts/:id` | Toggle alert rule enabled/disabled |
+| `DELETE` | `/api/alerts/:id` | Delete alert rule |
+| `GET` | `/api/alerts/firings?symbolKey=&limit=` | Alert firing history |
+| `POST` | `/api/alerts/firings/:id/acknowledge` | Acknowledge a firing |
+
+Alert `conditionType` values: `setup_score_gte`, `regime_change`, `direction_change`, `context_risk_gte`
+
+### Accounts & MT5
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/accounts` | MT5 accounts (merged bridge + DB) |
+| `GET` | `/api/mt5-accounts` | Raw MT5 account list from bridge |
+| `GET` | `/api/accounts/:id/positions` | Open positions for account |
+| `GET` | `/api/mt5/health` | MT5 bridge health pass-through |
+
+### LLM Configuration
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/platform-llm` | Current platform LLM provider + model |
+| `POST` | `/api/platform-llm` | Set platform LLM provider + model |
+| `GET` | `/api/anthropic/models` | Available Anthropic models |
+| `GET` | `/api/openrouter/models` | Available OpenRouter models |
+| `GET` | `/api/ollama/models` | Available Ollama models |
+| `GET` | `/api/keys` | Which API keys are set (booleans) |
+| `POST` | `/api/keys` | Set API keys |
+| `POST` | `/api/test-connection` | Test connectivity to a service |
+
+### Auth (OAuth PKCE)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/auth/claude/start` | Begin Claude OAuth PKCE flow |
+| `POST` | `/api/auth/claude/exchange` | Exchange code for token |
+| `POST` | `/api/auth/claude/import-from-cli` | Import token from Claude Code CLI |
+| `GET` | `/api/auth/openai/start` | Begin OpenAI OAuth PKCE flow |
+| `POST` | `/api/auth/openai/exchange` | Exchange code for token |
+| `POST` | `/api/auth/openai/refresh` | Refresh OpenAI token |
+
+### System & Misc
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/status` | Dashboard: symbols + recent analyses + scheduled keys |
+| `GET` | `/api/summary` | Symbol bias heatmap data |
+| `GET` | `/api/scheduled` | Currently scheduled symbol keys |
+| `GET` | `/api/calendar` | Economic calendar events (Finnhub) |
+| `GET` | `/api/logs?sinceId=&symbolKey=&limit=` | Log entries |
+| `GET` | `/api/logs/stream` | SSE: real-time log stream |
+| `GET` | `/api/analyses/stream` | SSE: analysis completion events |
+| `GET` | `/api/outcomes?symbolKey=&limit=` | Proposal outcomes |
+| `GET` | `/api/outcomes/stats?symbolKey=` | Win rate / outcome stats |
+| `GET` | `/api/outcomes/pending` | Pending outcomes |
+| `GET` | `/api/config` | Bridge + runtime config |
+| `POST` | `/api/config` | Update bridge port/URL/key, log level |
+| `GET` | `/api/selected-account` | Persisted selected account |
+| `POST` | `/api/selected-account` | Save selected account |
+| `GET` | `/api/system/health/deep` | Deep health (MT5, LLM, Finnhub, DB integrity, migrations) |
 
 ---
 
-## Agent Cycle — Data Flow
+## SSE Events
 
-```
-POST /api/agents/:key/trigger
-  └─► runAgentCycle(config)
-        │
-        ├─ 1. Risk gate check (isDailyLimitHitFor)
-        │       └─ If hit → HOLD immediately, log guardrail_block
-        │
-        ├─ 2. Build system prompt
-        │       ├─ Market type context (crypto/forex/mt5 rules)
-        │       ├─ MAX_SPREAD_PIPS, MIN_STOP_PIPS from env
-        │       ├─ Last 5 cycle performance from DB
-        │       └─ customPrompt appended as ADDITIONAL INSTRUCTIONS
-        │
-        ├─ 3. LLM iteration loop (up to maxIterations)
-        │       ├─ Send messages to LLM (Anthropic or OpenRouter)
-        │       ├─ If stop_reason == 'end_turn' → extract DECISION
-        │       └─ If stop_reason == 'tool_use':
-        │               ├─ get_snapshot    → adapter.getSnapshot()
-        │               ├─ get_order_book  → adapter.getOrderBook()
-        │               ├─ get_recent_trades → adapter.getRecentTrades()
-        │               ├─ get_open_orders → adapter.getOpenOrders()
-        │               ├─ place_order     → guardrail → adapter.placeOrder()
-        │               └─ cancel_order    → adapter.cancelOrder()
-        │
-        ├─ 4. Auto-execute safety net
-        │       └─ If DECISION=BUY/SELL but no place_order was called
-        │              → auto-place with ATR-based stop
-        │
-        ├─ 5. Extract DECISION + REASON from final text
-        │
-        └─ 6. Record cycle result to DB, update agent state
-```
+**`GET /api/logs/stream`** — emits `LogEntry` objects as `data: {...}\n\n`
+
+**`GET /api/analyses/stream`** — emits `{ symbolKey: string, analysisId: number }` when an analysis completes
 
 ---
 
-## Agent Tools (6 Total)
+## Analysis Pipeline (`src/analyzer/index.ts`)
 
-Defined in `src/tools/definitions.ts` as Anthropic tool schemas.
-
-| Tool | Input | What it does |
-|------|-------|-------------|
-| `get_snapshot` | `{ symbol, market }` | Full market data: price, 4× candles (100 bars each: M1/M15/H1/H4), H1 indicators, account balances, open orders, risk state, enrichment context |
-| `get_order_book` | `{ symbol, market, depth? }` | Bid/ask ladder up to requested depth |
-| `get_recent_trades` | `{ symbol, market, limit? }` | Public tape — recent executed trades |
-| `get_open_orders` | `{ symbol?, market }` | All open positions/pending orders |
-| `place_order` | `{ symbol, market, side, type, quantity, price?, stopPips?, timeInForce? }` | Place a trade. Runs guardrail before execution. `stopPips` → converted to absolute SL price |
-| `cancel_order` | `{ symbol, market, orderId }` | Cancel pending order by ID |
-
-**Snapshot indicators (computed from H1 candles):**
-- `rsi14` — RSI(14): <30 oversold, >70 overbought
-- `ema20`, `ema50` — EMA crossover for trend direction
-- `atr14` — ATR(14) for stop sizing
-- `vwap` — Volume-weighted average price
-- `bbWidth` — Bollinger Band width ÷ midline (volatility proxy)
-
----
-
-## LLM Providers
-
-### Anthropic (default)
-- Uses `@anthropic-ai/sdk` directly
-- Model: `CLAUDE_MODEL` env (default `claude-opus-4-5-20251101`)
-- API key: `ANTHROPIC_API_KEY`
-
-### OpenRouter
-- OpenAI-compatible REST API at `https://openrouter.ai/api/v1/chat/completions`
-- Message format translated: Anthropic → OpenAI → back to Anthropic canonical
-- API key: `OPENROUTER_API_KEY` (set via Settings page)
-- Model: per-agent `llmModel` field (e.g. `openrouter/healer-alpha`)
-- Any model listed at `GET /api/openrouter/models` can be selected
-
-**Provider selection per agent:**
-```typescript
-// src/llm/index.ts
-getLLMProvider(config) → AnthropicProvider | OpenRouterProvider
-getModelForConfig(config) → string  // model name sent to LLM
-```
-
----
-
-## Guardrails — Order Validation
-
-Every `place_order` call passes through market-specific validation **before** the order reaches the exchange.
-
-### Crypto (`src/guardrails/validate.ts`)
-| Check | Limit | Env var |
-|-------|-------|---------|
-| Daily loss gate | $200 | `MAX_DAILY_LOSS_USD` |
-| Minimum qty | 0.00001 | hardcoded |
-| Minimum notional | $10 | hardcoded |
-| Maximum position | $1000 | `MAX_POSITION_USD` |
-| Remaining budget | dynamic | computed |
-
-### Forex + MT5 (`src/guardrails/forex.ts`, `mt5.ts`)
-| Check | Default | Env var |
-|-------|---------|---------|
-| Daily loss gate | $200 | `MAX_DAILY_LOSS_USD` |
-| Session open | required | — |
-| Max spread | 3 pips | `MAX_SPREAD_PIPS` |
-| Minimum stop | 10 pips | `MIN_STOP_PIPS` |
-| Pip risk × qty ≤ budget | computed | — |
-| Combined notional cap | $2000 | `MAX_COMBINED_NOTIONAL_USD` |
-
-> **XAUUSD note:** Set `MAX_SPREAD_PIPS=100` in `.env` — gold spreads are 20–80 pips equivalent.
-
----
-
-## Scheduler Modes
-
-| `fetchMode` | Behaviour |
-|-------------|-----------|
-| `manual` | Sets status to running; cycles only fire on manual trigger |
-| `scheduled` | node-cron at `*/N * * * *` where N = `scheduleIntervalMinutes` |
-| `autonomous` | Same as scheduled, but forex agents skip if `isForexSessionOpen()` is false |
-
----
-
-## Technical Indicators (`src/adapters/indicators.ts`)
-
-| Function | Algorithm | Default period |
-|----------|-----------|----------------|
-| `rsi(candles, period)` | Wilder RSI | 14 |
-| `ema(candles, period)` | Exponential MA | — |
-| `atr(candles, period)` | Wilder ATR (True Range smoothed) | 14 |
-| `vwap(candles)` | Sum(typical×vol) / Sum(vol) | — |
-| `bbWidth(candles, period, mult)` | (upper−lower) / middle | 20, ×2 |
-| `computeIndicators(h1)` | Calls all above, returns `Indicators` | — |
-
----
-
-## External Data Sources
-
-| Source | Used for | Auth |
-|--------|----------|------|
-| Binance REST + SDK | Crypto candles, quotes, orders | `BINANCE_API_KEY` + `BINANCE_SECRET` |
-| Alpaca REST | Forex paper/live orders | `ALPACA_KEY` + `ALPACA_SECRET` |
-| Twelve Data REST | Forex candles + quotes (primary) | `TWELVE_DATA_KEY` (8 req/min free) |
-| MetaTrader5 bridge | MT5 data + orders | bridge on `localhost:8000` |
-| Alternative.me | Fear & Greed index | none |
-| CoinGecko | BTC dominance + market cap | optional `COINGECKO_KEY` |
-| CryptoPanic | Crypto news headlines | `CRYPTOPANIC_KEY` |
-| Finnhub | Economic event calendar | `FINNHUB_KEY` |
-| OpenRouter | Alternative LLM provider | `OPENROUTER_API_KEY` |
-
----
-
-## Environment Variables
-
-```env
-# Server
-PORT=3000
-
-# LLM
-ANTHROPIC_API_KEY=sk-ant-…
-CLAUDE_MODEL=claude-opus-4-5-20251101
-OPENROUTER_API_KEY=sk-or-…
-
-# Crypto
-BINANCE_API_KEY=…
-BINANCE_SECRET=…
-
-# Forex
-ALPACA_KEY=…
-ALPACA_SECRET=…
-ALPACA_PAPER=true
-TWELVE_DATA_KEY=…
-
-# MT5
-MT5_BRIDGE_PORT=8000
-
-# Market data enrichment
-FINNHUB_KEY=…
-COINGECKO_KEY=…
-CRYPTOPANIC_KEY=…
-
-# Risk controls
-MAX_DAILY_LOSS_USD=200
-MAX_POSITION_USD=1000
-MAX_COMBINED_NOTIONAL_USD=2000
-MAX_SPREAD_PIPS=3         # Set to 100 for XAUUSD
-MIN_STOP_PIPS=10
-```
-
----
-
-## State Management (`src/server/state.ts`)
-
-```
-AppState (in-memory)
-├── agents: Record<key, AgentState>   ← synced to DB on every change
-│     └── AgentState { config, status, lastCycle, startedAt, cycleCount }
-└── recentEvents: CycleResult[]       ← last 50 cycles in memory
-
-Cycle Lock Map                         ← prevents duplicate concurrent cycles
-└── Map<agentKey, boolean>
-
-Log Buffer                             ← last 500 entries in memory
-└── LogEntry[]
-```
-
-Key functions:
-- `tryAcquireCycleLock(key)` → `false` if already running (triggers `cycle_skip` log)
-- `releaseCycleLock(key)` → called in finally block of `runAgentCycle`
-- `logEvent(agentKey, level, event, message, data)` → written to DB + memory buffer
-
----
-
-## Paper vs Live Trading
-
-| Mode | `paper: true` | `paper: false` |
-|------|---------------|----------------|
-| Order result | `PAPER_FILLED` (simulated, no real order) | Real exchange order via adapter |
-| Cycle log tag | `[PAPER]` | `[LIVE]` |
-| DB record | Saved with `paper=1` | Saved with `paper=0` |
-| Guardrails | Still run (risk limits enforced) | Still run |
-
-Toggle via:
-1. Agent Configuration panel in the UI
-2. Direct DB update: `UPDATE agents SET config = json_set(config, '$.paper', false) WHERE key = 'mt5:XAUUSD'`
+`runAnalysis(symbolKey)`:
+1. Fetch candles from MT5 bridge
+2. Fetch news + calendar from Finnhub (if key set)
+3. Fetch current price (bid/ask/spread)
+4. `computeFeatures(candles, indicators)` → `FeatureSnapshot`
+5. `classifyMarketState(features, context)` → `MarketState`
+6. Run 6 detectors in parallel → `SetupCandidate[]`
+7. Score each candidate (9 components + penalties)
+8. Select top valid candidate → build LLM prompt
+9. Call LLM → parse `AnalysisResult` (bias, summary, keyLevels, tradeProposal)
+10. Persist: features, market state, candidates, analysis to DB
+11. Evaluate alert rules → fire matching alerts
+12. Broadcast SSE update

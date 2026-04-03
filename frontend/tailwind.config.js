@@ -4,42 +4,59 @@ export default {
   theme: {
     extend: {
       colors: {
-        bg:       '#09090b',
-        surface:  '#111113',
-        surface2: '#1a1a1f',
-        surface3: '#222228',
-        border:   '#2a2a32',
+        // ── Deep dark navy surfaces (E8 Markets style) ───────────────────────
+        bg:       '#08111E',   // page background — deepest dark navy
+        surface:  '#0E1929',   // card / panel surface
+        surface2: '#152035',   // secondary surface, hover states
+        surface3: '#1A2840',   // tertiary / grouped rows
+        border:   '#1E3352',   // subtle blue-tinted border
+        // ── Teal accent (E8 brand) ───────────────────────────────────────────
+        teal: {
+          DEFAULT: '#00E5CC',
+          dim:     'rgba(0,229,204,0.10)',
+          glow:    'rgba(0,229,204,0.20)',
+        },
+        // ── Semantic trading colors ──────────────────────────────────────────
         green: {
-          DEFAULT: '#22c55e',
-          dim:     '#0f2a1a',
-          glow:    'rgba(34,197,94,0.15)',
+          DEFAULT: '#20D68A',  // bullish / gain / positive
+          dim:     'rgba(32,214,138,0.10)',
+          glow:    'rgba(32,214,138,0.18)',
         },
         red: {
-          DEFAULT: '#ef4444',
-          dim:     '#2a0f0f',
-          glow:    'rgba(239,68,68,0.15)',
+          DEFAULT: '#FF4757',  // bearish / loss / negative
+          dim:     'rgba(255,71,87,0.10)',
+          glow:    'rgba(255,71,87,0.18)',
         },
         yellow: {
-          DEFAULT: '#f59e0b',
-          dim:     '#2a1f0a',
-          glow:    'rgba(245,158,11,0.15)',
+          DEFAULT: '#FFB020',  // warning / neutral / caution
+          dim:     'rgba(255,176,32,0.10)',
+          glow:    'rgba(255,176,32,0.15)',
         },
         blue: {
-          DEFAULT: '#3b82f6',
-          dim:     '#0a1628',
-          glow:    'rgba(59,130,246,0.15)',
+          DEFAULT: '#00E5CC',  // alias → teal (keep for backward compat)
+          dim:     'rgba(0,229,204,0.10)',
+          glow:    'rgba(0,229,204,0.20)',
         },
         purple: {
-          DEFAULT: '#a855f7',
-          dim:     '#1a0a28',
+          DEFAULT: '#9B59FF',  // secondary accent (leaderboard, specials)
+          dim:     'rgba(155,89,255,0.12)',
+          glow:    'rgba(155,89,255,0.20)',
         },
-        muted:  '#6b7280',
-        muted2: '#4b5563',
-        text:   '#f4f4f5',
+        // ── Text ─────────────────────────────────────────────────────────────
+        text:   '#DDE6F4',   // primary text — cool near-white
+        muted:  '#6B84A0',   // secondary text — blue-grey
+        muted2: '#374F6B',   // tertiary text — darker blue-grey
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],
         mono: ['"JetBrains Mono"', 'Menlo', 'monospace'],
+      },
+      boxShadow: {
+        card:     '0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.04)',
+        glow:     '0 0 20px rgba(0,229,204,0.15)',
+        'glow-sm':'0 0 10px rgba(0,229,204,0.12)',
+        dropdown: '0 8px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(30,51,82,0.8)',
+        modal:    '0 16px 64px rgba(0,0,0,0.7)',
       },
     },
   },

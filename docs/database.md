@@ -1,396 +1,289 @@
 # Wolf-Fin — Database Documentation
 
-**Engine:** SQLite via `better-sqlite3` (synchronous)
-**File location:** `data/wolf-fin.db`
-**Journal mode:** WAL (Write-Ahead Logging) — enabled on init for better concurrent read performance
-**ORM layer:** `src/db/index.ts`
+**Engine:** SQLite via `better-sqlite3` (synchronous API)
+**File:** `data/wolf-fin.db`
+**Journal mode:** WAL (Write-Ahead Logging)
+**Busy timeout:** 5000ms
+
+The schema is managed by a versioned migration runner (`src/db/migrations.ts`). Migrations run on startup, are idempotent, and are tracked in the `schema_migrations` table.
 
 ---
 
-## Schema
+## Tables
 
-### Table: `agents`
+### `schema_migrations`
+Tracks applied migrations.
 
-Stores the full configuration and runtime state of every registered trading agent.
+| Column | Type | Description |
+|---|---|---|
+| `version` | INTEGER PK | Migration version number |
+| `name` | TEXT | Migration name |
+| `applied_at` | TEXT | ISO timestamp |
 
-```sql
-CREATE TABLE agents (
-  key         TEXT PRIMARY KEY,      -- "market:symbol" e.g. "mt5:XAUUSD"
-  config      TEXT NOT NULL,         -- JSON-stringified AgentConfig
-  status      TEXT NOT NULL DEFAULT 'idle',   -- 'idle' | 'running' | 'paused'
-  cycle_count INTEGER NOT NULL DEFAULT 0,
-  started_at  TEXT,                  -- ISO 8601 timestamp when last started
-  last_cycle  TEXT                   -- JSON-stringified CycleResult (latest cycle)
-);
-```
+### `watch_symbols`
+Symbols being monitored for analysis.
 
-**`config` JSON shape:**
-```json
-{
-  "symbol": "XAUUSD",
-  "market": "mt5",
-  "paper": false,
-  "maxIterations": 10,
-  "fetchMode": "autonomous",
-  "scheduleIntervalMinutes": 5,
-  "maxLossUsd": 200,
-  "maxPositionUsd": 1000,
-  "customPrompt": "…",
-  "mt5AccountId": 1111343,
-  "llmProvider": "openrouter",
-  "llmModel": "openrouter/healer-alpha"
-}
-```
+| Column | Type | Description |
+|---|---|---|
+| `key` | TEXT PK | Unique key (e.g. `XAUUSD_mt5_12345`) |
+| `symbol` | TEXT | MT5 symbol name |
+| `market` | TEXT | Always `mt5` |
+| `display_name` | TEXT | Optional display name |
+| `mt5_account_id` | INTEGER | MT5 account login |
+| `schedule_enabled` | INTEGER | 0/1 |
+| `schedule_interval_ms` | INTEGER | Cron interval |
+| `schedule_start_utc` | TEXT | Daily start time (HH:MM UTC) |
+| `schedule_end_utc` | TEXT | Daily end time (HH:MM UTC) |
+| `indicator_config` | TEXT | JSON: indicator toggles + periods |
+| `candle_config` | TEXT | JSON: timeframe + limit |
+| `context_config` | TEXT | JSON: news/calendar toggles |
+| `llm_provider` | TEXT | Per-symbol LLM provider override |
+| `llm_model` | TEXT | Per-symbol model override |
+| `strategy` | TEXT | Strategy key |
+| `system_prompt` | TEXT | Custom system prompt suffix |
+| `created_at` | TEXT | ISO timestamp |
+| `last_analysis_at` | TEXT | ISO timestamp |
 
-**`last_cycle` JSON shape:**
-```json
-{
-  "symbol": "XAUUSD",
-  "market": "mt5",
-  "paper": false,
-  "decision": "SELL 0.1 @ 5012.5",
-  "reason": "Bearish EMA cross, RSI neutral…",
-  "time": "2026-03-16T21:39:25.000Z",
-  "pnlUsd": null
-}
-```
+### `analyses`
+Full analysis results.
 
-**Access patterns:**
-- Startup: load all agents to restore in-memory state
-- Agent create/update: upsert row
-- Status change: update `status` + `started_at`
-- Cycle complete: update `last_cycle` + increment `cycle_count`
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `symbol_key` | TEXT | FK → watch_symbols.key |
+| `symbol` | TEXT | MT5 symbol |
+| `market` | TEXT | `mt5` |
+| `timeframe` | TEXT | e.g. `h1` |
+| `time` | TEXT | ISO timestamp of analysis |
+| `bias` | TEXT | `bullish`, `bearish`, `neutral` |
+| `summary` | TEXT | LLM narrative summary |
+| `key_levels` | TEXT | JSON: KeyLevel[] |
+| `proposal` | TEXT | JSON: TradeProposal |
+| `indicators` | TEXT | JSON: computed indicator values |
+| `candles` | TEXT | JSON: CandleBar[] |
+| `context` | TEXT | JSON: news, calendar, price, session |
+| `llm_provider` | TEXT | |
+| `llm_model` | TEXT | |
+| `error` | TEXT | Error message if analysis failed |
+| `raw_response` | TEXT | Raw LLM text response |
+| `llm_thinking` | TEXT | Extended thinking output (Anthropic) |
+| `patterns` | TEXT | JSON: CandlePattern[] |
+| `validation` | TEXT | JSON: ProposalValidation |
 
----
+**Indexes:** `(symbol_key, time DESC)`
 
-### Table: `cycle_results`
+### `log_entries`
+Structured application logs (pruned to 10,000 rows on startup).
 
-Immutable history of every completed trading cycle. Primary source for reports and P&L calculation.
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `time` | TEXT | ISO timestamp |
+| `symbol_key` | TEXT | Associated symbol |
+| `level` | TEXT | `info`, `warn`, `error`, `debug` |
+| `event` | TEXT | Event type slug |
+| `message` | TEXT | Human-readable message |
+| `data` | TEXT | JSON: arbitrary extra data |
 
-```sql
-CREATE TABLE cycle_results (
-  id        INTEGER PRIMARY KEY AUTOINCREMENT,
-  agent_key TEXT NOT NULL,      -- FK to agents.key (not enforced)
-  symbol    TEXT NOT NULL,      -- e.g. "XAUUSD"
-  market    TEXT NOT NULL,      -- "crypto" | "forex" | "mt5"
-  paper     INTEGER NOT NULL,   -- 0 = live, 1 = paper (SQLite boolean)
-  decision  TEXT NOT NULL,      -- "BUY 0.1 @ 2650" | "SELL 0.5 @ 1.085" | "HOLD"
-  reason    TEXT NOT NULL,      -- Agent's explanation
-  time      TEXT NOT NULL,      -- ISO 8601 timestamp
-  error     TEXT,               -- Error message if cycle failed
-  pnl_usd   REAL                -- Realised P&L in USD (null until position closed)
-);
-```
+**Indexes:** `(symbol_key, id DESC)`
 
-**Usage:**
-- Appended after every cycle (never updated)
-- `pnl_usd` populated when a closing trade is matched
-- Queried for:
-  - Daily P&L sum by market (risk limit enforcement)
-  - Report summaries (buy/sell/hold counts)
-  - Per-agent performance history (last N decisions)
+### `settings`
+Key-value store for persistent settings.
 
-**Key queries:**
+| Column | Type |
+|---|---|
+| `key` | TEXT PK |
+| `value` | TEXT |
 
-```sql
--- Daily realised P&L for a market
-SELECT COALESCE(SUM(pnl_usd), 0)
-FROM cycle_results
-WHERE market = ? AND paper = 0
-  AND date(time) = ?
-  AND pnl_usd IS NOT NULL;
+Used for `selected_account` (JSON).
 
--- All cycle results with optional market filter
-SELECT * FROM cycle_results
-WHERE (? IS NULL OR market = ?)
-ORDER BY time DESC;
+### `mt5_accounts`
+Known MT5 accounts seen via the bridge.
 
--- Last N decisions for an agent (performance summary)
-SELECT decision, reason, time, pnl_usd, error
-FROM cycle_results
-WHERE agent_key = ?
-ORDER BY id DESC
-LIMIT ?;
-```
+| Column | Type | Description |
+|---|---|---|
+| `login` | INTEGER PK | MT5 account login number |
+| `name` | TEXT | Account name |
+| `server` | TEXT | Broker server |
+| `mode` | TEXT | `DEMO` or `LIVE` |
+| `last_seen_at` | TEXT | ISO timestamp |
+| `in_bridge` | INTEGER | 0/1 — currently visible in bridge |
 
----
+### `proposal_outcomes`
+Trade proposal outcome tracking.
 
-### Table: `log_entries`
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `analysis_id` | INTEGER | FK → analyses.id |
+| `symbol_key` | TEXT | |
+| `direction` | TEXT | `BUY` or `SELL` |
+| `entry_low` | REAL | |
+| `entry_high` | REAL | |
+| `sl` | REAL | Stop loss |
+| `tp1/tp2/tp3` | REAL | Take profit levels |
+| `status` | TEXT | `pending`, `entered`, `hit_tp1`, `hit_tp2`, `hit_sl`, `expired`, `invalidated` |
+| `created_at` | TEXT | |
+| `entered_at` | TEXT | When price entered the zone |
+| `resolved_at` | TEXT | When outcome was determined |
+| `exit_price` | REAL | |
+| `pips_result` | REAL | |
 
-Append-only event log for all agent activity. Powers the live log terminal in the UI.
+**Indexes:** `(symbol_key)`, `(status)`
 
-```sql
-CREATE TABLE log_entries (
-  id        INTEGER PRIMARY KEY AUTOINCREMENT,
-  time      TEXT NOT NULL,       -- ISO 8601 timestamp
-  agent_key TEXT NOT NULL,       -- "mt5:XAUUSD" or "system"
-  level     TEXT NOT NULL,       -- "info" | "warn" | "error" | "debug"
-  event     TEXT NOT NULL,       -- See event types below
-  message   TEXT NOT NULL,       -- Human-readable description
-  data      TEXT                 -- Optional JSON payload
-);
-```
+### `analysis_features`
+Feature snapshots saved alongside each analysis.
 
-**Log levels:**
-| Level | Used for |
-|-------|---------|
-| `info` | Normal cycle activity (start, tool calls, decisions) |
-| `warn` | Non-fatal issues (guardrail blocks, session skips) |
-| `error` | Cycle errors, tool errors, LLM failures |
-| `debug` | Verbose data (full snapshots, raw responses) |
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `analysis_id` | INTEGER | FK → analyses.id |
+| `symbol_key` | TEXT | |
+| `captured_at` | TEXT | ISO timestamp |
+| `data` | TEXT | JSON: full FeatureSnapshot |
 
-**Event types:**
-| Event | Meaning |
-|-------|---------|
-| `cycle_start` | Agent cycle begins |
-| `cycle_end` | Agent cycle completes normally |
-| `cycle_error` | Unhandled error during cycle |
-| `cycle_skip` | Cycle skipped (already running — lock contention) |
-| `session_skip` | Cycle skipped (forex market closed) |
-| `tool_call` | LLM requested a tool (e.g. `get_snapshot`) |
-| `tool_result` | Tool returned data to LLM |
-| `tool_error` | Tool call threw an error |
-| `claude_thinking` | LLM response text (thinking/decision) |
-| `decision` | Final parsed DECISION line |
-| `guardrail_block` | Order rejected by pre-trade validation |
-| `auto_execute` | Auto-placed order from DECISION text (safety net) |
-| `auto_execute_error` | Auto-execute failed |
+**Indexes:** `(analysis_id)`, `(symbol_key, captured_at DESC)`
 
-**`data` JSON examples:**
-```json
-// tool_call
-{ "tool": "get_snapshot", "input": { "symbol": "XAUUSD", "market": "mt5" } }
+### `market_states`
+Market regime classifications saved per analysis.
 
-// tool_result
-{ "price": 5012.5, "rsi": 47.7, "ema20": 5011.1 }
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `analysis_id` | INTEGER | FK → analyses.id |
+| `symbol_key` | TEXT | |
+| `captured_at` | TEXT | |
+| `regime` | TEXT | `trend`, `range`, `breakout_watch`, `reversal_watch`, `volatile`, `compressed` |
+| `direction` | TEXT | `bullish`, `bearish`, `neutral` |
+| `direction_strength` | INTEGER | 0–100 |
+| `volatility` | TEXT | `quiet`, `normal`, `elevated`, `abnormal` |
+| `session_quality` | TEXT | `poor`, `acceptable`, `favorable`, `optimal` |
+| `context_risk` | TEXT | `low`, `moderate`, `elevated`, `avoid` |
+| `data` | TEXT | JSON: full MarketState (reasons arrays, etc.) |
 
-// guardrail_block
-{ "reason": "Spread 2100 pips exceeds maximum 40 pips" }
+**Indexes:** `(analysis_id)`, `(symbol_key, captured_at DESC)`
 
-// decision
-{ "decision": "SELL 0.1 @ 5012.5", "reason": "Bearish EMA cross…" }
-```
+### `setup_candidates`
+Detector outputs and scores saved per analysis.
 
-**Polling for UI:**
-```sql
--- Fetch logs since last known ID (long-polling style)
-SELECT * FROM log_entries
-WHERE id > ? AND (? IS NULL OR agent_key = ?)
-ORDER BY id ASC
-LIMIT 200;
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `analysis_id` | INTEGER | FK → analyses.id |
+| `symbol_key` | TEXT | |
+| `captured_at` | TEXT | |
+| `detector` | TEXT | `trendPullback`, `breakoutRetest`, `liquiditySweep`, `openingRange`, `rangeFade`, `sessionReversal` |
+| `direction` | TEXT | `BUY`, `SELL`, or NULL |
+| `found` | INTEGER | 0/1 |
+| `score` | INTEGER | 0–100 |
+| `tier` | TEXT | `valid`, `watchlist`, `low_quality`, `rejected` |
+| `data` | TEXT | JSON: full SetupCandidate (entry zone, SL, targets, breakdown, reasons, etc.) |
 
--- Get max ID (for clear-floor feature)
-SELECT MAX(id) FROM log_entries;
-```
+**Indexes:** `(analysis_id)`, `(symbol_key, captured_at DESC)`
 
-**Log clear floor:** Stored in `settings` table. Logs with `id <= floor` are hidden from UI (not deleted from disk). Useful for clearing visual clutter without losing history.
+### `strategies`
+Built-in and custom trading strategy definitions.
 
----
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `key` | TEXT UNIQUE | Identifier |
+| `name` | TEXT | Display name |
+| `description` | TEXT | One-line description |
+| `instructions` | TEXT | Text injected into LLM system prompt |
+| `is_builtin` | INTEGER | 0/1 — built-ins cannot be deleted |
+| `definition` | TEXT | JSON: StrategyDefinition (for backtest engine) |
+| `created_at` | TEXT | |
 
-### Table: `settings`
+Built-in strategies: `price_action`, `ict`, `trend`, `swing`, `scalping`, `smc`
 
-Key/value store for server-side configuration that persists across restarts.
+### `strategy_versions`
+Version history for strategy definitions.
 
-```sql
-CREATE TABLE settings (
-  key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-```
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `strategy_key` | TEXT | FK → strategies.key |
+| `version` | TEXT | Semantic version string |
+| `definition` | TEXT | JSON snapshot of definition |
+| `created_at` | TEXT | |
+| `notes` | TEXT | Change notes |
 
-**Current keys:**
+**Index:** `(strategy_key, created_at DESC)`
 
-| Key | Value | Purpose |
-|-----|-------|---------|
-| `log_clear_floor` | Integer string | Hides log entries with `id ≤ value` from UI |
+### `backtest_runs`
+Backtest execution records.
 
----
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `symbol_key` | TEXT | |
+| `config` | TEXT | JSON: BacktestConfig |
+| `status` | TEXT | `running`, `complete`, `failed` |
+| `started_at` | TEXT | |
+| `completed_at` | TEXT | |
+| `error` | TEXT | Error message if failed |
+| `metrics` | TEXT | JSON: BacktestMetrics (win rate, avg R:R, etc.) |
 
-## ORM Functions (`src/db/index.ts`)
+### `backtest_trades`
+Individual trade records from backtest runs.
 
-### Initialisation
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `run_id` | INTEGER | FK → backtest_runs.id |
+| `symbol_key` | TEXT | |
+| `bar_index` | INTEGER | Entry bar |
+| `direction` | TEXT | `BUY` or `SELL` |
+| `entry_price` | REAL | |
+| `sl` | REAL | |
+| `tp1` | REAL | |
+| `exit_price` | REAL | |
+| `exit_reason` | TEXT | `tp1`, `sl`, `end_of_data` |
+| `pips` | REAL | |
+| `rr_achieved` | REAL | |
 
-```typescript
-initDb(): void
-```
-- Opens `data/wolf-fin.db` (creates file if missing)
-- Enables WAL journal mode
-- Creates all 4 tables if they don't exist
-- Called once at server startup from `src/main.ts`
+### `alert_rules`
+User-defined alert conditions.
 
----
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `symbol_key` | TEXT | |
+| `name` | TEXT | Display name |
+| `condition_type` | TEXT | `setup_score_gte`, `regime_change`, `direction_change`, `context_risk_gte` |
+| `condition_value` | TEXT | Threshold or target value |
+| `enabled` | INTEGER | 0/1 |
+| `created_at` | TEXT | |
 
-### Agent Operations
+### `alert_firings`
+History of alert rule evaluations that triggered.
 
-```typescript
-dbGetAllAgents(): AgentState[]
-```
-Returns all rows from `agents` with `config` and `last_cycle` JSON-parsed.
-
-```typescript
-dbUpsertAgent(agent: AgentState): void
-```
-INSERT OR REPLACE into `agents`. Serialises `config` and `last_cycle` to JSON.
-
-```typescript
-dbRemoveAgent(key: string): void
-```
-Deletes agent row. Does **not** cascade to `cycle_results` or `log_entries`.
-
-```typescript
-dbUpdateAgentStatus(key: string, status: AgentStatus, startedAt?: string): void
-```
-Minimal update — only touches `status` and `started_at` columns.
-
----
-
-### Cycle Recording
-
-```typescript
-dbRecordCycle(key: string, result: CycleResult): void
-```
-Inserts one row into `cycle_results`. Called at end of every cycle.
-
-```typescript
-dbGetCycleResults(market?: string, limit?: number): CycleResultRow[]
-```
-Fetches cycle history ordered newest-first. Optional market filter. Default limit 500.
-
-```typescript
-dbGetTodayRealizedPnl(market: string, dateStr: string): number
-```
-SUM of non-null `pnl_usd` for live trades (`paper=0`) on a given date. Used by risk engine at startup to hydrate daily P&L state from persistent history.
-
-```typescript
-dbGetAgentPerformance(agentKey: string, limit?: number): AgentPerformanceSummary
-```
-Returns:
-```typescript
-{
-  totalCycles: number
-  buys: number
-  sells: number
-  holds: number
-  lastDecisions: Array<{ decision, reason, time, pnlUsd, error }>
-}
-```
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `rule_id` | INTEGER | FK → alert_rules.id |
+| `symbol_key` | TEXT | |
+| `analysis_id` | INTEGER | Analysis that triggered the firing |
+| `fired_at` | TEXT | ISO timestamp |
+| `message` | TEXT | Human-readable firing description |
+| `acknowledged` | INTEGER | 0/1 |
 
 ---
 
-### Log Operations
+## Migration Versions
 
-```typescript
-dbLogEvent(entry: LogEntry): void
-```
-Inserts one row into `log_entries`. `data` field JSON-serialised if object.
-
-```typescript
-dbGetLogs(sinceId?: number, agentKey?: string, limit?: number): LogEntry[]
-```
-Fetches log entries with `id > sinceId`, optional agent filter. Default limit 200. Used by UI long-poll endpoint.
-
-```typescript
-dbGetMaxLogId(): number
-```
-Returns current maximum `id` in `log_entries`. Used when clearing logs.
-
-```typescript
-dbGetLogClearFloor(): number
-```
-Returns `settings.log_clear_floor` (default 0 if not set).
-
-```typescript
-dbSetLogClearFloor(id: number): void
-```
-Upserts `settings.log_clear_floor`. Logs with `id ≤ floor` hidden from `dbGetLogs`.
-
----
-
-## Data Flow Diagram
-
-```
-Server startup
-  └─► initDb()
-  └─► dbGetAllAgents() → restore AppState.agents
-  └─► dbGetTodayRealizedPnl('crypto' | 'forex' | 'mt5') → hydrateRiskStateFromDb()
-
-Agent created (POST /api/agents)
-  └─► dbUpsertAgent(agentState)
-
-Agent started (POST /api/agents/:key/start)
-  └─► dbUpdateAgentStatus(key, 'running', now)
-
-Each cycle (runAgentCycle)
-  ├─► dbLogEvent(…cycle_start…)
-  ├─► [tool calls]  → dbLogEvent(…tool_call…), dbLogEvent(…tool_result…)
-  ├─► dbLogEvent(…decision…)
-  ├─► dbRecordCycle(key, result)       ← appends to cycle_results
-  └─► dbUpsertAgent(updatedState)      ← updates last_cycle + cycle_count
-
-Agent deleted (DELETE /api/agents/:key)
-  └─► dbRemoveAgent(key)               ← agent row only; history preserved
-
-Log clear (POST /api/logs/clear)
-  └─► dbSetLogClearFloor(maxId)        ← hides old logs, does not delete
-```
-
----
-
-## Risk State Hydration on Restart
-
-When the server restarts, all in-memory P&L counters are zero. To avoid trading over the daily limit after a restart, the server reads today's realised P&L from the DB and restores the risk engine:
-
-```typescript
-// src/main.ts
-const cryptoPnl = dbGetTodayRealizedPnl('crypto', today)
-const forexPnl  = dbGetTodayRealizedPnl('forex',  today)
-const mt5Pnl    = dbGetTodayRealizedPnl('mt5',    today)
-
-hydrateRiskStateFromDb('crypto', cryptoPnl)
-hydrateRiskStateFromDb('forex',  forexPnl)
-hydrateRiskStateFromDb('mt5',    mt5Pnl)
-```
-
-This means the `MAX_DAILY_LOSS_USD` limit survives server restarts within the same calendar day.
-
----
-
-## Maintenance Notes
-
-**Database file:** `data/wolf-fin.db` — excluded from git via `.gitignore`
-
-**Backup:** Copy `data/wolf-fin.db` while server is stopped (or use SQLite `.backup` command for hot copy)
-
-**Inspect manually:**
-```bash
-# Node.js one-liner
-node -e "
-const db = require('better-sqlite3')('data/wolf-fin.db');
-db.prepare('SELECT key, status, cycle_count FROM agents').all().forEach(r => console.log(r));
-"
-
-# Check today's P&L
-node -e "
-const db = require('better-sqlite3')('data/wolf-fin.db');
-const today = new Date().toISOString().slice(0,10);
-const rows = db.prepare(\"SELECT market, SUM(pnl_usd) as pnl FROM cycle_results WHERE date(time)=? AND paper=0 GROUP BY market\").all(today);
-console.log(rows);
-"
-```
-
-**Force-toggle paper mode on an agent:**
-```bash
-node -e "
-const db = require('better-sqlite3')('data/wolf-fin.db');
-const agent = db.prepare('SELECT config FROM agents WHERE key=?').get('mt5:XAUUSD');
-const cfg = JSON.parse(agent.config);
-cfg.paper = false;
-db.prepare('UPDATE agents SET config=? WHERE key=?').run(JSON.stringify(cfg), 'mt5:XAUUSD');
-console.log('Done — paper:', false);
-"
-```
-
-**WAL checkpoint (reclaim disk space after heavy logging):**
-```bash
-node -e "require('better-sqlite3')('data/wolf-fin.db').pragma('wal_checkpoint(TRUNCATE)')"
-```
+| Version | Name | Description |
+|---|---|---|
+| 1 | `core_tables` | watch_symbols, analyses, log_entries, settings, mt5_accounts |
+| 2 | `analyses_extra_columns` | raw_response, llm_thinking, patterns, validation |
+| 3 | `watch_symbols_extra_columns` | system_prompt, strategy |
+| 4 | `log_entries_rename_agent_key` | rename agent_key → symbol_key |
+| 5 | `core_indexes` | Performance indexes on analyses + log_entries |
+| 6 | `proposal_outcomes` | proposal_outcomes table |
+| 7 | `analysis_features_and_market_states` | analysis_features, market_states |
+| 8 | `setup_candidates` | setup_candidates table |
+| 9 | `strategies_table_and_seed` | strategies table + 6 built-in seeds |
+| 10 | `strategy_versions` | strategy definition column + strategy_versions table |
+| 11 | `backtest_tables` | backtest_runs, backtest_trades |
+| 12 | `alert_tables` | alert_rules, alert_firings |

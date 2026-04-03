@@ -4,12 +4,16 @@ import { ToastProvider } from './Toast.tsx'
 import { useAccount, buildAccountLabel, entryToSelectedAccount } from '../contexts/AccountContext.tsx'
 import type { AccountEntry } from '../types/index.ts'
 
-const links = [
-  { to: '/',           label: 'Dashboard'  },
-  { to: '/symbols',    label: 'Watchlist'  },
-  { to: '/history',    label: 'History'    },
-  { to: '/strategies', label: 'Strategies' },
-  { to: '/config',     label: 'Settings'   },
+const NAV_MAIN = [
+  { to: '/',           label: 'Dashboard'   },
+  { to: '/symbols',    label: 'Watchlist'   },
+  { to: '/history',    label: 'History'     },
+  { to: '/strategies', label: 'Strategies'  },
+]
+
+const NAV_TOOLS = [
+  { to: '/config',     label: 'Settings'    },
+  { to: '/account',    label: 'Accounts'    },
 ]
 
 // ── Account selector ──────────────────────────────────────────────────────────
@@ -19,7 +23,6 @@ function AccountSelector() {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
-  // Close on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
@@ -49,17 +52,15 @@ function AccountSelector() {
       <button
         onClick={() => setOpen(o => !o)}
         title={currentLabel ?? 'No account selected'}
-        className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-lg border text-xs transition-colors ${
+        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-xs transition-all ${
           selectedAccount
-            ? 'border-border bg-surface2 text-text hover:border-muted2'
-            : 'border-yellow/50 bg-yellow-dim text-yellow hover:border-yellow animate-pulse'
+            ? 'border-border bg-surface2 text-text hover:border-teal/40'
+            : 'border-yellow/40 bg-yellow/5 text-yellow hover:border-yellow/60 animate-pulse'
         }`}
       >
-        {selectedAccount ? (
-          <span className="w-1.5 h-1.5 rounded-full bg-green flex-shrink-0" />
-        ) : (
-          <span className="w-1.5 h-1.5 rounded-full bg-yellow flex-shrink-0" />
-        )}
+        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+          selectedAccount ? 'bg-teal shadow-[0_0_6px_rgba(0,229,204,0.6)]' : 'bg-yellow'
+        }`} />
         <span className="flex-1 text-left truncate font-mono text-[11px]">
           {currentLabel ?? 'Select account…'}
         </span>
@@ -67,11 +68,11 @@ function AccountSelector() {
       </button>
 
       {open && (
-        <div className="absolute bottom-full left-3 right-3 mb-1 bg-surface border border-border rounded-lg shadow-xl z-50 overflow-hidden">
+        <div className="absolute bottom-full left-3 right-3 mb-1 bg-surface2 border border-border rounded-lg shadow-dropdown z-50 overflow-hidden">
           {accounts.length === 0 && (
             <div className="px-3 py-4 text-xs text-muted text-center">
               No accounts found.<br />
-              <span className="text-muted2">Configure them in Accounts.</span>
+              <span className="text-muted2">Configure in Accounts.</span>
             </div>
           )}
           {accounts.map(entry => {
@@ -85,20 +86,24 @@ function AccountSelector() {
               <button
                 key={entry.id}
                 onClick={() => select(entry)}
-                className={`w-full flex items-center gap-2 px-3 py-2.5 text-xs text-left hover:bg-surface2 transition-colors border-b border-border last:border-0 ${
-                  isSelected ? 'text-green' : 'text-text'
+                className={`w-full flex items-center gap-2 px-3 py-2.5 text-xs text-left hover:bg-surface3 transition-colors border-b border-border/60 last:border-0 ${
+                  isSelected ? 'text-teal' : 'text-text'
                 }`}
               >
-                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${entry.connected ? 'bg-green' : 'bg-muted2'}`} />
+                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                  entry.connected
+                    ? 'bg-teal shadow-[0_0_5px_rgba(0,229,204,0.5)]'
+                    : 'bg-muted2'
+                }`} />
                 <span className="flex-1 truncate font-mono">{label}</span>
-                {isSelected && <span className="text-green text-[10px] flex-shrink-0">✓</span>}
+                {isSelected && <span className="text-teal text-[10px] flex-shrink-0">✓</span>}
               </button>
             )
           })}
           {selectedAccount && (
             <button
               onClick={clear}
-              className="w-full px-3 py-2 text-[11px] text-muted2 hover:text-red hover:bg-surface2 transition-colors border-t border-border text-left"
+              className="w-full px-3 py-2 text-[11px] text-muted2 hover:text-red hover:bg-surface3 transition-colors border-t border-border text-left"
             >
               ✕ Clear selection
             </button>
@@ -109,45 +114,83 @@ function AccountSelector() {
   )
 }
 
+// ── Nav link ──────────────────────────────────────────────────────────────────
+
+function SidebarLink({ to, label, end }: { to: string; label: string; end?: boolean }) {
+  return (
+    <NavLink
+      to={to}
+      end={end}
+      className={({ isActive }) =>
+        `relative flex items-center gap-3 px-5 py-2.5 text-sm font-medium transition-all ${
+          isActive
+            ? 'text-teal bg-teal/8 border-l-2 border-teal'
+            : 'text-muted border-l-2 border-transparent hover:text-text hover:bg-surface2'
+        }`
+      }
+    >
+      {label}
+    </NavLink>
+  )
+}
+
 // ── Layout ────────────────────────────────────────────────────────────────────
 
 export function Layout() {
   const [menuOpen, setMenuOpen] = useState(false)
   const location = useLocation()
 
-  // Close mobile menu on route change
   useEffect(() => { setMenuOpen(false) }, [location.pathname])
 
-  const navLinkClass = ({ isActive }: { isActive: boolean }) =>
-    `px-5 py-2.5 text-sm font-medium transition-colors ${
-      isActive
-        ? 'text-green bg-green-dim border-l-2 border-green'
-        : 'text-muted hover:text-text hover:bg-surface2'
-    }`
-
   const sidebar = (
-    <aside className="w-52 bg-surface border-r border-border flex flex-col flex-shrink-0 h-full">
-      <div className="px-5 py-4 border-b border-border flex items-center justify-between">
-        <span className="text-green font-bold text-base tracking-[2px]">WOLF-FIN</span>
-        {/* Close button — mobile only */}
+    <aside className="w-56 bg-surface flex flex-col flex-shrink-0 h-full" style={{
+      borderRight: '1px solid #1E3352',
+      boxShadow: '1px 0 0 rgba(0,229,204,0.04)',
+    }}>
+
+      {/* ── Logo ── */}
+      <div className="px-5 py-4 flex items-center justify-between" style={{
+        borderBottom: '1px solid #1E3352',
+      }}>
+        <div className="flex items-center gap-2.5">
+          {/* Teal accent square */}
+          <div className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0" style={{
+            background: 'linear-gradient(135deg, #00E5CC 0%, #009B8A 100%)',
+            boxShadow: '0 0 12px rgba(0,229,204,0.35)',
+          }}>
+            <span className="text-[10px] font-black text-[#08111E]">WF</span>
+          </div>
+          <span className="text-text font-bold text-sm tracking-[1.5px] uppercase">Wolf-Fin</span>
+        </div>
         <button
           onClick={() => setMenuOpen(false)}
           className="md:hidden text-muted hover:text-text p-1"
           aria-label="Close menu"
         >✕</button>
       </div>
-      <nav className="flex flex-col py-2 flex-1 overflow-y-auto">
-        {links.map(l => (
-          <NavLink key={l.to} to={l.to} end={l.to === '/'} className={navLinkClass}>
-            {l.label}
-          </NavLink>
+
+      {/* ── Navigation ── */}
+      <nav className="flex-1 overflow-y-auto py-3">
+        <div className="px-5 pb-1.5">
+          <span className="text-[9px] font-semibold uppercase tracking-widest text-muted2">Main</span>
+        </div>
+        {NAV_MAIN.map(l => (
+          <SidebarLink key={l.to} to={l.to} label={l.label} end={l.to === '/'} />
         ))}
-        <NavLink to="/account" className={navLinkClass}>Accounts</NavLink>
+
+        <div className="px-5 pt-4 pb-1.5">
+          <span className="text-[9px] font-semibold uppercase tracking-widest text-muted2">Tools</span>
+        </div>
+        {NAV_TOOLS.map(l => (
+          <SidebarLink key={l.to} to={l.to} label={l.label} />
+        ))}
       </nav>
-      <div className="border-t border-border pt-3">
+
+      {/* ── Account footer ── */}
+      <div style={{ borderTop: '1px solid #1E3352' }} className="pt-3">
         <AccountSelector />
-        <div className="px-5 py-2">
-          <span className="text-xs text-muted2">v1.0.0</span>
+        <div className="px-5 pb-3">
+          <span className="text-[10px] text-muted2">v1.0.0</span>
         </div>
       </div>
     </aside>
@@ -165,7 +208,7 @@ export function Layout() {
         {/* Mobile sidebar overlay */}
         {menuOpen && (
           <div className="fixed inset-0 z-50 flex md:hidden">
-            <div className="absolute inset-0 bg-black/60" onClick={() => setMenuOpen(false)} />
+            <div className="absolute inset-0 bg-black/70" onClick={() => setMenuOpen(false)} />
             <div className="relative z-10 flex-shrink-0">
               {sidebar}
             </div>
@@ -175,20 +218,27 @@ export function Layout() {
         {/* Main content */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
           {/* Mobile top bar */}
-          <div className="md:hidden flex items-center justify-between px-4 py-3 border-b border-border bg-surface flex-shrink-0">
+          <div className="md:hidden flex items-center justify-between px-4 py-3 bg-surface flex-shrink-0" style={{ borderBottom: '1px solid #1E3352' }}>
             <button
               onClick={() => setMenuOpen(true)}
               className="text-muted hover:text-text p-1"
               aria-label="Open menu"
             >
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-1.5">
                 <span className="block w-5 h-px bg-current" />
                 <span className="block w-5 h-px bg-current" />
                 <span className="block w-5 h-px bg-current" />
               </div>
             </button>
-            <span className="text-green font-bold text-sm tracking-[2px]">WOLF-FIN</span>
-            <div className="w-7" /> {/* spacer */}
+            <div className="flex items-center gap-2">
+              <div className="w-5 h-5 rounded flex items-center justify-center" style={{
+                background: 'linear-gradient(135deg, #00E5CC 0%, #009B8A 100%)',
+              }}>
+                <span className="text-[8px] font-black text-[#08111E]">WF</span>
+              </div>
+              <span className="text-text font-bold text-sm tracking-[1.5px] uppercase">Wolf-Fin</span>
+            </div>
+            <div className="w-7" />
           </div>
           <main className="flex-1 overflow-auto">
             <Outlet />

@@ -1,371 +1,257 @@
-# Wolf-Fin — Eraser.io Diagrams
+# Wolf-Fin — Architecture Diagrams
 
-Copy each code block into a new Eraser diagram. Set the diagram type as indicated.
+Copy each code block into an Eraser diagram (eraser.io). Set the diagram type as indicated.
 
 ---
 
-## Diagram 1 — System Architecture
-**Eraser type:** Cloud Architecture Diagram
+## 1. System Architecture (Flowchart)
+
+**Diagram type:** Flowchart
 
 ```
-colorMode bold
-styleMode shadow
-typeface clean
-direction right
+flowchart TD
+  MT5[MetaTrader5 Terminal] -->|MT5 Python API| Bridge[mt5-bridge\nPython FastAPI :8000]
+  Bridge -->|HTTP REST| Adapter[MT5Adapter\nsrc/adapters/mt5.ts]
+  Finnhub[Finnhub API] -->|REST| Calendar[calendar.ts]
+  
+  Adapter --> Analyzer[runAnalysis\nsrc/analyzer/index.ts]
+  Calendar --> Analyzer
 
-// ─── External Actor ──────────────────────────────────────────────────────────
-Trader [icon: user, color: gray, label: "Trader\n(Browser)"]
-
-// ─── Frontend ─────────────────────────────────────────────────────────────────
-Frontend [color: blue] {
-  Dashboard [icon: monitor, color: blue, label: "Dashboard\nReact + Vite"]
-  AgentsPage [icon: list, color: blue, label: "Agents Page\nCreate / Control"]
-  ReportsPage [icon: bar-chart-2, color: blue, label: "Reports &\nPositions"]
-  SettingsPage [icon: settings, color: blue, label: "Settings\nAPI Keys"]
-}
-
-// ─── Backend ──────────────────────────────────────────────────────────────────
-Backend [color: green] {
-  API [icon: server, color: green, label: "Fastify API\nREST Endpoints"]
-  AgentEngine [icon: cpu, color: green, label: "Agent Engine\nLLM Loop"]
-  Scheduler [icon: clock, color: green, label: "Scheduler\nnode-cron"]
-  Guardrails [icon: shield, color: green, label: "Guardrails\nRisk Controls"]
-  SQLite [icon: database, color: green, label: "SQLite\ndata/wolf-fin.db"]
-}
-
-// ─── LLM Providers ────────────────────────────────────────────────────────────
-LLM [color: purple] {
-  Anthropic [icon: cloud, color: purple, label: "Anthropic\nClaude API"]
-  OpenRouter [icon: cloud, color: purple, label: "OpenRouter\nMulti-LLM Gateway"]
-}
-
-// ─── MT5 Stack ────────────────────────────────────────────────────────────────
-MT5Stack [color: orange] {
-  Bridge [icon: terminal, color: orange, label: "MT5 Bridge\nPython FastAPI :8000"]
-  MT5Terminal [icon: monitor, color: orange, label: "MT5 Terminal\nWindows Client"]
-  EquitiBroker [icon: server, color: orange, label: "Equiti Broker\nLive / Demo Server"]
-}
-
-// ─── Exchanges ────────────────────────────────────────────────────────────────
-Exchanges [color: red] {
-  Binance [icon: dollar-sign, color: red, label: "Binance\nCrypto Spot"]
-  Alpaca [icon: trending-up, color: red, label: "Alpaca\nForex Paper/Live"]
-}
-
-// ─── Market Data ──────────────────────────────────────────────────────────────
-MarketData [color: yellow] {
-  TwelveData [icon: bar-chart-2, color: yellow, label: "Twelve Data\nForex Candles"]
-  CoinGecko [icon: pie-chart, color: yellow, label: "CoinGecko\nMarket Cap"]
-  Finnhub [icon: calendar, color: yellow, label: "Finnhub\nEcon Calendar"]
-  CryptoPanic [icon: rss, color: yellow, label: "CryptoPanic\nCrypto News"]
-  AltMe [icon: activity, color: yellow, label: "Alternative.me\nFear & Greed"]
-}
-
-// ─── Connections ──────────────────────────────────────────────────────────────
-Trader <> Dashboard: Browser
-Trader <> AgentsPage: Browser
-Trader <> ReportsPage: Browser
-Trader <> SettingsPage: Browser
-
-Dashboard <> API: HTTP /api/status
-AgentsPage <> API: HTTP /api/agents
-ReportsPage <> API: HTTP /api/reports
-SettingsPage <> API: HTTP /api/keys
-
-API <> AgentEngine: runAgentCycle()
-API <> SQLite: Read / Write
-Scheduler > AgentEngine: Trigger cycle
-AgentEngine > Guardrails: validateOrder()
-AgentEngine > SQLite: Record cycle + logs
-
-AgentEngine > Anthropic: Claude API (tool-use)
-AgentEngine > OpenRouter: OpenAI-compat API
-
-AgentEngine > Bridge: HTTP localhost:8000
-Bridge <> MT5Terminal: MetaTrader5 Python lib
-MT5Terminal <> EquitiBroker: MT5 Protocol
-
-AgentEngine > Binance: Binance SDK
-AgentEngine > Alpaca: Alpaca REST API
-AgentEngine > TwelveData: REST API
-AgentEngine > CoinGecko: REST API
-AgentEngine > Finnhub: REST API
-AgentEngine > CryptoPanic: REST API
-AgentEngine > AltMe: REST API
+  Analyzer --> Features[computeFeatures\nsrc/engine/]
+  Features --> MarketState[classifyMarketState\nsrc/market/]
+  MarketState --> Detectors[6 Detectors\nsrc/detectors/]
+  Detectors --> Scoring[Scoring Engine\nsrc/scoring/]
+  Scoring --> LLM[LLM Provider\nAnthropic / OpenRouter\nOllama / OpenAI]
+  LLM --> Result[AnalysisResult]
+  Result --> DB[(SQLite\ndata/wolf-fin.db)]
+  Result --> SSE[SSE Broadcast\n/api/analyses/stream]
+  
+  DB --> Server[Fastify Server\nsrc/server/index.ts :3000]
+  Server -->|Static + API| Frontend[React Frontend\nVite :5173 dev]
+  SSE --> Frontend
 ```
 
 ---
 
-## Diagram 2 — Agent Trading Cycle
-**Eraser type:** Sequence Diagram
+## 2. Analysis Pipeline (Sequence Diagram)
+
+**Diagram type:** Sequence
 
 ```
-typeface clean
-
-title Wolf-Fin — Agent Trading Cycle
-
-Trader [icon: user, color: gray]
-Frontend [icon: monitor, color: blue]
-Backend [icon: server, color: green]
-Claude [icon: cloud, color: purple, label: "Claude / OpenRouter"]
-Bridge [icon: terminal, color: orange, label: "MT5 Bridge"]
-MT5 [icon: monitor, color: orange, label: "MT5 Terminal"]
-Guardrails [icon: shield, color: green]
-DB [icon: database, color: green]
-
-Trader > Frontend: Click "Trigger" or scheduler fires
-Frontend > Backend: POST /api/agents/mt5:XAUUSD/trigger
-Backend > Backend: tryAcquireCycleLock()
-Backend > DB: logEvent(cycle_start)
-Backend > Claude: System prompt + tools (iteration 1)
-
-activate Claude
-Claude > Backend: tool_use: get_snapshot(XAUUSD, mt5)
-deactivate Claude
-
-Backend > Bridge: GET /snapshot/XAUUSD?accountId=1111343
-Bridge > MT5: mt5.copy_rates_from_pos() × 4 timeframes
-MT5 --> Bridge: OHLCV candles M1/M15/H1/H4
-Bridge --> Backend: MarketSnapshot JSON
-Backend > DB: logEvent(tool_result)
-Backend > Claude: tool_result (price, candles, indicators, account)
-
-activate Claude
-Claude > Backend: tool_use: get_order_book(XAUUSD, mt5)
-deactivate Claude
-
-Backend > Bridge: GET /orderbook/XAUUSD
-Bridge --> Backend: bids/asks (empty for retail broker)
-Backend > Claude: tool_result
-
-activate Claude
-Claude > Backend: tool_use: place_order(SELL, 0.01, XAUUSD, stopPips=40)
-deactivate Claude
-
-Backend > Guardrails: validateMt5Order(params, spread, sessionOpen)
-Guardrails --> Backend: { ok: true }
-
-alt paper: false (LIVE)
-  Backend > Bridge: POST /order {action:SELL, volume:0.01, sl:5052.00}
-  Bridge > MT5: mt5.order_send(request)
-  MT5 --> Bridge: retcode 10009 (TRADE_RETCODE_DONE)
-  Bridge --> Backend: { deal: 987654, order: 123456, price: 5012.50 }
-  Backend > DB: logEvent(tool_result)
-  Backend > Claude: tool_result { status: FILLED, orderId: 123456 }
-else paper: true (PAPER)
-  Backend --> Claude: tool_result { status: PAPER_FILLED, orderId: simulated }
-end
-
-activate Claude
-Claude > Backend: end_turn\nDECISION: SELL 0.01 @ 5012.5\nREASON: Bearish EMA cross…
-deactivate Claude
-
-Backend > DB: dbRecordCycle(agent_key, result)
-Backend > DB: logEvent(decision)
-Backend > DB: releaseCycleLock()
-Backend --> Frontend: Cycle complete
-Frontend --> Trader: Decision shown in log terminal
+sequence
+  Dashboard -> Server: POST /api/symbols/:key/analyze
+  Server -> Analyzer: runAnalysis(key)
+  Analyzer -> MT5Bridge: GET /candles/XAUUSD?timeframe=H1&count=200
+  MT5Bridge -> MT5: copy_rates_from_pos
+  MT5Bridge --> Analyzer: { candles: [...] }
+  Analyzer -> Finnhub: GET news + calendar
+  Finnhub --> Analyzer: { news, events }
+  Analyzer -> FeatureEngine: computeFeatures(candles, config)
+  FeatureEngine --> Analyzer: FeatureSnapshot (40+ indicators)
+  Analyzer -> MarketClassifier: classifyMarketState(features, context)
+  MarketClassifier --> Analyzer: MarketState (regime, direction, risk)
+  Analyzer -> Detectors: run 6 detectors in parallel
+  Detectors --> Analyzer: SetupCandidate[] (6 results)
+  Analyzer -> ScoringEngine: score each candidate (9 components)
+  ScoringEngine --> Analyzer: scored + tiered candidates
+  Analyzer -> LLM: buildPrompt(topCandidate, context, strategy)
+  LLM --> Analyzer: AnalysisResult JSON
+  Analyzer -> DB: persist features, state, candidates, analysis
+  Analyzer -> AlertEngine: evaluate alert rules
+  Analyzer --> Server: AnalysisResult
+  Server -> SSE: broadcast { symbolKey, analysisId }
+  SSE --> Dashboard: event → reload analysis
 ```
 
 ---
 
-## Diagram 3 — Functional Flow (User Journey)
-**Eraser type:** Flowchart
+## 3. Database Schema (ER Diagram)
+
+**Diagram type:** Entity Relationship
 
 ```
-typeface clean
-colorMode bold
+erDiagram
+  watch_symbols {
+    text key PK
+    text symbol
+    text market
+    integer mt5_account_id
+    integer schedule_enabled
+    text indicator_config
+    text candle_config
+    text llm_provider
+    text strategy
+  }
 
-// ─── Setup Phase ──────────────────────────────────────────────────────────────
-Start [shape: oval, color: green, label: "User Opens\nWolf-Fin"]
-ConfigureKeys [shape: rectangle, color: blue, label: "Settings Page\nAdd API Keys\n(Anthropic / OpenRouter\nBinance / Alpaca)"]
-CreateAgent [shape: rectangle, color: blue, label: "Agents Page\nCreate Agent\n• Symbol (XAUUSD)\n• Market (MT5)\n• MT5 Account\n• LLM Provider\n• Paper / Live\n• Schedule interval"]
-StartAgent [shape: rectangle, color: blue, label: "Click Start\n→ Scheduler activates"]
+  analyses {
+    integer id PK
+    text symbol_key FK
+    text time
+    text bias
+    text summary
+    text proposal
+    text indicators
+    text candles
+    text llm_provider
+    text error
+  }
 
-// ─── Cycle Trigger ────────────────────────────────────────────────────────────
-TriggerType [shape: diamond, color: green, label: "Cycle Trigger"]
-ManualTrigger [shape: rectangle, color: green, label: "Manual\nClick Trigger"]
-ScheduledTrigger [shape: rectangle, color: green, label: "Scheduled\nCron fires every N min"]
-AutonomousTrigger [shape: rectangle, color: green, label: "Autonomous\nAuto + session check"]
+  analysis_features {
+    integer id PK
+    integer analysis_id FK
+    text symbol_key
+    text data
+  }
 
-// ─── Risk Gate ────────────────────────────────────────────────────────────────
-RiskGate [shape: diamond, color: red, label: "Daily Loss\nLimit Hit?"]
-HoldRisk [shape: rectangle, color: red, label: "HOLD\nLog: guardrail_block"]
+  market_states {
+    integer id PK
+    integer analysis_id FK
+    text symbol_key
+    text regime
+    text direction
+    integer direction_strength
+    text volatility
+    text session_quality
+    text context_risk
+    text data
+  }
 
-// ─── LLM Analysis Loop ────────────────────────────────────────────────────────
-BuildPrompt [shape: rectangle, color: purple, label: "Build System Prompt\n• Strategy rules\n• Recent performance\n• Custom prompt"]
-SendToLLM [shape: rectangle, color: purple, label: "Send to LLM\n(Claude or OpenRouter model)"]
-LLMResponse [shape: diamond, color: purple, label: "LLM Response\nType?"]
-ToolCall [shape: rectangle, color: purple, label: "Tool Call\n• get_snapshot\n• get_order_book\n• get_recent_trades\n• get_open_orders"]
-ExecuteTool [shape: rectangle, color: green, label: "Execute Tool\n→ MT5 Bridge / Exchange\nReturn data to LLM"]
-PlaceOrderCall [shape: rectangle, color: orange, label: "Tool Call\nplace_order()\nor cancel_order()"]
-MaxIter [shape: diamond, color: purple, label: "Max iterations\nreached?"]
+  setup_candidates {
+    integer id PK
+    integer analysis_id FK
+    text symbol_key
+    text detector
+    integer found
+    integer score
+    text tier
+    text data
+  }
 
-// ─── Order Validation ─────────────────────────────────────────────────────────
-Validate [shape: diamond, color: red, label: "Guardrail\nCheck Pass?"]
-BlockOrder [shape: rectangle, color: red, label: "Reject Order\nReturn error to LLM\nLLM decides: HOLD"]
+  strategies {
+    integer id PK
+    text key
+    text name
+    text instructions
+    integer is_builtin
+  }
 
-// ─── Execution ────────────────────────────────────────────────────────────────
-PaperMode [shape: diamond, color: orange, label: "Paper\nMode?"]
-SimulatedFill [shape: rectangle, color: orange, label: "PAPER_FILLED\n(Simulated — no real order)"]
-LiveExecution [shape: rectangle, color: orange, label: "Send to Exchange\nMT5 Bridge → MT5 Terminal\nor Binance / Alpaca API"]
-OrderResult [shape: rectangle, color: orange, label: "Order Confirmed\nretcode 10009\nDeal ticket returned"]
+  backtest_runs {
+    integer id PK
+    text symbol_key
+    text config
+    text status
+    text metrics
+  }
 
-// ─── Final Decision ───────────────────────────────────────────────────────────
-EndTurn [shape: rectangle, color: purple, label: "LLM end_turn\nExtract DECISION text"]
-RecordResult [shape: rectangle, color: green, label: "Record to DB\n• cycle_results table\n• log_entries table\n• Update agent state"]
+  backtest_trades {
+    integer id PK
+    integer run_id FK
+    text direction
+    real entry_price
+    real pips
+  }
 
-// ─── Monitoring ───────────────────────────────────────────────────────────────
-Dashboard [shape: rectangle, color: blue, label: "Dashboard Updates\n• Decision in log terminal\n• Stats cards refresh\n• P&L chart updates"]
-End [shape: oval, color: green, label: "Cycle Complete\nNext cycle waits"]
+  alert_rules {
+    integer id PK
+    text symbol_key
+    text condition_type
+    text condition_value
+    integer enabled
+  }
 
-// ─── Connections ──────────────────────────────────────────────────────────────
-Start > ConfigureKeys
-ConfigureKeys > CreateAgent
-CreateAgent > StartAgent
-StartAgent > TriggerType
+  alert_firings {
+    integer id PK
+    integer rule_id FK
+    text symbol_key
+    integer analysis_id
+    integer acknowledged
+  }
 
-TriggerType > ManualTrigger: manual
-TriggerType > ScheduledTrigger: scheduled
-TriggerType > AutonomousTrigger: autonomous
+  proposal_outcomes {
+    integer id PK
+    integer analysis_id FK
+    text symbol_key
+    text status
+    real pips_result
+  }
 
-ManualTrigger > RiskGate
-ScheduledTrigger > RiskGate
-AutonomousTrigger > RiskGate
-
-RiskGate > HoldRisk: Yes
-RiskGate > BuildPrompt: No
-
-BuildPrompt > SendToLLM
-SendToLLM > LLMResponse
-
-LLMResponse > ToolCall: tool_use (data)
-LLMResponse > PlaceOrderCall: tool_use (order)
-LLMResponse > EndTurn: end_turn
-
-ToolCall > ExecuteTool
-ExecuteTool > SendToLLM
-
-PlaceOrderCall > Validate
-Validate > BlockOrder: Fail
-Validate > PaperMode: Pass
-
-BlockOrder > SendToLLM
-
-MaxIter > EndTurn: Yes
-MaxIter > SendToLLM: No
-
-PaperMode > SimulatedFill: Yes
-PaperMode > LiveExecution: No
-
-SimulatedFill > SendToLLM
-LiveExecution > OrderResult
-OrderResult > SendToLLM
-
-EndTurn > RecordResult
-HoldRisk > RecordResult
-RecordResult > Dashboard
-Dashboard > End
-```
-
----
-
-## Diagram 4 — Data Model (Entity Relationship)
-**Eraser type:** Entity Relationship Diagram
-
-```
-typeface clean
-colorMode bold
-
-agents [color: green] {
-  key [pk]
-  config
-  status
-  cycle_count
-  started_at
-  last_cycle
-}
-
-cycle_results [color: blue] {
-  id [pk]
-  agent_key [ref: > agents.key]
-  symbol
-  market
-  paper
-  decision
-  reason
-  time
-  error
-  pnl_usd
-}
-
-log_entries [color: purple] {
-  id [pk]
-  time
-  agent_key [ref: > agents.key]
-  level
-  event
-  message
-  data
-}
-
-settings [color: orange] {
-  key [pk]
-  value
-}
+  watch_symbols ||--o{ analyses : "has"
+  analyses ||--|| analysis_features : "has"
+  analyses ||--|| market_states : "has"
+  analyses ||--o{ setup_candidates : "has"
+  analyses ||--o{ proposal_outcomes : "has"
+  backtest_runs ||--o{ backtest_trades : "has"
+  alert_rules ||--o{ alert_firings : "has"
 ```
 
 ---
 
-## Diagram 5 — Deployment & Infrastructure
-**Eraser type:** Cloud Architecture Diagram
+## 4. Frontend Page Structure (Flowchart)
+
+**Diagram type:** Flowchart
 
 ```
-colorMode bold
-styleMode shadow
-typeface clean
+flowchart TD
+  App --> Dashboard
+  App --> SymbolDetail
+  App --> Strategies
+  App --> Settings
+  App --> Logs
+  App --> Calendar
 
-// ─── Windows Machine (flat — all nodes one level deep) ────────────────────────
-WindowsMachine [color: gray] {
-  MT5Terminal [icon: monitor, color: orange, label: "MetaTrader 5\nTerminal"]
-  PyBridge [icon: terminal, color: orange, label: "Python FastAPI\nuvicorn :8000\nmt5-bridge/main.py"]
-  NodeServer [icon: server, color: green, label: "Node.js :3000\nFastify Backend\nnpm start"]
-  NodeDB [icon: database, color: green, label: "SQLite\ndata/wolf-fin.db"]
-  FrontendDist [icon: globe, color: blue, label: "React SPA\nfrontend-dist/\nserved by Fastify"]
-  EnvFile [icon: file, color: gray, label: ".env\nAPI Keys & Config"]
-  AccountsFile [icon: file, color: gray, label: "mt5_accounts.json\nRegistered MT5 accounts"]
-}
+  Dashboard --> SymbolGrid[Symbol Grid\nbias + direction + R:R per symbol]
+  SymbolGrid -->|click| SymbolDetail
 
-// ─── Browser ──────────────────────────────────────────────────────────────────
-Browser [icon: chrome, color: blue, label: "Chrome / Browser\nlocalhost:3000"]
+  SymbolDetail --> AnalysisTab[Analysis Tab\nchart + LLM proposal + history]
+  SymbolDetail --> SetupsTab[Setups Tab\n6 detector cards + score breakdown]
+  SymbolDetail --> MarketStateTab[Market State Tab\nregime + direction + risk]
+  SymbolDetail --> AlertsTab[Alerts Tab\nrules CRUD + firings]
 
-// ─── External APIs ────────────────────────────────────────────────────────────
-ExternalAPIs [color: purple] {
-  AnthropicCloud [icon: cloud, color: purple, label: "Anthropic API\napi.anthropic.com"]
-  OpenRouterCloud [icon: cloud, color: purple, label: "OpenRouter\nopenrouter.ai"]
-  BinanceCloud [icon: cloud, color: red, label: "Binance\napi.binance.com"]
-  AlpacaCloud [icon: cloud, color: red, label: "Alpaca\npaper-api.alpaca.markets"]
-  DataAPIs [icon: cloud, color: yellow, label: "Data APIs\nTwelve Data · CoinGecko\nFinnhub · CryptoPanic"]
-}
+  Strategies --> BuiltinList[Built-in Strategies\n6 pre-seeded]
+  Strategies --> CustomList[Custom Strategies\nCRUD]
 
-// ─── Broker ───────────────────────────────────────────────────────────────────
-Broker [icon: server, color: orange, label: "Equiti Broker\nequitibrokerage.com\nMT5 Protocol"]
+  Settings --> LLMConfig[LLM Provider/Model]
+  Settings --> KeysConfig[API Keys]
+  Settings --> BridgeConfig[MT5 Bridge Config]
+```
 
-// ─── Connections ──────────────────────────────────────────────────────────────
-Browser <> FrontendDist: localhost:3000
-Browser <> NodeServer: HTTP REST
+---
 
-NodeServer <> NodeDB: better-sqlite3
-NodeServer > PyBridge: HTTP 127.0.0.1:8000
-NodeServer > AnthropicCloud: HTTPS Claude API
-NodeServer > OpenRouterCloud: HTTPS OpenAI-compat
-NodeServer > BinanceCloud: HTTPS REST
-NodeServer > AlpacaCloud: HTTPS REST
-NodeServer > DataAPIs: HTTPS REST
+## 5. Setup Detection & Scoring (Flowchart)
 
-PyBridge <> MT5Terminal: MetaTrader5 IPC
-MT5Terminal <> Broker: MT5 Protocol
+**Diagram type:** Flowchart
 
-EnvFile > NodeServer: process.env
-AccountsFile > PyBridge: load_accounts_config
+```
+flowchart LR
+  Features[FeatureSnapshot] --> D1[trendPullback]
+  Features --> D2[breakoutRetest]
+  Features --> D3[liquiditySweep]
+  Features --> D4[openingRange]
+  Features --> D5[rangeFade]
+  Features --> D6[sessionReversal]
+
+  D1 --> Score1[Score 0-100]
+  D2 --> Score2[Score 0-100]
+  D3 --> Score3[Score 0-100]
+  D4 --> Score4[Score 0-100]
+  D5 --> Score5[Score 0-100]
+  D6 --> Score6[Score 0-100]
+
+  Score1 --> Tier{Tier}
+  Score2 --> Tier
+  Score3 --> Tier
+  Score4 --> Tier
+  Score5 --> Tier
+  Score6 --> Tier
+
+  Tier -->|score >= 65| Valid[valid]
+  Tier -->|score 45-64| Watchlist[watchlist]
+  Tier -->|score 25-44| LowQuality[low_quality]
+  Tier -->|score < 25| Rejected[rejected]
+
+  Valid --> TopCandidate[Top Candidate → LLM Prompt]
+  Watchlist --> Store[(DB: setup_candidates)]
+  LowQuality --> Store
+  Rejected --> Store
+  TopCandidate --> Store
 ```

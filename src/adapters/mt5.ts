@@ -686,6 +686,8 @@ export class MT5Adapter implements IMarketAdapter {
     price: { bid: number; ask: number; mid: number; spread: number }
     candles: { m1: Candle[]; m5: Candle[]; m15: Candle[]; m30: Candle[]; h1: Candle[]; h4: Candle[] }
     symbolInfo: { point: number; digits: number; volumeMin: number; volumeStep: number; contractSize: number }
+    accountBalance: number
+    accountEquity: number
   }> {
     const snap = await mt5Get<BridgeSnapshot>(this.buildUrl(`/snapshot/${toMt5Symbol(symbol)}`))
 
@@ -745,6 +747,8 @@ export class MT5Adapter implements IMarketAdapter {
         volumeStep: info.volume_step,
         contractSize: info.trade_contract_size || 100_000,
       },
+      accountBalance: snap.account.balance,
+      accountEquity: snap.account.equity,
     }
   }
 }

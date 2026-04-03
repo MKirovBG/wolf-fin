@@ -135,6 +135,7 @@ function GeneralTab({ sym, onSave }: { sym: WatchSymbol; onSave: (patch: Partial
   const [endUtc, setEndUtc]           = useState(sym.scheduleEndUtc ?? '')
   const [news, setNews]               = useState(sym.contextConfig?.forexNews !== false)
   const [calendar, setCalendar]       = useState(sym.contextConfig?.economicCalendar !== false)
+  const [notifyMode, setNotifyMode]   = useState<'all' | 'trade_only' | 'off'>(sym.notifyMode ?? 'all')
   const [saving, setSaving]           = useState(false)
   const [saved, setSaved]             = useState(false)
 
@@ -149,6 +150,7 @@ function GeneralTab({ sym, onSave }: { sym: WatchSymbol; onSave: (patch: Partial
         scheduleStartUtc:   schedule && startUtc ? startUtc : undefined,
         scheduleEndUtc:     schedule && endUtc   ? endUtc   : undefined,
         contextConfig:      { forexNews: news, economicCalendar: calendar } satisfies ContextConfig,
+        notifyMode,
       }
       await onSave(patch)
       setSaved(true); setTimeout(() => setSaved(false), 3000)
@@ -234,6 +236,38 @@ function GeneralTab({ sym, onSave }: { sym: WatchSymbol; onSave: (patch: Partial
           <Toggle checked={news} onChange={setNews} label="Forex news sentiment (Finnhub)" />
           <Toggle checked={calendar} onChange={setCalendar} label="Economic calendar events" />
         </div>
+      </section>
+
+      {/* Telegram Notifications */}
+      <section className="bg-surface border border-border rounded-xl p-5 space-y-4">
+        <SectionTitle>Telegram Notifications</SectionTitle>
+        <p className="text-xs text-muted">Control when this symbol sends notifications to Telegram. Requires Telegram bot to be configured in Settings.</p>
+        <div className="flex flex-wrap gap-2">
+          {([
+            { value: 'all' as const, label: 'Every Analysis', desc: 'Notify on every completed analysis' },
+            { value: 'trade_only' as const, label: 'Trade Proposals Only', desc: 'Only notify when a trade setup is found' },
+            { value: 'off' as const, label: 'Off', desc: 'No Telegram notifications for this symbol' },
+          ]).map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => setNotifyMode(opt.value)}
+              className={`px-4 py-2.5 text-sm rounded-lg border transition-colors text-left ${
+                notifyMode === opt.value
+                  ? 'border-green text-green bg-green/10'
+                  : 'border-border text-muted hover:border-muted2 hover:text-text'
+              }`}
+              title={opt.desc}
+            >
+              {opt.value === 'all' && '🔔 '}{opt.value === 'trade_only' && '📊 '}{opt.value === 'off' && '🔕 '}
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-muted2">
+          {notifyMode === 'all' && 'You will receive a Telegram message for every analysis — including bias, indicators, and trade proposals.'}
+          {notifyMode === 'trade_only' && 'You will only be notified when the AI finds an actionable trade setup with entry, SL, and TP levels.'}
+          {notifyMode === 'off' && 'No Telegram messages will be sent for this symbol. Analyses still run and are saved.'}
+        </p>
       </section>
 
       <div className="flex items-center gap-3">

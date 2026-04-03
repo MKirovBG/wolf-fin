@@ -79,13 +79,13 @@ export function dbUpsertSymbol(sym: WatchSymbol): void {
       key, symbol, market, display_name, mt5_account_id,
       schedule_enabled, schedule_interval_ms, schedule_start_utc, schedule_end_utc,
       indicator_config, candle_config, context_config,
-      llm_provider, llm_model, strategy, system_prompt,
+      llm_provider, llm_model, strategy, system_prompt, notify_mode,
       created_at, last_analysis_at
     ) VALUES (
       @key, @symbol, @market, @displayName, @mt5AccountId,
       @scheduleEnabled, @scheduleIntervalMs, @scheduleStartUtc, @scheduleEndUtc,
       @indicatorConfig, @candleConfig, @contextConfig,
-      @llmProvider, @llmModel, @strategy, @systemPrompt,
+      @llmProvider, @llmModel, @strategy, @systemPrompt, @notifyMode,
       @createdAt, @lastAnalysisAt
     )
     ON CONFLICT(key) DO UPDATE SET
@@ -104,6 +104,7 @@ export function dbUpsertSymbol(sym: WatchSymbol): void {
       llm_model            = excluded.llm_model,
       strategy             = excluded.strategy,
       system_prompt        = excluded.system_prompt,
+      notify_mode          = excluded.notify_mode,
       last_analysis_at     = excluded.last_analysis_at
   `).run({
     key:                sym.key,
@@ -122,6 +123,7 @@ export function dbUpsertSymbol(sym: WatchSymbol): void {
     llmModel:           sym.llmModel ?? null,
     strategy:           sym.strategy ?? null,
     systemPrompt:       sym.systemPrompt ?? null,
+    notifyMode:         sym.notifyMode ?? 'all',
     createdAt:          sym.createdAt,
     lastAnalysisAt:     sym.lastAnalysisAt ?? null,
   })
@@ -155,6 +157,7 @@ function rowToSymbol(row: Record<string, unknown>): WatchSymbol {
     llmModel:           (row.llm_model as string | null) ?? undefined,
     strategy:           (row.strategy as string | null) ?? undefined,
     systemPrompt:       (row.system_prompt as string | null) ?? undefined,
+    notifyMode:         (row.notify_mode as 'all' | 'trade_only' | 'off' | null) ?? undefined,
     createdAt:          row.created_at as string,
     lastAnalysisAt:     (row.last_analysis_at as string | null) ?? undefined,
   } as WatchSymbol

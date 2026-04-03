@@ -61,6 +61,7 @@ export interface WatchSymbol {
   llmModel?: string
   strategy?: string        // preset strategy id (price_action, ict, trend, swing, scalping, smc) or '' for default
   systemPrompt?: string    // custom system prompt — overrides strategy if set
+  notifyMode?: 'all' | 'trade_only' | 'off'  // Telegram notification mode (default: 'all')
   createdAt: string
   lastAnalysisAt?: string
 }

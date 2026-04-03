@@ -39,7 +39,7 @@ import { getAgentState } from '../analyzer/state.js'
 import { syncSchedule, stopSchedule, getScheduledKeys, startDailyDigest } from '../scheduler/index.js'
 import { runDailyDigest } from '../analyzer/memory.js'
 import { MT5Adapter, setBridgeActiveLogin } from '../adapters/mt5.js'
-import { getTelegramConfig, setTelegramConfig, testTelegramConnection, sendTelegramMessage } from '../adapters/telegram.js'
+import { getTelegramConfig, setTelegramConfig, testTelegramConnection, sendTelegramMessage, startTelegramPolling } from '../adapters/telegram.js'
 import { getPlatformLLMModel, getPlatformLLMProvider, getOpenAITokenStatus, getOpenAIAccessToken } from '../llm/index.js'
 import type { WatchSymbol } from '../types.js'
 import { fetchCalendarForDisplay } from '../adapters/calendar.js'
@@ -765,6 +765,8 @@ export async function startServer(): Promise<void> {
   app.post('/api/telegram/config', async (req, reply) => {
     const body = req.body as { botToken?: string; chatId?: string; enabled?: boolean }
     setTelegramConfig(body)
+    // Restart polling if config changed (picks up new token/enabled state)
+    startTelegramPolling()
     return reply.send({ ok: true })
   })
 
@@ -1543,4 +1545,7 @@ export async function startServer(): Promise<void> {
 
   // Start daily memory digest timer
   startDailyDigest()
+
+  // Start Telegram callback polling (for trade approve/reject buttons)
+  startTelegramPolling()
 }

@@ -11,7 +11,7 @@ import { getLLMProvider, getModelForConfig } from '../llm/index.js'
 import { buildAnalysisPrompt, buildSystemPrompt } from './prompt.js'
 import { validateProposal } from './validate.js'
 import { extractAndSaveMemories } from './memory.js'
-import { sendAlertNotification, sendTradeProposal, getTelegramConfig } from '../adapters/telegram.js'
+import { sendAlertNotification, sendTradeProposal, sendAnalysisCompleted, getTelegramConfig } from '../adapters/telegram.js'
 import { dbSaveAnalysis, dbSetLastAnalysisAt, dbGetSymbol, dbGetStrategy, dbCreateOutcome, dbSaveFeatures, dbSaveMarketState, dbSaveCandidates, dbGetAlertRules, dbFireAlert, dbGetSymbolStrategies, dbGetActiveRules, dbGetMemories, dbSaveMemory } from '../db/index.js'
 import { logEvent } from '../server/state.js'
 import { buildSessionContext } from '../adapters/session.js'
@@ -507,20 +507,54 @@ export async function runAnalysis(symbolKey: string): Promise<AnalysisResult> {
           dbFireAlert(rule.id!, symbolKey, msg, primaryResult.id)
           logEvent(symbolKey, 'info', 'detectors_run', `Alert fired: ${rule.name} — ${msg}`)
           // Send to Telegram (async, non-blocking)
-          sendAlertNotification(symbolKey, rule.name, msg).catch(() => {})
+          sendAlertNotification(symbolKey, rule.name, msg).catch(e => log.warn({ err: String(e) }, 'Telegram alert notification failed'))
         }
       }
     } catch (e) {
       log.warn({ err: String(e) }, 'alert evaluation failed')
     }
 
-    // Send trade proposal to Telegram if available
-    if (primaryResult.tradeProposal?.direction && getTelegramConfig().enabled) {
-      const tp = primaryResult.tradeProposal
-      sendTradeProposal(
-        symbolKey, tp.direction!, tp.entryZone.low, tp.entryZone.high,
-        tp.stopLoss, tp.takeProfits, tp.riskReward, tp.confidence, tp.reasoning,
-      ).catch(() => {})
+    // Send Telegram notifications if enabled (respects per-symbol notifyMode)
+    const notifyMode = sym.notifyMode ?? 'all'
+    const hasTradeSetup = !!primaryResult.tradeProposal?.direction
+    if (getTelegramConfig().enabled && notifyMode !== 'off') {
+      // Compute position sizing for Telegram (mirrors frontend PositionSizingCalc)
+      let computedVolume = 0.01
+      const si = data.symbolInfo
+      if (hasTradeSetup && data.accountBalance > 0) {
+        const tp = primaryResult.tradeProposal!
+        const entry = (tp.entryZone.low + tp.entryZone.high) / 2
+        const pipMultiplier = (si.digits === 3 || si.digits === 5) ? 10 : 1
+        const pipSize = si.point * pipMultiplier
+        const slDistPips = Math.abs(entry - tp.stopLoss) / pipSize
+        const pipValue = pipSize * si.contractSize
+        const riskPct = 1  // default 1% risk
+        const riskAmount = data.accountBalance * (riskPct / 100)
+        const rawLots = slDistPips > 0 ? riskAmount / (slDistPips * pipValue) : 0
+        computedVolume = Math.max(si.volumeMin, Math.floor(rawLots / si.volumeStep) * si.volumeStep)
+      }
+
+      const shouldNotify = notifyMode === 'all' || (notifyMode === 'trade_only' && hasTradeSetup)
+
+      if (shouldNotify) {
+        // Send analysis summary
+        sendAnalysisCompleted(
+          symbolKey, primaryResult.bias, primaryResult.summary,
+          hasTradeSetup, primaryResult.strategyKey,
+          primaryResult.indicators, primaryResult.timeframe,
+          data.accountBalance, data.accountEquity,
+        ).catch(e => log.warn({ err: String(e) }, 'Telegram analysis notification failed'))
+
+        // Send detailed trade proposal if available
+        if (hasTradeSetup) {
+          const tp = primaryResult.tradeProposal!
+          sendTradeProposal(
+            symbolKey, tp.direction!, tp.entryZone.low, tp.entryZone.high,
+            tp.stopLoss, tp.takeProfits, tp.riskReward, tp.confidence, tp.reasoning,
+            computedVolume, data.accountBalance,
+          ).catch(e => log.warn({ err: String(e) }, 'Telegram trade proposal failed'))
+        }
+      }
     }
 
     const elapsed = Date.now() - startTime

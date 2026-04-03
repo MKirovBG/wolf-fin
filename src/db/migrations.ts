@@ -461,6 +461,14 @@ const MIGRATIONS: Migration[] = [
     `),
   },
 
+  {
+    version: 22,
+    name: 'symbol_notify_mode',
+    run: (db) => db.exec(`
+      ALTER TABLE watch_symbols ADD COLUMN notify_mode TEXT DEFAULT 'all';
+    `),
+  },
+
 ]
 
 // ── Runner ─────────────────────────────────────────────────────────────────────

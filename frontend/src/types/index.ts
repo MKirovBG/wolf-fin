@@ -67,6 +67,7 @@ export interface WatchSymbol {
   llmModel?: string
   strategy?: string
   systemPrompt?: string
+  notifyMode?: 'all' | 'trade_only' | 'off'
   createdAt: string
   lastAnalysisAt?: string
 }
